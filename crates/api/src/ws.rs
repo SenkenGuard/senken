@@ -384,22 +384,31 @@ fn subscribe(
         };
         let mut updates = lease.updates();
         loop {
+            // Read what is already there *before* waiting for a change. A
+            // `watch::Receiver` marks the value present at its creation as
+            // seen, so a tick published between `lease()` returning above
+            // and this receiver existing would never be reported by
+            // `changed()` — on a quiet instrument that first tick could be
+            // the only one for a long time, and waiting for a second one
+            // means showing nothing at all meanwhile. The borrow is copied
+            // out and dropped before the send, so no guard is held across an
+            // await point.
+            let current = *updates.borrow_and_update();
+            if let Some(update) = current {
+                let frame = ServerFrame::Price {
+                    topic: &forward_topic,
+                    price: update.price,
+                    price_scale: update.price_scale,
+                    qty: update.qty,
+                    qty_scale: update.qty_scale,
+                    ts: update.ts.as_millis(),
+                };
+                if forward_tx.send(send_frame(&frame)).is_err() {
+                    return; // the connection loop has already ended
+                }
+            }
             if updates.changed().await.is_err() {
                 return; // the pool's actor task is gone; nothing left to forward
-            }
-            let Some(update) = *updates.borrow() else {
-                continue; // the channel's pre-first-tick initial value
-            };
-            let frame = ServerFrame::Price {
-                topic: &forward_topic,
-                price: update.price,
-                price_scale: update.price_scale,
-                qty: update.qty,
-                qty_scale: update.qty_scale,
-                ts: update.ts.as_millis(),
-            };
-            if forward_tx.send(send_frame(&frame)).is_err() {
-                return; // the connection loop has already ended
             }
         }
     });
