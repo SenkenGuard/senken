@@ -1,0 +1,101 @@
+# Release notes, generated from the commit history.
+#
+# The notes GitHub generates on its own are built from *merged pull
+# requests*. This repository commits straight to `main`, so that mechanism
+# produces an almost empty body here — which is why the release workflow
+# renders its body with this configuration instead, from conventional
+# commits, and leaves `generate_release_notes` off.
+#
+# Contributors and pull-request numbers still come from GitHub: git-cliff
+# reads them through the REST API when `GITHUB_TOKEN` is set, which the
+# release workflow does. Without a token the template simply omits those
+# parts rather than failing, so a local `git-cliff --latest` still works.
+
+[remote.github]
+owner = "SenkenGuard"
+repo = "senken"
+
+[changelog]
+trim = true
+render_always = true
+
+body = """
+{% if release.previous.version -%}
+    **[Full changelog](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/compare/{{ release.previous.version }}..{{ version }})**
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits -%}
+- {% if commit.scope %}**{{ commit.scope }}** — {% endif %}\
+{% if commit.breaking %}**Breaking:** {% endif %}\
+{{ commit.message | upper_first }} \
+([{{ commit.id | truncate(length=7, end="") }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/commit/{{ commit.id }}))\
+{% if commit.remote.pr_number %} ([#{{ commit.remote.pr_number }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/pull/{{ commit.remote.pr_number }})){% endif %}
+{% endfor -%}
+{% endfor %}
+{%- if github.contributors | length != 0 %}
+### Contributors
+{% for contributor in github.contributors -%}
+- @{{ contributor.username }}
+{% endfor -%}
+{%- endif %}
+## Downloads
+
+| File | Platform |
+|---|---|
+| `senken-x86_64-apple-darwin` | macOS, Intel |
+| `senken-aarch64-apple-darwin` | macOS, Apple silicon |
+| `senken-x86_64-pc-windows-msvc.exe` | Windows |
+| `senken-x86_64-unknown-linux-gnu` | Linux, server build (no desktop window) |
+
+Verify a download against `SHA256SUMS`:
+
+```
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+These binaries are not code-signed. macOS quarantines an unsigned download, \
+so clear it once before the first run:
+
+```
+xattr -d com.apple.quarantine ./senken-aarch64-apple-darwin
+```
+
+On Windows, SmartScreen warns before running an unsigned executable.
+"""
+
+footer = ""
+
+[git]
+conventional_commits = true
+# A commit that does not follow the convention is left out rather than
+# dropped into a catch-all: release notes are for the people reading them,
+# not a mirror of the log.
+filter_unconventional = true
+require_conventional = false
+protect_breaking_commits = true
+
+# Order is significant: the first matching parser wins. `<!-- n -->` fixes
+# the section order and is stripped from the rendered heading.
+commit_parsers = [
+    # Our own version-bump commits describe the release, not the work in it.
+    { message = "^chore\\(release\\)", skip = true },
+    { message = "^chore\\(deps", skip = true },
+    { message = "^feat", group = "<!-- 0 -->Features" },
+    { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+    { message = "^perf", group = "<!-- 2 -->Improvements" },
+    { message = "^refactor", group = "<!-- 2 -->Improvements" },
+    { message = "^style", group = "<!-- 2 -->Improvements" },
+    { message = "^sec", group = "<!-- 3 -->Security" },
+    { body = ".*security", group = "<!-- 3 -->Security" },
+    { message = "^docs?", group = "<!-- 4 -->Documentation" },
+    { message = "^test", group = "<!-- 5 -->Tests" },
+    { message = "^build|^ci", group = "<!-- 6 -->Build and CI" },
+    { message = "^revert", group = "<!-- 7 -->Reverts" },
+    { message = "^chore", group = "<!-- 8 -->Internal" },
+]
+
+filter_commits = false
+fail_on_unmatched_commit = false
+topo_order = false
+sort_commits = "oldest"

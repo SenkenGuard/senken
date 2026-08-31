@@ -11,13 +11,41 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Never cancel a release in flight: a half-cancelled run can leave some
+# platforms' artifacts uploaded and the Release itself unpublished, which is
+# worse than simply queueing behind the run already going.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # Four platform builds take minutes; a mismatched tag can be caught in
+  # seconds. This runs first and everything else needs it, so a tag that
+  # disagrees with the tree fails before a single compiler starts.
+  verify:
+    name: tag matches the workspace version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # One parser, shared with the local release script, rather than a
+      # second one written in YAML that can drift away from it.
+      - name: Compare the tag against Cargo.toml
+        run: |
+          version="$(scripts/release.sh --check)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the workspace version $version"
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME matches the workspace version"
+
   # Built once and shared with every platform job below: the
   # SvelteKit build output is platform-independent, and every target must
   # see it before its `cargo build --release`, or `rust-embed` embeds
   # nothing.
   web:
     name: build web assets
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,6 +159,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      # `fetch-depth: 0` because the notes below are rendered from the commit
+      # history between this tag and the previous one; a shallow clone has
+      # neither.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download every platform's binary
         uses: actions/download-artifact@v4
         with:
@@ -138,8 +173,33 @@ jobs:
           pattern: "senken-*"
           merge-multiple: true
 
+      # Published alongside the binaries so a download can be verified. Named
+      # explicitly rather than globbed, so the checksum file can never end up
+      # listing itself.
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum senken-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # Installed the same way `cargo machete` is in CI, rather than through a
+      # third-party action, so there is one way this repository puts a Rust
+      # tool on a runner.
+      - uses: taiki-e/install-action@git-cliff
+
+      # `generate_release_notes` is deliberately *not* used: GitHub builds
+      # those from merged pull requests, and work that lands as a direct
+      # commit would be invisible in them. `cliff.toml` renders the same
+      # sections — grouped changes, contributors, a full-changelog link — from
+      # the commits themselves, so the notes are complete either way.
+      - name: Render the release notes
+        run: git-cliff --latest --strip header --output NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Publish to the GitHub Release for this tag
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           fail_on_unmatched_files: true
+          body_path: NOTES.md
