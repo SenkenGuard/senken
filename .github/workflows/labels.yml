@@ -19,7 +19,7 @@ jobs:
       # The only permission this needs. Labels live on the issues API.
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `yq` and `gh` are both present on GitHub-hosted runners, and the
       # JSON hop keeps the shell out of the business of parsing YAML.
@@ -31,9 +31,21 @@ jobs:
           set -euo pipefail
           yq -o=json '.' .github/labels.yml > /tmp/labels.json
           python3 - <<'PY' > /tmp/labels.tsv
-          import json
+          import json, re, sys
+
+          HEX = re.compile(r"\A[0-9a-fA-F]{6}\Z")
+
           for label in json.load(open("/tmp/labels.json")):
-              print("\t".join([label["name"], label["color"], label.get("description", "")]))
+              name, colour = label["name"], label["color"]
+              # An unquoted hex colour survives YAML as a number — `5319e7`
+              # is a float and `008672` an integer — and would otherwise
+              # fail here as an unexplained type error. Say which label.
+              if not isinstance(colour, str) or not HEX.match(colour):
+                  sys.exit(
+                      f"label {name!r}: color must be a quoted six-digit hex "
+                      f"string, got {colour!r}"
+                  )
+              print("\t".join([name, colour, label.get("description", "")]))
           PY
           while IFS=$'\t' read -r name color description; do
             echo "::group::$name"

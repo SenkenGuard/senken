@@ -9,54 +9,60 @@
 # Adding a label here and merging applies it. Removing one from this file
 # does *not* delete it on GitHub: deleting a label strips it from every issue
 # that carried it, which is a loss no automation should perform silently.
+#
+# Colours are quoted, and must stay quoted. A bare `5319e7` is a valid YAML
+# float (`e` is the exponent marker) and a bare `008672` is a valid integer,
+# so an unquoted hex colour reaches the sync step as a number rather than a
+# string. The workflow rejects that with the label's name rather than failing
+# on a type error further down.
 
 # --- What kind of thing is this ---
 - name: bug
-  color: d73a4a
+  color: "d73a4a"
   description: Behaves differently from what it says it does
 - name: enhancement
-  color: a2eeef
+  color: "a2eeef"
   description: Something Senken should be able to do and cannot
 - name: documentation
-  color: 0075ca
+  color: "0075ca"
   description: Docs, comments, or the README
 - name: security
-  color: b60205
+  color: "b60205"
   description: Authentication, authorisation, credentials, or data escaping its bounds
 - name: performance
-  color: fbca04
+  color: "fbca04"
   description: Correct but slower or heavier than it should be
 
 # --- Where it lives ---
 - name: venue
-  color: 5319e7
+  color: "5319e7"
   description: A venue adapter, or a capability one venue is missing
 - name: area:charts
-  color: c5def5
+  color: "c5def5"
   description: Chart panes, indicators, drawing objects
 - name: area:market-data
-  color: c5def5
+  color: "c5def5"
   description: Instruments, bars, the loader, the store
 - name: area:api
-  color: c5def5
+  color: "c5def5"
   description: HTTP surface, WebSocket, authorisation over the wire
 - name: area:web
-  color: c5def5
+  color: "c5def5"
   description: The SvelteKit app
 - name: area:ci
-  color: c5def5
+  color: "c5def5"
   description: Workflows, the release path, tooling
 
 # --- What it needs from us ---
 - name: good first issue
-  color: 7057ff
+  color: "7057ff"
   description: Small, self-contained, and a good way in
 - name: help wanted
-  color: 008672
+  color: "008672"
   description: We would welcome someone picking this up
 - name: needs recorded response
-  color: e99695
+  color: "e99695"
   description: Blocked until a real venue response is attached, not one copied from the docs
 - name: breaking change
-  color: d93f0b
+  color: "d93f0b"
   description: Changes a stored format, a public API, or behaviour someone depends on
