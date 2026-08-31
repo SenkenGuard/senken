@@ -25,6 +25,8 @@ jobs:
   verify:
     name: tag matches the workspace version
     runs-on: ubuntu-latest
+    # A hung step must not sit on a runner until GitHub's six-hour ceiling.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       # One parser, shared with the local release script, rather than a
@@ -47,6 +49,8 @@ jobs:
     name: build web assets
     needs: verify
     runs-on: ubuntu-latest
+    # A hung step must not sit on a runner until GitHub's six-hour ceiling.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -76,6 +80,8 @@ jobs:
     name: build (${{ matrix.target }})
     needs: web
     runs-on: ${{ matrix.os }}
+    # A hung step must not sit on a runner until GitHub's six-hour ceiling.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -167,6 +173,8 @@ jobs:
     name: publish release
     needs: build
     runs-on: ubuntu-latest
+    # A hung step must not sit on a runner until GitHub's six-hour ceiling.
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
