@@ -81,13 +81,17 @@ commit_parsers = [
     # Our own version-bump commits describe the release, not the work in it.
     { message = "^chore\\(release\\)", skip = true },
     { message = "^chore\\(deps", skip = true },
+    # A security scope outranks its own type, so a security fix is filed as
+    # security rather than as an ordinary bug fix. Matching the *body* for
+    # the word instead was tried and is far too loose — it swept up every
+    # commit whose message merely mentioned the security policy.
+    { message = "^\\w+\\(security\\)", group = "<!-- 3 -->Security" },
+    { message = "^sec(urity)?:", group = "<!-- 3 -->Security" },
     { message = "^feat", group = "<!-- 0 -->Features" },
     { message = "^fix", group = "<!-- 1 -->Bug fixes" },
     { message = "^perf", group = "<!-- 2 -->Improvements" },
     { message = "^refactor", group = "<!-- 2 -->Improvements" },
     { message = "^style", group = "<!-- 2 -->Improvements" },
-    { message = "^sec", group = "<!-- 3 -->Security" },
-    { body = ".*security", group = "<!-- 3 -->Security" },
     { message = "^docs?", group = "<!-- 4 -->Documentation" },
     { message = "^test", group = "<!-- 5 -->Tests" },
     { message = "^build|^ci", group = "<!-- 6 -->Build and CI" },
