@@ -43,3 +43,31 @@ export function parsePaneSettings(json: string): ChartSettings {
 export function paneSettingsToJson(settings: ChartSettings): string {
 	return JSON.stringify(settings);
 }
+
+/**
+ * Whether a pane must auto-fit its price axis now, overriding a stored
+ * `autoScale: false`.
+ *
+ * `autoScale: false` means "keep the range I dragged the axis to". The
+ * range itself is never persisted, and lightweight-charts v4 has no API to
+ * put one back — `IPriceScaleApi` is `applyOptions`/`options`/`width`, and
+ * none of them take a price range. So after a reload there is no range to
+ * keep, and applying the stored `false` to a series that has no bars yet
+ * freezes the scale on an empty chart. The bars then arrive outside it, and
+ * the pane reads as blank until it is auto-fitted or reset by hand.
+ *
+ * All three conditions carry weight:
+ * - without bars there is nothing to frame, and fitting an empty series
+ *   just freezes a different meaningless range;
+ * - only on the series' first bars, so this can never fight a drag the
+ *   reader made later in the session;
+ * - never when the setting is already auto, because writing a price-scale
+ *   option that is already correct discards the manual range.
+ */
+export function shouldFramePriceScale(state: {
+	hasBars: boolean;
+	alreadyFramed: boolean;
+	storedAutoScale: boolean;
+}): boolean {
+	return state.hasBars && !state.alreadyFramed && !state.storedAutoScale;
+}

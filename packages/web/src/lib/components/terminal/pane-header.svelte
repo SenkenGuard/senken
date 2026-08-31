@@ -20,6 +20,7 @@
 	import { parseInstrumentId, LAYER_KIND_ICON } from './chart-config';
 	import type { LayerRuntime } from '$lib/charts/pane-runtime';
 	import EyeIcon from '@lucide/svelte/icons/eye';
+	import LoaderIcon from '@lucide/svelte/icons/loader-circle';
 	import EyeOffIcon from '@lucide/svelte/icons/eye-off';
 	import SettingsIcon from '@lucide/svelte/icons/settings-2';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -28,6 +29,7 @@
 		instrument,
 		spec,
 		layers,
+		loadingLayerIds = [],
 		hoverText,
 		narrow,
 		livePrice,
@@ -42,6 +44,9 @@
 		/** `null` while this pane's venue streams; otherwise why it does not. */
 		liveNotice?: string | null;
 		layers: LayerRuntime[];
+		/** Layers whose series is being recomputed. The plot already drawn
+		 * stays put; this only says the layer is working. */
+		loadingLayerIds?: string[];
 		hoverText: string;
 		narrow: boolean;
 		/** The live last-traded price, shown in place of the
@@ -105,7 +110,11 @@
 		{@const Icon = LAYER_KIND_ICON[l.kind]}
 		{@const on = l.visible}
 		<div class="group/chip pointer-events-auto flex w-fit max-w-full min-w-0 items-center gap-1.5 py-0.5 pr-1.5 pl-0.5 hover:bg-ink/7">
-			<Icon class={cn('size-3 flex-none', on ? 'text-secondary-foreground' : 'text-dim')} />
+			{#if loadingLayerIds.includes(l.id)}
+				<LoaderIcon class="size-3 flex-none animate-spin text-dim2" />
+			{:else}
+				<Icon class={cn('size-3 flex-none', on ? 'text-secondary-foreground' : 'text-dim')} />
+			{/if}
 			<span class="min-w-0 truncate font-mono text-[11px] font-medium tracking-[0.04em] whitespace-nowrap">
 				<span class={on ? 'text-secondary-foreground' : 'text-dim'}>{layerLabel(l)}</span>
 			</span>

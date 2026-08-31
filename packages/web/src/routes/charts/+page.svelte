@@ -60,6 +60,7 @@
 		clearAllDrawings,
 		dismissWorkspaceError,
 		persistLayerStyle,
+		updateDrawingGeometry,
 		updatePaneSettings
 	} from '$lib/charts/workspace-store.svelte';
 	import type { DrawingRuntime } from '$lib/charts/pane-runtime';
@@ -73,7 +74,7 @@
 	import SymbolTree from '$lib/components/terminal/symbol-tree.svelte';
 	import ChartSettingsDialog from '$lib/components/terminal/chart-settings-dialog.svelte';
 	import LayerDialog from '$lib/components/terminal/layer-dialog.svelte';
-	import DrawingDialog from '$lib/components/terminal/drawing-dialog.svelte';
+	import DrawingToolbar from '$lib/components/terminal/drawing-toolbar.svelte';
 	import AlertsPanel from '$lib/components/terminal/alerts-panel.svelte';
 	import {
 		DEFAULT_ACCOUNT,
@@ -503,6 +504,16 @@
 		if (!sel) return null;
 		return panes[sel.pane]?.drawings.find((d) => d.id === sel.id) ?? null;
 	});
+	/** Where the floating toolbar sits. Anchored to the top of the chart
+	 * area rather than to the object itself: a bar that follows the drawing
+	 * ends up under the pointer mid-drag, which is the one moment it must
+	 * not be in the way. */
+	/** Where the floating toolbar sits inside the chart area: near the top,
+	 * clear of the drawing rail on the left and the price scale on the
+	 * right, and above the object rather than under the pointer that is
+	 * dragging it. */
+	const drawingToolbarAnchor = { x: 420, y: 54 };
+
 	const mid = $derived(lastClose[activePaneIndex] ?? 0);
 	const bookRows = $derived(genOrderBook(mid));
 
@@ -814,7 +825,26 @@
 		</div>
 
 		<!-- Toolbar + pane grid + right panel (lines 428-714) -->
-		<div class="flex min-h-0 flex-1">
+		<div class="relative flex min-h-0 flex-1">
+			<!-- Selecting a drawing puts it in move mode — draggable handles on the
+	     chart, and this toolbar for the properties. A modal here would sit
+	     over the very object being adjusted, which is why it is not one. -->
+			{#if dialogDrawing}
+				<DrawingToolbar
+			x={drawingToolbarAnchor.x}
+			y={drawingToolbarAnchor.y}
+			color={dialogDrawing.color}
+			width={dialogDrawing.width}
+			lineStyle={dialogDrawing.lineStyle}
+			onChangeStyle={(patch) =>
+				selectedDrawing && void updateDrawingStyle(selectedDrawing.pane, selectedDrawing.id, patch)}
+			onDelete={() => {
+				if (selectedDrawing) void removeDrawing(selectedDrawing.pane, selectedDrawing.id);
+				selectedDrawing = null;
+			}}
+		/>
+			{/if}
+
 			<DrawToolbar {tool} onPick={(t) => (tool = t)} onClear={clearDrawings} />
 
 			<PaneGrid
@@ -830,6 +860,8 @@
 				{reloadToken}
 				{resetTokens}
 				onContextMenu={(pane, e) => (ctxMenu = { ...e, pane })}
+				onMoveDrawing={(pane, id, patch) => void updateDrawingGeometry(pane, id, patch)}
+				onPatchSettings={(pane, patch) => patchPane(pane, patch)}
 				onFocus={onFocusPane}
 				onToggleLayer={(i, id) => void toggleLayerVisible(i, id)}
 				onOpenMainSettings={openMainSettings}
@@ -1005,12 +1037,6 @@
 		onStyleChanged={() => void persistLayerStyle()}
 	/>
 
-	<DrawingDialog
-		drawing={dialogDrawing}
-		onClose={() => (selectedDrawing = null)}
-		onChangeStyle={(patch) => selectedDrawing && void updateDrawingStyle(selectedDrawing.pane, selectedDrawing.id, patch)}
-		onDelete={() => selectedDrawing && void removeDrawing(selectedDrawing.pane, selectedDrawing.id)}
-	/>
 {:else}
 	<!-- No layout ever loaded (the initial `defaultWorkspace`/`getLayout`
 	     round-trip itself failed) — nothing to render a chart into, so this

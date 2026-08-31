@@ -78,6 +78,10 @@ export interface ChartSettings {
 	/** Whether the axis refits itself to the data. Dragging the axis turns
 	 * this off, which is why it is a setting and not a transient. */
 	autoScale: boolean;
+	/** How the pane is split between the main chart and its sub-panes, as
+	 * the percentages the resizable group reports. Empty means "never
+	 * adjusted", and the defaults apply. */
+	paneSplit: number[];
 	marginTop: number;
 	marginBottom: number;
 	marginRight: number;
@@ -99,7 +103,7 @@ export function defaultChartSettings(): ChartSettings {
 		countdown: true, symbolLabel: 'VALUE + LINE', highLow: false, bidAsk: false, dayOfWeek: true, timeFormat: '24H',
 		bgMode: 'THEME', bgColor: '#0a0a0c', gridV: true, gridVColor: 'auto', gridH: true, gridHColor: 'auto',
 		crosshair: 'DASHED', crosshairColor: 'auto', watermark: 'HIDDEN', watermarkColor: 'auto',
-		priceScaleMode: 'REGULAR', invertScale: false, autoScale: true,
+		priceScaleMode: 'REGULAR', invertScale: false, autoScale: true, paneSplit: [],
 		scaleTextColor: 'auto', scaleFont: 9, scaleLineColor: 'auto', timeAxis: true,
 		navButtons: 'ON HOVER', paneButtons: 'ON HOVER', marginTop: 10, marginBottom: 8, marginRight: 6,
 		showPositions: true, showOrders: true, tif: 'GTC', buyColor: '#7de0a3', sellColor: '#e8836f'

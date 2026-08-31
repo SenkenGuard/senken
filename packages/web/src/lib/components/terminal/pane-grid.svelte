@@ -10,6 +10,7 @@
 	// 2,3 bottom row).
 	import * as Resizable from '$lib/components/ui/resizable/index.js';
 	import PaneCell from './pane-cell.svelte';
+	import type { ChartSettings } from '$lib/mock/chart-settings';
 	import type { DrawingRuntime, PaneRuntime } from '$lib/charts/pane-runtime';
 	import type { LayoutId, ToolKey } from './chart-config';
 
@@ -17,6 +18,8 @@
 		panes,
 		reloadToken = 0,
 		resetTokens = [],
+		onMoveDrawing,
+		onPatchSettings,
 		onContextMenu,
 		layout,
 		activeIndex,
@@ -43,6 +46,11 @@
 		/** One reset counter per pane — a shared counter would reset every
 		 * pane whenever any one of them was asked. */
 		resetTokens?: number[];
+		onMoveDrawing?: (
+			paneIndex: number,
+			id: string,
+			patch: Partial<Pick<DrawingRuntime, 'price' | 'start' | 'end'>>
+		) => void;
 		onContextMenu?: (
 			paneIndex: number,
 			event: { x: number; y: number; region: 'chart' | 'price-scale' | 'time-scale' }
@@ -65,6 +73,7 @@
 		onRemoveLayer: (paneIndex: number, layerId: string) => void;
 		onLastClose: (paneIndex: number, price: number) => void;
 		onCreateDrawing: (paneIndex: number, drawing: Omit<DrawingRuntime, 'id' | 'position'>) => void;
+		onPatchSettings?: (paneIndex: number, patch: Partial<ChartSettings>) => void;
 		onSelectDrawing: (paneIndex: number, id: string | null) => void;
 		onToolConsumed: () => void;
 	} = $props();
@@ -96,6 +105,8 @@
 			onLastClose={(price) => onLastClose(i, price)}
 			onCreateDrawing={(drawing) => onCreateDrawing(i, drawing)}
 			onSelectDrawing={(id) => onSelectDrawing(i, id)}
+			onMoveDrawing={(id, patch) => onMoveDrawing?.(i, id, patch)}
+			onPatchSettings={(patch) => onPatchSettings?.(i, patch)}
 			{onToolConsumed}
 		/>
 	</Resizable.Pane>

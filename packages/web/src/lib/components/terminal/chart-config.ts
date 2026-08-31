@@ -287,3 +287,33 @@ export function fmtDecimal(decimal: number): string {
 	if (decimal >= 10) return decimal.toFixed(2);
 	return decimal.toFixed(4);
 }
+
+/** The time-axis label format, shared by a pane's main chart and every
+ * sub-pane under it.
+ *
+ * One function rather than one per chart: a sub-pane shows the same bars as
+ * its main chart, so an axis that labelled them differently would read as a
+ * different series. `timeVisible` alone is not enough — the library's own
+ * default formats an intraday tick as a bare day number.
+ */
+export function timeAxisFormatter(
+	spec: string,
+	dayOfWeek: boolean,
+	timeFormat: '24H' | '12H'
+): (time: number) => string {
+	const intraday = isIntradaySpec(spec);
+	return (time: number) => {
+		const at = new Date(time * 1000);
+		const weekday = at.toLocaleDateString(undefined, { weekday: 'short' });
+		if (!intraday) {
+			const date = at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+			return dayOfWeek ? `${weekday} ${date}` : date;
+		}
+		const clock = at.toLocaleTimeString(undefined, {
+			hour: '2-digit',
+			minute: '2-digit',
+			hour12: timeFormat === '12H'
+		});
+		return dayOfWeek ? `${weekday} ${clock}` : clock;
+	};
+}

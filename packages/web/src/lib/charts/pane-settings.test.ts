@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parsePaneSettings, paneSettingsToJson } from './pane-settings';
+import { parsePaneSettings, paneSettingsToJson, shouldFramePriceScale } from './pane-settings';
 import { defaultChartSettings } from '$lib/mock/chart-settings';
 
 describe("parsePaneSettings — a pane's settings text must never break the chart", () => {
@@ -38,5 +38,32 @@ describe('paneSettingsToJson round-trip', () => {
 		const changed = { ...defaultChartSettings(), bodyUp: '#123456', precision: '4' as const, scaleFont: 12 };
 		const roundTripped = parsePaneSettings(paneSettingsToJson(changed));
 		expect(roundTripped).toEqual(changed);
+	});
+});
+
+describe('shouldFramePriceScale', () => {
+	const state = { hasBars: true, alreadyFramed: false, storedAutoScale: false };
+
+	test('frames a series whose first bars arrived after a stored manual scale', () => {
+		// The reported bug: the axis was frozen while the series was still
+		// empty, so the bars landed outside the visible range.
+		expect(shouldFramePriceScale(state)).toBe(true);
+	});
+
+	test('does not frame a series that has no bars yet', () => {
+		// Fitting an empty series only freezes a different meaningless range.
+		expect(shouldFramePriceScale({ ...state, hasBars: false })).toBe(false);
+	});
+
+	test('does not frame a series twice', () => {
+		// Otherwise a later reload of the same series would throw away a
+		// range the reader dragged to during the session.
+		expect(shouldFramePriceScale({ ...state, alreadyFramed: true })).toBe(false);
+	});
+
+	test('leaves a scale that is already auto alone', () => {
+		// Writing a price-scale option that is already correct discards the
+		// manual range, so there must be nothing to write here.
+		expect(shouldFramePriceScale({ ...state, storedAutoScale: true })).toBe(false);
 	});
 });

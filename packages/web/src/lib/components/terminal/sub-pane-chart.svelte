@@ -14,10 +14,12 @@
 	// deleted `$lib/indicators/browser-compute.ts`.
 	import { onMount } from 'svelte';
 	import { createChart, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
-	import { defaultBarWindow, indicatorFieldScale, isIntradaySpec } from './chart-config';
+	import { defaultBarWindow, indicatorFieldScale, isIntradaySpec, timeAxisFormatter } from './chart-config';
 	import { loadIndicatorSeries } from '$lib/charts/bars';
 	import { plotsForLayer, LINE_STYLE_MAP } from '$lib/charts/layer-style';
+	import { alignToBarTimes } from '$lib/charts/align-to-bars';
 	import type { LayerRuntime } from '$lib/charts/pane-runtime';
+	import type { ChartSettings } from '$lib/mock/chart-settings';
 	import { chartPaneThemeColors, isDarkTheme } from './chart-theme';
 
 	let {
@@ -26,9 +28,11 @@
 		crosshairTime,
 		onCrosshairTime,
 		layer,
+		settings,
 		priceScale,
-		replayIdx,
-		onChartApi
+		barTimes,
+		onChartApi,
+		onApplyPlots
 	}: {
 		instrument: string;
 		spec: string;
@@ -37,17 +41,34 @@
 		/** Where this pane's own crosshair sits, for the siblings. */
 		onCrosshairTime?: (time: UTCTimestamp | null) => void;
 		layer: LayerRuntime;
+		/** The pane's settings, so this axis reads the same as the main
+		 * chart's above it. */
+		settings: ChartSettings;
 		/** The pane's own `price_scale`, from the same `GET /api/bars/range`
 		 * call chart-pane.svelte already made — an Atr/Macd sub-pane value is
 		 * still price-scaled (see `chart-config.ts`'s `indicatorFieldScale`
 		 * doc), so it needs this even though it never renders a candle. */
 		priceScale: number;
-		replayIdx: number | null;
+		/** The bars the main chart above is showing, in its order. Every plot
+		 * here is drawn on exactly these, gaps included, so the two charts
+		 * share a logical index — see `$lib/charts/align-to-bars.ts`. This is
+		 * also the replay window: the main chart has already cut it. */
+		barTimes: UTCTimestamp[];
 		/** Fires with this sub-pane's `IChartApi` once created, and with
 		 * `undefined` just before it is torn down — see chart-pane.svelte's
 		 * identical prop; `pane-cell.svelte` links the two together so this
 		 * sub-pane's x-axis never drifts from the main chart above it. */
 		onChartApi?: (chart: IChartApi | undefined) => void;
+		/** Hands this strip's whole data update to the pane to run.
+		 *
+		 * The library re-anchors a chart's visible range when it receives a
+		 * new series and announces that like an ordinary gesture — from
+		 * inside the data call — so an indicator finishing its load would
+		 * otherwise decide where the entire pane is scrolled to. The pane
+		 * runs this with that announcement suppressed. Handing over the
+		 * update rather than reporting afterwards is the point: afterwards
+		 * is already too late. */
+		onApplyPlots?: (apply: () => void) => void;
 	} = $props();
 
 	let container: HTMLDivElement | undefined = $state();
@@ -161,7 +182,11 @@
 	$effect(() => {
 		if (!chart) return;
 		chart.applyOptions({
-			timeScale: { timeVisible: isIntradaySpec(spec), secondsVisible: false }
+			timeScale: {
+				timeVisible: isIntradaySpec(spec),
+				secondsVisible: false,
+				tickMarkFormatter: timeAxisFormatter(spec, settings.dayOfWeek, settings.timeFormat)
+			}
 		});
 	});
 
@@ -178,13 +203,22 @@
 		// fresh mount.
 		const currentPriceScale = priceScale;
 		const { from, to } = defaultBarWindow(currentSpec);
-		const cut = replayIdx == null ? Infinity : replayIdx;
+		// Nothing is drawn before the main chart has bars: a plot alone on an
+		// empty strip has no bars to be read against, and there is no
+		// timeline yet to align it to.
+		const timeline = barTimes;
+		if (timeline.length === 0) return;
 
 		loadIndicatorSeries(currentInstrument, currentSpec, from, to, indicatorName, params)
 			.then(({ byField }) => {
 				if (destroyed || !chart || currentInstrument !== instrument || currentSpec !== spec) return;
+				// Captured before the closure below: the update is handed to
+				// the pane to run, and a narrowed `chart` does not survive
+				// being read from inside a callback.
+				const activeChart = chart;
 				const plots = plotsForLayer(layer.id, indicatorName);
 				const seen = new Set<string>();
+				const applyPlots = () => {
 				for (const plot of plots) {
 					const points = byField.get(plot.field) ?? [];
 					if (points.length === 0) continue;
@@ -193,7 +227,7 @@
 					const divisor = scaleKind === 'price' ? 10 ** currentPriceScale : 1;
 					let handle = series.get(plot.field);
 					if (!handle) {
-						handle = plot.type === 'histogram' ? chart.addHistogramSeries({ priceLineVisible: false }) : chart.addLineSeries({ priceLineVisible: false, lastValueVisible: true });
+						handle = plot.type === 'histogram' ? activeChart.addHistogramSeries({ priceLineVisible: false }) : activeChart.addLineSeries({ priceLineVisible: false, lastValueVisible: true });
 						series.set(plot.field, handle);
 					}
 					handle.applyOptions(
@@ -201,19 +235,26 @@
 							? { color: plot.color, lineWidth: plot.width as 1 | 2 | 3 | 4, lineStyle: LINE_STYLE_MAP[plot.style], visible: plot.visible }
 							: { color: plot.color, visible: plot.visible }
 					);
-					const windowed = Number.isFinite(cut) ? points.slice(0, cut) : points;
-					handle.setData(windowed.map((p) => ({ time: p.time as UTCTimestamp, value: p.value / divisor })));
+					handle.setData(
+						alignToBarTimes(
+							timeline,
+							points.map((p) => ({ time: p.time, value: p.value / divisor }))
+						)
+					);
 				}
 				for (const [field, handle] of series) {
 					if (!seen.has(field)) {
 						try {
-							chart.removeSeries(handle);
+							activeChart.removeSeries(handle);
 						} catch {
 							// chart already torn down
 						}
 						series.delete(field);
 					}
 				}
+				};
+				if (onApplyPlots) onApplyPlots(applyPlots);
+				else applyPlots();
 			})
 			.catch(() => {
 				// leaves whatever was last rendered; a transient failure here

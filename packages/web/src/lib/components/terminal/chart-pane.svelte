@@ -32,13 +32,15 @@
 		type ToolKey,
 		defaultBarWindow,
 		indicatorFieldScale,
-		isIntradaySpec
+		isIntradaySpec,
+		timeAxisFormatter
 	} from './chart-config';
 	import { loadBars, loadIndicatorSeries, type BarLoadProgress } from '$lib/charts/bars';
 	import { GenerationGuard } from '$lib/charts/generation-guard';
 	import { plotsForLayer, LINE_STYLE_MAP } from '$lib/charts/layer-style';
 	import type { DrawingRuntime, LayerRuntime } from '$lib/charts/pane-runtime';
 	import { DrawingsPrimitive } from '$lib/charts/drawing-primitive';
+	import { shouldFramePriceScale } from '$lib/charts/pane-settings';
 	import { LastPriceBadgePrimitive, type PriceDirection } from '$lib/charts/price-badge-primitive';
 	import { deriveLiveState, overlayMessage, priceLineColorFor, showCountdown } from '$lib/charts/live-state';
 	import { chartPaneThemeColors, isDarkTheme } from './chart-theme';
@@ -70,11 +72,15 @@
 		onLiveNotice,
 		onPriceScale,
 		onLivePrice,
+		onBarTimes,
 		onChartApi,
 		onCreateDrawing,
 		onSelectDrawing,
 		onToolConsumed,
 		onContextMenu,
+		onMoveDrawing,
+		onLayerLoading,
+		onAutoScaleChanged,
 		reloadToken = 0,
 		resetToken = 0,
 		settings
@@ -127,6 +133,11 @@
 		 * for the new one. `pane-header.svelte` shows this next to the
 		 * instrument chip whenever the crosshair isn't overriding it. */
 		onLivePrice?: (price: number | null) => void;
+		/** Fires with the times of the bars this chart is actually showing,
+		 * in its own order, whenever that window changes. A sub-pane
+		 * indicator is drawn on these and only these, so the two charts
+		 * agree on what "bar 0" is — see `$lib/charts/align-to-bars.ts`. */
+		onBarTimes?: (times: UTCTimestamp[]) => void;
 		/** Fires with this pane's `IChartApi` once created, and with
 		 * `undefined` just before it is torn down — `pane-cell.svelte` uses
 		 * this to link the main pane's time axis to each of its own sub-pane
@@ -154,6 +165,21 @@
 		/** Bumping this reloads the pane's bars from scratch — the escape
 		 * hatch for a chart that has ended up in a state the user cannot
 		 * explain. */
+		/** A drawing was dragged to a new position. Fired once, when the drag
+		 * ends — not on every mouse move, which would write a layout per
+		 * frame. */
+		onMoveDrawing?: (
+			id: string,
+			patch: Partial<Pick<DrawingRuntime, 'price' | 'start' | 'end'>>
+		) => void;
+		/** Which indicator layers are recomputing right now. The plot already
+		 * on screen stays until its replacement arrives — this is only so the
+		 * pane header can say a layer is working. */
+		onLayerLoading?: (ids: string[]) => void;
+		/** The chart turned auto-fit off by itself — the user dragged the
+		 * price axis. Reported so the stored setting, the menu's tick and the
+		 * axis shortcut all still describe what the chart is actually doing. */
+		onAutoScaleChanged?: (autoScale: boolean) => void;
 		reloadToken?: number;
 		/** Bumping this returns the pane to its default frame. */
 		resetToken?: number;
@@ -166,6 +192,9 @@
 	let chart: IChartApi | undefined;
 	let series: ISeriesApi<'Candlestick'> | undefined;
 	let drawingsPrimitive: DrawingsPrimitive | undefined;
+	let onPointerDown: ((e: MouseEvent) => void) | undefined;
+	let onPointerMove: ((e: MouseEvent) => void) | undefined;
+	let onPointerUp: (() => void) | undefined;
 	let priceBadge: LastPriceBadgePrimitive | undefined;
 	let ro: ResizeObserver | undefined;
 	let mo: MutationObserver | undefined;
@@ -353,6 +382,59 @@
 		});
 		drawingsPrimitive = new DrawingsPrimitive();
 		series.attachPrimitive(drawingsPrimitive);
+		drawingsPrimitive.setOnDragEnd((id, patch) => onMoveDrawing?.(id, patch));
+
+		// Dragging a drawing must not also pan the chart, so the chart's own
+		// scroll/scale handling is switched off for the duration of a drag and
+		// restored the moment it ends.
+		const localPoint = (e: MouseEvent) => {
+			const box = container!.getBoundingClientRect();
+			return { x: e.clientX - box.left, y: e.clientY - box.top };
+		};
+		onPointerDown = (e: MouseEvent) => {
+			if (e.button !== 0 || tool !== 'cursor' || !drawingsPrimitive) return;
+			const at = localPoint(e);
+			const found = drawingsPrimitive.hitTestDetailed(at.x, at.y);
+			if (!found) {
+				onSelectDrawing?.(null);
+				return;
+			}
+			onSelectDrawing?.(found.id);
+			drawingsPrimitive.beginDrag(found.id, found.hit, at.x, at.y);
+			chart?.applyOptions({
+				handleScroll: false,
+				handleScale: false
+			});
+		};
+		onPointerMove = (e: MouseEvent) => {
+			if (!drawingsPrimitive?.isDragging()) return;
+			const at = localPoint(e);
+			drawingsPrimitive.updateDrag(at.x, at.y);
+		};
+		onPointerUp = () => {
+			if (drawingsPrimitive?.isDragging()) {
+				drawingsPrimitive.endDrag();
+				chart?.applyOptions({ handleScroll: true, handleScale: true });
+				return;
+			}
+			// Dragging the price axis switches `autoScale` off inside the
+			// library without telling anyone. Read it back after every release
+			// so the stored setting follows the chart rather than contradicting
+			// it.
+			if (!series) return;
+			const live = series.priceScale().options().autoScale;
+			if (live !== undefined && live !== paneSettings.autoScale) {
+				onAutoScaleChanged?.(live);
+			}
+		};
+		container.addEventListener('mousedown', onPointerDown);
+		window.addEventListener('mousemove', onPointerMove);
+		window.addEventListener('mouseup', onPointerUp);
+		// Also on `pointerup`: the chart library handles the price axis with
+		// its own listeners, and which of the two event families a given
+		// release surfaces as is not ours to assume. Both paths run the same
+		// idempotent read-back.
+		window.addEventListener('pointerup', onPointerUp);
 		priceBadge = new LastPriceBadgePrimitive();
 		series.attachPrimitive(priceBadge);
 		priceBadge.setColors(badgeColors(T));
@@ -390,11 +472,11 @@
 		chart.subscribeClick((param) => {
 			if (!param.point || !chart || !series) return;
 
-			if (tool === 'cursor') {
-				const hit = typeof param.hoveredObjectId === 'string' ? param.hoveredObjectId : null;
-				onSelectDrawing?.(hit);
-				return;
-			}
+			// The cursor tool selects on mousedown (below), not here: two
+			// deciders meant the click following a mousedown could clear what
+			// that mousedown had just selected, so a drawing only stayed
+			// selected while the button was held.
+			if (tool === 'cursor') return;
 
 			if (!OBJECT_DRAW_TOOLS.includes(tool)) return;
 			const price = series.coordinateToPrice(param.point.y);
@@ -458,6 +540,11 @@
 			ro?.disconnect();
 			mo?.disconnect();
 			overlaySeries.clear();
+			if (onPointerDown) container?.removeEventListener('mousedown', onPointerDown);
+			if (onPointerMove) window.removeEventListener('mousemove', onPointerMove);
+			if (onPointerUp) window.removeEventListener('mouseup', onPointerUp);
+			if (onPointerUp) window.removeEventListener('pointerup', onPointerUp);
+			onPointerDown = onPointerMove = onPointerUp = undefined;
 			drawingsPrimitive = undefined;
 			// Belt-and-braces alongside whatever `series`'s own disposal already
 			// calls: stops the primitive's own one-second timer even if the
@@ -499,7 +586,11 @@
 	$effect(() => {
 		if (!chart) return;
 		const intraday = isIntradaySpec(spec);
-		chart.applyOptions({ timeScale: { timeVisible: intraday, secondsVisible: false } });
+		// Guarded like every other scale write here: applying an option the
+		// scale already holds costs the user their scroll position.
+		if (chart.timeScale().options().timeVisible !== intraday) {
+			chart.applyOptions({ timeScale: { timeVisible: intraday, secondsVisible: false } });
+		}
 	});
 
 	// A sibling pane's crosshair, mirrored here so one pointer draws one
@@ -663,10 +754,20 @@
 			timeScale: { visible: cs.timeAxis, borderColor: pick(cs.scaleLineColor, T.border) }
 		});
 
-		series.priceScale().applyOptions({
-			scaleMargins: { top: cs.marginTop / 100, bottom: cs.marginBottom / 100 }
-		});
-		chart.timeScale().applyOptions({ rightOffset: cs.marginRight });
+		// Same reasoning: re-writing identical margins would reset the range.
+		const margins = series.priceScale().options().scaleMargins;
+		const wantTop = cs.marginTop / 100;
+		const wantBottom = cs.marginBottom / 100;
+		if (margins?.top !== wantTop || margins?.bottom !== wantBottom) {
+			series.priceScale().applyOptions({ scaleMargins: { top: wantTop, bottom: wantBottom } });
+		}
+		// Guarded for the same reason as the price scale above: re-writing
+		// `rightOffset` when it is already correct throws away where the user
+		// has scrolled to, which is why panning left and then touching the
+		// price axis snapped the chart back to the newest bar.
+		if (chart.timeScale().options().rightOffset !== cs.marginRight) {
+			chart.timeScale().applyOptions({ rightOffset: cs.marginRight });
+		}
 
 		// How the price axis reads: linear, logarithmic, or one of the two
 		// relative modes, and whether it refits itself. `autoScale` is a
@@ -674,11 +775,21 @@
 		// turns it off and it stays off — a chart can otherwise be left in a
 		// state no amount of panning recovers.
 		const MODES = { REGULAR: 0, LOGARITHMIC: 1, PERCENT: 2, INDEXED: 3 } as const;
-		series.priceScale().applyOptions({
+		// Only the keys that actually differ. Writing a price-scale option
+		// that is already correct is not free: `applyOptions` discards the
+		// manual range, so re-applying `autoScale: false` right after the user
+		// dragged the axis threw away the very view the drag produced — the
+		// setting followed the chart, and then the chart snapped back.
+		const live = series.priceScale().options();
+		const wanted = {
 			mode: MODES[cs.priceScaleMode] ?? 0,
 			invertScale: cs.invertScale,
 			autoScale: cs.autoScale
-		});
+		};
+		const changed = Object.fromEntries(
+			Object.entries(wanted).filter(([key, value]) => live[key as keyof typeof live] !== value)
+		);
+		if (Object.keys(changed).length > 0) series.priceScale().applyOptions(changed);
 
 		// Which side the price scale lives on.
 		chart.applyOptions({
@@ -704,32 +815,50 @@
 	// Time-axis labels: 24h or 12h, with or without the weekday. The library
 	// formats ticks itself unless given a formatter, and its default is the
 	// 24h one with no weekday.
+	/** What the tick formatter was last built for. A function's identity
+	 * always differs, so there is nothing to compare against — and writing
+	 * the time scale discards where the user has scrolled to, so this effect
+	 * must not fire on every unrelated settings change. */
+	let tickFormatSignature = '';
+
 	$effect(() => {
 		if (!chart) return;
 		const cs = paneSettings;
 		const intraday = isIntradaySpec(spec);
+		const signature = `${intraday}|${cs.dayOfWeek}|${cs.timeFormat}`;
+		if (signature === tickFormatSignature) return;
 		chart.applyOptions({
-			timeScale: {
-				tickMarkFormatter: (time: number) => {
-					const at = new Date(time * 1000);
-					if (!intraday) {
-						const date = at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-						return cs.dayOfWeek
-							? `${at.toLocaleDateString(undefined, { weekday: 'short' })} ${date}`
-							: date;
-					}
-					const clock = at.toLocaleTimeString(undefined, {
-						hour: '2-digit',
-						minute: '2-digit',
-						hour12: cs.timeFormat === '12H'
-					});
-					return cs.dayOfWeek
-						? `${at.toLocaleDateString(undefined, { weekday: 'short' })} ${clock}`
-						: clock;
-				}
-			}
+			timeScale: { tickMarkFormatter: timeAxisFormatter(spec, cs.dayOfWeek, cs.timeFormat) }
 		});
 	});
+
+	/** What the overlay set actually is, as a value rather than an array
+	 * identity. The identity changes on every parent render — and the parent
+	 * re-renders on every live tick — so an effect keyed on it recomputed
+	 * every indicator several times a second, which is both the spinner that
+	 * never stopped and the freeze behind it. */
+	const overlaySignature = $derived(
+		overlayLayers
+			.map((l) => `${l.id}:${l.kind}:${l.indicatorName ?? ''}:${JSON.stringify(l.params)}:${l.visible}`)
+			.join('|')
+	);
+
+	/** The last set reported upward. Reporting is a write into the parent,
+	 * and the parent re-render hands this effect a fresh `overlayLayers`
+	 * array — so an unconditional report re-runs the effect that made it, and
+	 * the two chase each other until Svelte gives up. Reporting only real
+	 * changes breaks that, and `untrack` keeps the report itself out of the
+	 * effect's dependencies. */
+	let reportedLoading = '';
+	/** The instrument, timeframe, window and overlay set the indicators are
+	 * currently drawn for. Anything else changing is a tick, not a load. */
+	let lastLoadedOverlays = '';
+	function reportLoading(ids: string[]) {
+		const signature = ids.join(',');
+		if (signature === reportedLoading) return;
+		reportedLoading = signature;
+		untrack(() => onLayerLoading?.(ids));
+	}
 
 	/** The high/low guides, kept so they can be removed when the setting is
 	 * turned off or the data changes. */
@@ -789,18 +918,35 @@
 		if (!chart || !series) return;
 		series.priceScale().applyOptions({ autoScale: true });
 		chart.timeScale().fitContent();
+		// Reported, not just applied: the axis shortcut and the menu's tick
+		// both read the stored setting, and a reset that only moved the chart
+		// would leave them describing the state it was in before.
+		onAutoScaleChanged?.(true);
 	}
 
 	// Reset on request. `0` is the never-asked value, so a pane that has not
 	// been asked is left exactly as the user arranged it.
+	//
+	// `resetToken` is the only thing this effect may track. `resetView`
+	// reports the new auto-fit state upward, that report comes back down as a
+	// prop, and an effect that tracked its own body's reads would re-run on
+	// its own report — which is exactly the update-depth loop this guard
+	// exists to stop.
 	$effect(() => {
-		if (resetToken > 0) resetView();
+		const token = resetToken;
+		if (token === 0) return;
+		untrack(() => resetView());
 	});
 
 	/** The series the viewport was last framed for. Panning or zooming is the
 	 * user's own choice and must survive a live tick or a replay step, so the
 	 * frame is only reset when the pane starts showing a *different* series. */
 	let framedFor = '';
+
+	/** Length plus both ends identifies a contiguous bar window, so the
+	 * timeline is only published when it really moved — a colour setting
+	 * re-running the effect below must not make every sub-pane re-draw. */
+	let publishedBarTimes = '';
 
 	// Re-set data whenever the resolved bars or the replay position change.
 	$effect(() => {
@@ -834,14 +980,38 @@
 				};
 			})
 		);
+		const barTimes = window.map((b) => Math.floor(b.ts_open / 1_000_000_000) as UTCTimestamp);
+		const timesKey = `${barTimes.length}|${barTimes[0] ?? ''}|${barTimes[barTimes.length - 1] ?? ''}`;
+		if (timesKey !== publishedBarTimes) {
+			publishedBarTimes = timesKey;
+			onBarTimes?.(barTimes);
+		}
+		const framePriceScale = shouldFramePriceScale({
+			hasBars: bars.length > 0,
+			alreadyFramed: framedFor === identity,
+			storedAutoScale: cs.autoScale
+		});
 		if (bars.length === 0 || framedFor === identity) return;
 		framedFor = identity;
-		// Dragging the price axis turns `autoScale` off, and it stays off:
-		// without this, moving from an instrument priced in the tens of
-		// thousands to one priced in the thousands leaves the new candles
-		// off-screen entirely, under the old instrument's range.
-		series.priceScale().applyOptions({ autoScale: true });
 		chart.timeScale().fitContent();
+		// The time axis is only half of framing a new series. A stored
+		// `autoScale: false` was applied to this scale while it still had no
+		// bars, which freezes it on an empty chart — the bars then land
+		// outside that range and the pane reads as blank until it is
+		// auto-fitted by hand. Whether that happened is a race: bars served
+		// from cache arrive before the settings are applied and the pane
+		// looks fine, bars fetched over the network arrive after and it does
+		// not.
+		//
+		// Forcing auto on used to be rejected here because it left the chart
+		// auto-fitting while the stored setting said otherwise, so the axis
+		// shortcut reported a state the chart was not in. That objection is
+		// answered by moving the setting with it — the same read-back the
+		// axis drag already does, in the other direction.
+		if (framePriceScale) {
+			series.priceScale().applyOptions({ autoScale: true });
+			onAutoScaleChanged?.(true);
+		}
 	});
 
 	// Live price: a lease taken through the WS endpoint the
@@ -977,6 +1147,13 @@
 	// option flip, not a teardown.
 	$effect(() => {
 		if (!chart) return;
+		// An indicator is derived from the bars, so it may not be drawn
+		// before them. Loading the two independently is right and stays —
+		// that is what keeps a slow indicator from holding up the candles —
+		// but the price series resolving second used to leave an EMA hanging
+		// over an empty chart, a reading with its own source not yet on
+		// screen. Tracked by length so this re-runs the moment bars arrive.
+		if (bars.length === 0) return;
 		const currentInstrument = instrument;
 		const currentSpec = spec;
 		// Read synchronously (not inside the `.then()` below) so this effect
@@ -992,8 +1169,12 @@
 		// tracker.
 		const currentPriceScale = priceScale;
 		const currentQtyScale = qtyScale;
+		// Tracked by value; the array is read untracked below.
+		const signature = overlaySignature;
 		const token = indicatorGeneration.begin();
-		const layers = overlayLayers.filter((l) => l.kind === 'indicator_overlay' && l.indicatorName);
+		const layers = untrack(() =>
+			overlayLayers.filter((l) => l.kind === 'indicator_overlay' && l.indicatorName)
+		);
 		const { from, to } = defaultBarWindow(currentSpec);
 		const cut = replayIdx == null ? Infinity : replayIdx;
 
@@ -1003,6 +1184,20 @@
 		// histogram follows the live bar like everything else.
 		void formingVersion;
 		const provisional = provisionalForIndicators();
+		// Loading is about the *range*, not about every re-run.
+		//
+		// Recomputing an indicator across a bar range it has not covered
+		// before is a load, and the reader should see that it is happening:
+		// a new indicator, changed inputs, a different timeframe, or older
+		// bars coming into view. Folding the forming bar in on each tick is
+		// not — the series is already drawn and only its last point moves, so
+		// a spinner there would blink once a second and mean nothing.
+		//
+		// The signature below deliberately excludes `formingVersion` and
+		// includes the requested window, so it changes exactly when the work
+		// is real.
+		const loadKey = `${currentInstrument}|${currentSpec}|${from}|${to}|${signature}`;
+		if (loadKey !== lastLoadedOverlays) reportLoading(layers.map((l) => l.id));
 
 		Promise.all(
 			layers.map(async (layer) => {
@@ -1070,6 +1265,12 @@
 				}
 				if (hasVolumeOverlay) {
 					chart!.priceScale('senken-volume-overlay').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
+				}
+			})
+			.finally(() => {
+				if (indicatorGeneration.isCurrent(token)) {
+					lastLoadedOverlays = loadKey;
+					reportLoading([]);
 				}
 			})
 			.catch(() => {

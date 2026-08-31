@@ -216,6 +216,36 @@ export async function deleteWorkspace(workspaceId: string): Promise<void> {
  * message: this is an authorization outcome ("you may not edit this
  * layout"), not a generic failure, and — like every other 403 in this
  * app — it must never be treated as a dead session. */
+/** Saves the layout without re-reading it.
+ *
+ * The re-read in `persistAndReload` exists to pick up ids the server
+ * assigns, and for a structural change — a pane added, a layer created —
+ * that is exactly right. For an *edit* to something that already exists
+ * (an indicator's period, a plot colour) nothing server-assigned changes,
+ * and re-reading replaces every pane object in the store: the chart
+ * re-frames, the open dialog remounts, and a user turning a period from 50
+ * to 14 watches their view reset under them on each keystroke.
+ *
+ * A failure here still surfaces and still re-reads, because then the memory
+ * genuinely does disagree with the server.
+ */
+async function persistOnly(): Promise<void> {
+	const layout = chartWorkspaceStore.layout;
+	if (!layout) return;
+	chartWorkspaceStore.error = null;
+	try {
+		await apiClient.replaceLayout(layout.id, toReplaceLayoutRequest(layout.preset, layout.panes));
+	} catch (error) {
+		chartWorkspaceStore.error = layoutMutationErrorMessage(error);
+		try {
+			await loadLayoutInto(layout.workspaceId, layout.id);
+		} catch {
+			// Unreachable server: keep the stale copy rather than losing the
+			// chart on top of the failed save.
+		}
+	}
+}
+
 async function persistAndReload(): Promise<void> {
 	const layout = chartWorkspaceStore.layout;
 	if (!layout) return;
@@ -323,7 +353,7 @@ export async function editLayerParams(paneIndex: number, layerId: string, patch:
 		i !== paneIndex ? p : { ...p, layers: p.layers.map((l) => (l.id === layerId ? { ...l, params: { ...l.params, ...patch } } : l)) }
 	);
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistAndReload();
+	await persistOnly();
 }
 
 /** Writes the layout back so a layer's plot styling — which lives in
@@ -337,7 +367,7 @@ export async function persistLayerStyle(): Promise<void> {
 	// lives beside the runtime objects rather than inside them, so nothing
 	// here changes shape.
 	chartWorkspaceStore.layout = { ...layout, panes: [...layout.panes] };
-	await persistAndReload();
+	await persistOnly();
 }
 
 /** Patches `paneIndex`'s chart settings. The settings dialog used to hold
@@ -351,7 +381,7 @@ export async function updatePaneSettings(paneIndex: number, patch: Partial<Chart
 	if (!layout || !layout.panes[paneIndex]) return;
 	const panes = layout.panes.map((p, i) => (i !== paneIndex ? p : { ...p, settings: { ...p.settings, ...patch } }));
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistAndReload();
+	await persistOnly();
 }
 
 /** Adds an instrument overlay or indicator layer to `paneIndex` (the acceptance point 6: add, overlay/sub-pane). */
@@ -425,7 +455,28 @@ export async function updateDrawingStyle(
 		i !== paneIndex ? p : { ...p, drawings: p.drawings.map((d) => (d.id === drawingId ? { ...d, ...patch } : d)) }
 	);
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistAndReload();
+	await persistOnly();
+}
+
+/** Moves a drawing: a new anchor price for a horizontal line, or new
+ * endpoints for a trend line or rectangle. Separate from
+ * `updateDrawingStyle` because the two are edited by different gestures —
+ * dragging a handle versus picking a colour — even though both end in the
+ * same write. */
+export async function updateDrawingGeometry(
+	paneIndex: number,
+	drawingId: string,
+	patch: Partial<Pick<DrawingRuntime, 'price' | 'start' | 'end'>>
+): Promise<void> {
+	const layout = chartWorkspaceStore.layout;
+	if (!layout || !layout.panes[paneIndex]) return;
+	const panes = layout.panes.map((p, i) =>
+		i !== paneIndex
+			? p
+			: { ...p, drawings: p.drawings.map((d) => (d.id === drawingId ? { ...d, ...patch } : d)) }
+	);
+	chartWorkspaceStore.layout = { ...layout, panes };
+	await persistOnly();
 }
 
 /** Deletes one drawing. */

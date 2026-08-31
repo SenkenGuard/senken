@@ -53,7 +53,14 @@ const funnel = new SessionFunnel({
  * finished defining its store yet and throws. Priming from a component's
  * setup instead runs after every module in the cycle is initialised, and
  * still before the first render, so the gate never sees a stale `false`. */
+let primed = false;
 export function primeSessionPresence(): void {
+	// Once. This writes the gate's signal, and the gate's own component reads
+	// it — so a call from a component body runs on every render, and each run
+	// re-renders the component that called it. That is an unbounded effect
+	// loop, and it froze every route, not only the charts.
+	if (primed) return;
+	primed = true;
 	funnel.refreshPresence();
 }
 

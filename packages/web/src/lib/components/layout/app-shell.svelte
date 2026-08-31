@@ -50,8 +50,11 @@
 
 	let { children }: { children: Snippet } = $props();
 
-	// Before the gate below reads it, and after every module in the
-	// `servers`/`session` import cycle has finished initialising.
+	// Read the stored credential once, before the gate below reads it and
+	// after every module in the `servers`/`session` import cycle has
+	// finished initialising. `primeSessionPresence` is itself idempotent —
+	// this line runs on every render of the shell, and priming on each of
+	// them would write the very signal this component reads.
 	primeSessionPresence();
 
 	const isLoginRoute = $derived(page.url.pathname === '/login');

@@ -24,13 +24,30 @@ export interface ChartLike {
 	timeScale(): TimeScaleLike;
 }
 
+/** What a link hands back: a way to re-assert the leader's range, and a
+ * way to take the link down. */
+export interface LinkedTimeScales {
+	/** Runs `apply` — a data update on `b` — with `b`'s own range
+	 * announcements suppressed, then re-asserts `a`'s range on it.
+	 *
+	 * A chart handed a new series settles on a range of its own choosing
+	 * and announces it, and that announcement is indistinguishable from a
+	 * gesture. It is also raised *inside* the data call, so re-asserting
+	 * afterwards is too late — the leader has already been moved, and the
+	 * re-assert then spreads that moved range instead of correcting it.
+	 * The suppression has to span the update itself, which is why this
+	 * takes the update rather than bracketing it. */
+	applyToFollower(apply: () => void): void;
+	/** Unsubscribes both sides — call it once either chart is torn down. */
+	dispose(): void;
+}
+
 /**
  * Mirrors `a`'s and `b`'s visible logical range onto each other, in either
  * direction, so whichever one the user actually drags or zooms leads that
- * one gesture and the other always catches up. Returns a disposer that
- * unsubscribes both sides — call it once either chart is torn down.
+ * one gesture and the other always catches up.
  */
-export function linkTimeScales(a: ChartLike, b: ChartLike): () => void {
+export function linkTimeScales(a: ChartLike, b: ChartLike): LinkedTimeScales {
 	const tsA = a.timeScale();
 	const tsB = b.timeScale();
 	// Shared by both directions, exactly like the reference's one `guard`
@@ -39,19 +56,25 @@ export function linkTimeScales(a: ChartLike, b: ChartLike): () => void {
 	// ignored, so a range change can propagate leader -> follower -> (a
 	// sibling follower, via the leader) without ever bouncing back into
 	// whichever chart the user is actually touching.
-	let guarding = false;
+	// A depth counter rather than a flag: a suppressed data update on the
+	// follower contains its own guarded writes, and a flag would be cleared
+	// by the inner one while the outer suppression is still meant to hold.
+	let depth = 0;
+	const guarded = (write: () => void) => {
+		depth += 1;
+		try {
+			write();
+		} catch {
+			// the target chart may already be mid-teardown.
+		} finally {
+			depth -= 1;
+		}
+	};
 
 	const follow = (target: TimeScaleLike): LogicalRangeChangeEventHandler =>
 		(range) => {
-			if (guarding || !range) return;
-			guarding = true;
-			try {
-				target.setVisibleLogicalRange(range);
-			} catch {
-				// the target chart may already be mid-teardown.
-			} finally {
-				guarding = false;
-			}
+			if (depth > 0 || !range) return;
+			guarded(() => target.setVisibleLogicalRange(range));
 		};
 
 	const onA = follow(tsB);
@@ -59,17 +82,34 @@ export function linkTimeScales(a: ChartLike, b: ChartLike): () => void {
 	tsA.subscribeVisibleLogicalRangeChange(onA);
 	tsB.subscribeVisibleLogicalRangeChange(onB);
 
-	const initial = tsA.getVisibleLogicalRange();
-	if (initial) {
-		try {
-			tsB.setVisibleLogicalRange(initial);
-		} catch {
-			// `b` may not be laid out yet.
-		}
-	}
+	// Guarded, exactly like a mirrored write. Handing `b` the leader's range
+	// makes `b` announce a range change, and an unguarded hand-off lets that
+	// announcement travel back and overwrite the leader — so linking a chart
+	// moved the very chart it was supposed to follow. A sub-pane is linked
+	// while it is still empty, and what an empty chart makes of a logical
+	// range is not the leader's range at all.
+	const push = () => {
+		const range = tsA.getVisibleLogicalRange();
+		if (!range) return;
+		guarded(() => tsB.setVisibleLogicalRange(range));
+	};
+	push();
 
-	return () => {
-		tsA.unsubscribeVisibleLogicalRangeChange(onA);
-		tsB.unsubscribeVisibleLogicalRangeChange(onB);
+	return {
+		applyToFollower: (apply: () => void) => {
+			depth += 1;
+			try {
+				apply();
+			} finally {
+				// Still suppressed while the leader's range is restored, so
+				// the restore cannot echo either; released only after.
+				push();
+				depth -= 1;
+			}
+		},
+		dispose: () => {
+			tsA.unsubscribeVisibleLogicalRangeChange(onA);
+			tsB.unsubscribeVisibleLogicalRangeChange(onB);
+		}
 	};
 }

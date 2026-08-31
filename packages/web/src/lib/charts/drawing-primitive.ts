@@ -113,6 +113,18 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
 		this.requestUpdate = undefined;
 	}
 
+	/** Drawings never widen the price axis.
+	 *
+	 * Auto-fit is about the data: a trend line extended far above the market,
+	 * or a level left at an old price, would otherwise drag the visible range
+	 * out to reach it and squash the candles the reader is actually looking
+	 * at. Returning `null` opts this primitive out of the calculation and
+	 * leaves the range to the bars.
+	 */
+	autoscaleInfo(): null {
+		return null;
+	}
+
 	paneViews(): readonly ISeriesPrimitivePaneView[] {
 		return [this.view];
 	}

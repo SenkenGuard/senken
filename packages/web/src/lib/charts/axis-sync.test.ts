@@ -32,6 +32,13 @@ class FakeTimeScale implements TimeScaleLike {
 		for (const listener of this.listeners) listener(range);
 	}
 
+	/** Moves the range the way the library moves it internally when a chart
+	 * is handed a new series: the range really is somewhere else, and the
+	 * announcement is not something a caller can tell from a gesture. */
+	driftTo(range: LogicalRange): void {
+		this.range = range;
+	}
+
 	subscribeVisibleLogicalRangeChange(handler: LogicalRangeChangeEventHandler): void {
 		this.listeners.push(handler);
 	}
@@ -105,12 +112,66 @@ describe('linkTimeScales — main pane / sub-pane x-axis sync', () => {
 		expect(sub2Scale.setCalls).toBe(1);
 	});
 
+	test('linking a fresh sub-pane never moves the main chart', () => {
+		// A sub-pane is rebuilt whenever its layer is re-created, and a fresh
+		// chart has no data. Linking hands it the main chart's range, and if
+		// that hand-off is not guarded the sub echoes straight back —
+		// whatever an empty chart made of the range becomes the main chart's
+		// scroll position. On screen that reads as the price chart jumping
+		// so its last bar sits at the far left.
+		const main = new FakeChart();
+		main.timeScale().setVisibleLogicalRange(logicalRange(400, 500));
+		const mainScale = main.timeScale();
+		mainScale.setCalls = 0;
+
+		linkTimeScales(main, new FakeChart());
+
+		expect(mainScale.setCalls).toBe(0);
+	});
+
+	test('a sub-pane receiving data never moves the main chart', () => {
+		const main = new FakeChart();
+		const sub = new FakeChart();
+		const link = linkTimeScales(main, sub);
+		main.timeScale().setVisibleLogicalRange(logicalRange(400, 500));
+		const mainScale = main.timeScale();
+		mainScale.setCalls = 0;
+
+		// The library re-anchors a chart when it is handed a new series, and
+		// announces it from *inside* the data call. Suppressing only after
+		// that call returns is too late: the leader has already moved.
+		link.applyToFollower(() => {
+			sub.timeScale().setVisibleLogicalRange(logicalRange(0, 10));
+		});
+
+		expect(mainScale.setCalls).toBe(0);
+		expect(main.timeScale().getVisibleLogicalRange()).toEqual(logicalRange(400, 500));
+		// And the strip ends up back under the price chart, not where the
+		// library left it.
+		expect(sub.timeScale().getVisibleLogicalRange()).toEqual(logicalRange(400, 500));
+	});
+
+	test('a real gesture on a sub-pane still leads, once the update is over', () => {
+		// Suppression must not outlive the data update, or panning an
+		// indicator strip would stop moving the pane.
+		const main = new FakeChart();
+		const sub = new FakeChart();
+		const link = linkTimeScales(main, sub);
+		link.applyToFollower(() => {
+			sub.timeScale().setVisibleLogicalRange(logicalRange(0, 10));
+		});
+
+		sub.timeScale().setVisibleLogicalRange(logicalRange(7, 9));
+
+		expect(main.timeScale().getVisibleLogicalRange()).toEqual(logicalRange(7, 9));
+	});
+
 	test('the disposer stops propagation in both directions', () => {
 		const main = new FakeChart();
 		const sub = new FakeChart();
-		const unlink = linkTimeScales(main, sub);
+		const link = linkTimeScales(main, sub);
 
-		unlink();
+		link.dispose();
 		main.timeScale().setVisibleLogicalRange(logicalRange(0, 100));
 		expect(sub.timeScale().getVisibleLogicalRange()).toBeNull();
 
