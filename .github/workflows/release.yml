@@ -110,7 +110,7 @@ jobs:
           name: web-build
           path: packages/web/build
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: ${{ matrix.target }}
 
