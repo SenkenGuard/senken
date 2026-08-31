@@ -107,7 +107,10 @@ senken-plugin = { workspace = true }
 # defense-in-depth test in `lib.rs`.
 rusqlite = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `test-util` for `#[tokio::test(start_paused = true)]`: the live-feed suite
+# guards every await with a ten-second timeout, and the test that proves that
+# guard fires would otherwise take ten seconds of real time to run.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 # Test-only: drives a real WS handshake against `serve()` for the ticket/
 # query-string tests. Not used by any non-test
 # code, so it stays a dev-dependency here rather than a workspace one used

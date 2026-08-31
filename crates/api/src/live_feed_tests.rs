@@ -11,6 +11,7 @@
 //! covers that half in isolation).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
@@ -29,6 +30,42 @@ use crate::test_support::{
 };
 
 const TEST_SOURCE: &str = "test-venue";
+
+/// How long any single step of these tests may wait before it is a failure.
+///
+/// Every await here is on a loopback socket or an in-process task, so a
+/// second is already generous and ten is beyond argument. The number matters
+/// far less than the fact that there is one: an unbounded `await` turns any
+/// scheduling difference into a hang rather than a failure, and `cargo test`
+/// has no per-test timeout of its own. That is not hypothetical — this suite
+/// hung for over half an hour on a CI runner while passing everywhere else,
+/// and reported nothing about where it stopped.
+const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Awaits `future`, failing with `what` rather than hanging.
+async fn within<F: Future>(what: &str, future: F) -> F::Output {
+    match tokio::time::timeout(STEP_TIMEOUT, future).await {
+        Ok(value) => value,
+        Err(elapsed) => panic!("{elapsed} after {STEP_TIMEOUT:?} waiting for: {what}"),
+    }
+}
+
+/// The guard above is only worth having if it actually fires, so this holds
+/// it to that. `start_paused` advances the clock as soon as the runtime is
+/// idle, which is what keeps a test about a ten-second timeout instant.
+#[tokio::test(start_paused = true)]
+async fn a_step_that_never_completes_fails_instead_of_hanging() {
+    let outcome = tokio::spawn(async {
+        within("a step that never completes", std::future::pending::<()>()).await;
+    })
+    .await;
+
+    let error = outcome.expect_err("a step that never completes must not report success");
+    assert!(
+        error.is_panic(),
+        "the step must fail loudly, not end some other way"
+    );
+}
 
 /// A tiny in-process WebSocket server standing in for a venue — the same
 /// shape `crates/feed/tests/live_engine.rs` already uses for the generic
@@ -257,12 +294,20 @@ async fn a_ws_subscription_streams_ticks_and_releases_on_disconnect() {
         (server, conn, sub)
     });
 
-    let (mut client, _resp) =
-        tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws?ticket={ticket}"))
-            .await
-            .unwrap();
-    // "connected"
-    let _ = client.next().await.unwrap().unwrap();
+    // `Box::pin`: the handshake future is ~20 KB, which `clippy::large_futures`
+    // rightly objects to once it is nested inside a timeout.
+    let (mut client, _resp) = within(
+        "the WebSocket handshake",
+        Box::pin(tokio_tungstenite::connect_async(format!(
+            "ws://{addr}/api/ws?ticket={ticket}"
+        ))),
+    )
+    .await
+    .unwrap();
+    let _ = within("the `connected` frame", client.next())
+        .await
+        .unwrap()
+        .unwrap();
 
     client
         .send(WsMessage::text(
@@ -271,19 +316,35 @@ async fn a_ws_subscription_streams_ticks_and_releases_on_disconnect() {
         .await
         .unwrap();
     // "subscribed" ack, sent before the lease necessarily completes.
-    let ack: serde_json::Value =
-        serde_json::from_str(client.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    let ack: serde_json::Value = serde_json::from_str(
+        within("the `subscribed` ack", client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(ack["type"], "subscribed");
 
-    let (server, mut conn, sub) = server_task.await.unwrap();
+    let (server, mut conn, sub) = within("the fake venue to accept and receive SUB", server_task)
+        .await
+        .unwrap();
     assert_eq!(
         sub, "SUB BTCUSDT",
         "the WS subscribe must have leased the pool, dialling the fake venue"
     );
 
     conn.send_text("PRICE BTCUSDT 78146 2 1000").await;
-    let price: serde_json::Value =
-        serde_json::from_str(client.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    let price: serde_json::Value = serde_json::from_str(
+        within("the price frame to reach the client", client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(price["type"], "price");
     assert_eq!(price["topic"], "test-venue:BTCUSDT");
     assert_eq!(price["price"], 78146);
