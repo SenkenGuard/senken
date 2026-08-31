@@ -114,6 +114,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # `rust-toolchain.toml` pins `channel = "1.97"`, and rustup keeps that
+      # as a *different* toolchain from the `1.97.0` the action installs —
+      # they have independent target sets. So the target the action added
+      # above belongs to a toolchain cargo will not use, and a cross build
+      # fails with "can't find crate for `std`". Adding it here, from inside
+      # the repository, adds it to whichever toolchain the file actually
+      # selects. Native builds never noticed, because their target is the
+      # host's and is always present.
+      - name: Add the build target to the toolchain this repository selects
+        run: rustup target add ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
