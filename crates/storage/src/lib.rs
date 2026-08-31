@@ -123,7 +123,15 @@ impl Storage {
 
     fn resolve(&self, rel: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
         let rel = rel.as_ref();
-        if rel.is_absolute() {
+        // `has_root`, not `is_absolute`. On Windows a path is absolute only
+        // with a prefix *and* a root, so `/etc/passwd` is not absolute
+        // there — yet `Path::join` still "replaces everything except for the
+        // prefix (if any) of self" for a rooted path, landing the result at
+        // `C:\etc\passwd`, outside the data directory. `has_root` is exactly
+        // the predicate for "joining this discards my base", which is the
+        // question this guard is actually asking, and it agrees with
+        // `is_absolute` on Unix.
+        if rel.has_root() {
             return Err(StorageError::NotRelative(rel.to_path_buf()));
         }
         if rel
@@ -470,6 +478,41 @@ mod tests {
             s.read_json::<Sample>("ok/../../escape.json").unwrap_err(),
             StorageError::Escapes(_)
         ));
+    }
+
+    /// The property the guard above exists for, asserted directly rather
+    /// than through one platform's spelling of it: whatever `resolve`
+    /// returns must be inside the data directory.
+    ///
+    /// The test above is written in terms of *which error* each input
+    /// produces, which made it silently platform-specific — `/etc/passwd`
+    /// is not absolute on Windows, so it escaped there while the Unix
+    /// assertions kept passing. This one holds on every platform because it
+    /// checks the outcome instead: a hostile input is either rejected, or
+    /// it resolves somewhere it is allowed to be. Inputs that are merely
+    /// odd filenames on one platform and rooted paths on another satisfy it
+    /// either way.
+    #[test]
+    fn no_input_ever_resolves_outside_the_data_dir() {
+        let (_dir, s) = temp_storage();
+        for hostile in [
+            "/etc/passwd",
+            "\\windows\\system32\\config\\sam",
+            "../escape.json",
+            "ok/../../escape.json",
+            "C:/Windows/system.ini",
+            "//server/share/file",
+        ] {
+            match s.resolve(hostile) {
+                Err(_) => {}
+                Ok(resolved) => assert!(
+                    resolved.starts_with(s.data_dir()),
+                    "{hostile:?} resolved to {}, outside {}",
+                    resolved.display(),
+                    s.data_dir().display()
+                ),
+            }
+        }
     }
 
     #[test]
