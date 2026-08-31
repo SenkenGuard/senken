@@ -3,6 +3,8 @@
 > **Fast AF research, zero nonsense.**
 > Your ultimate trading research terminal buddy.
 
+![The Senken charts page: OKX BTC/USDT at one minute, with an EMA overlay and an RSI sub-pane](docs/preview-charts.png)
+
 A modular market data and trading research platform in Rust.
 
 Senken is a monorepo built around one rule: **every domain crate stands on its
