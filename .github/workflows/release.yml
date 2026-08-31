@@ -105,7 +105,7 @@ jobs:
       # since `rust-embed` reads this directory at compile
       # time for a release build.
       - name: Download web assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-build
           path: packages/web/build
@@ -167,7 +167,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download every platform's binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: "senken-*"
