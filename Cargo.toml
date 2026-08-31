@@ -3,7 +3,7 @@ resolver = "3"
 members = ["apps/*", "crates/*", "plugins/*"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 rust-version = "1.97.0"
 license = "LGPL-3.0-only"
@@ -23,53 +23,53 @@ keywords = [
 [workspace.dependencies]
 # Internal crates. `crates/*` are usable on their own; `plugins/*` and
 # `crates/runtime` exist to assemble them into the Senken application.
-senken-acl = { path = "crates/acl", version = "0.0.1" }
-senken-alerts = { path = "crates/alerts", version = "0.0.1" }
-senken-core = { path = "crates/core", version = "0.0.1" }
-senken-identity = { path = "crates/identity", version = "0.0.1" }
-senken-indicators = { path = "crates/indicators", version = "0.0.1" }
-senken-marketdata = { path = "crates/marketdata", version = "0.0.1" }
+senken-acl = { path = "crates/acl", version = "0.0.2" }
+senken-alerts = { path = "crates/alerts", version = "0.0.2" }
+senken-core = { path = "crates/core", version = "0.0.2" }
+senken-identity = { path = "crates/identity", version = "0.0.2" }
+senken-indicators = { path = "crates/indicators", version = "0.0.2" }
+senken-marketdata = { path = "crates/marketdata", version = "0.0.2" }
 # Lean by default inside this workspace: only the venue plugins ask for
 # `features = ["http"]`. External users get the HTTP client by default.
-senken-plugin = { path = "crates/plugin", version = "0.0.1", default-features = false }
-senken-plugin-bingx = { path = "plugins/bingx", version = "0.0.1" }
-senken-plugin-bitfinex = { path = "plugins/bitfinex", version = "0.0.1" }
-senken-plugin-bitmart = { path = "plugins/bitmart", version = "0.0.1" }
-senken-plugin-htx = { path = "plugins/htx", version = "0.0.1" }
-senken-plugin-phemex = { path = "plugins/phemex", version = "0.0.1" }
-senken-plugin-upbit = { path = "plugins/upbit", version = "0.0.1" }
-senken-plugin-binance = { path = "plugins/binance", version = "0.0.1" }
-senken-plugin-bitget = { path = "plugins/bitget", version = "0.0.1" }
-senken-plugin-bitmex = { path = "plugins/bitmex", version = "0.0.1" }
-senken-plugin-bitstamp = { path = "plugins/bitstamp", version = "0.0.1" }
-senken-plugin-bybit = { path = "plugins/bybit", version = "0.0.1" }
-senken-plugin-coinbase = { path = "plugins/coinbase", version = "0.0.1" }
-senken-plugin-cryptocom = { path = "plugins/cryptocom", version = "0.0.1" }
-senken-plugin-deribit = { path = "plugins/deribit", version = "0.0.1" }
-senken-plugin-gate = { path = "plugins/gate", version = "0.0.1" }
-senken-plugin-gemini = { path = "plugins/gemini", version = "0.0.1" }
-senken-plugin-kraken = { path = "plugins/kraken", version = "0.0.1" }
-senken-plugin-kucoin = { path = "plugins/kucoin", version = "0.0.1" }
-senken-plugin-mexc = { path = "plugins/mexc", version = "0.0.1" }
-senken-plugin-okx = { path = "plugins/okx", version = "0.0.1" }
-senken-plugin-poloniex = { path = "plugins/poloniex", version = "0.0.1" }
-senken-plugin-whitebit = { path = "plugins/whitebit", version = "0.0.1" }
-senken-loader = { path = "crates/loader", version = "0.0.1" }
-senken-runtime = { path = "crates/runtime", version = "0.0.1" }
-senken-series = { path = "crates/series", version = "0.0.1" }
-senken-storage = { path = "crates/storage", version = "0.0.1" }
-senken-store = { path = "crates/store", version = "0.0.1" }
-senken-subscription = { path = "crates/subscription", version = "0.0.1" }
+senken-plugin = { path = "crates/plugin", version = "0.0.2", default-features = false }
+senken-plugin-bingx = { path = "plugins/bingx", version = "0.0.2" }
+senken-plugin-bitfinex = { path = "plugins/bitfinex", version = "0.0.2" }
+senken-plugin-bitmart = { path = "plugins/bitmart", version = "0.0.2" }
+senken-plugin-htx = { path = "plugins/htx", version = "0.0.2" }
+senken-plugin-phemex = { path = "plugins/phemex", version = "0.0.2" }
+senken-plugin-upbit = { path = "plugins/upbit", version = "0.0.2" }
+senken-plugin-binance = { path = "plugins/binance", version = "0.0.2" }
+senken-plugin-bitget = { path = "plugins/bitget", version = "0.0.2" }
+senken-plugin-bitmex = { path = "plugins/bitmex", version = "0.0.2" }
+senken-plugin-bitstamp = { path = "plugins/bitstamp", version = "0.0.2" }
+senken-plugin-bybit = { path = "plugins/bybit", version = "0.0.2" }
+senken-plugin-coinbase = { path = "plugins/coinbase", version = "0.0.2" }
+senken-plugin-cryptocom = { path = "plugins/cryptocom", version = "0.0.2" }
+senken-plugin-deribit = { path = "plugins/deribit", version = "0.0.2" }
+senken-plugin-gate = { path = "plugins/gate", version = "0.0.2" }
+senken-plugin-gemini = { path = "plugins/gemini", version = "0.0.2" }
+senken-plugin-kraken = { path = "plugins/kraken", version = "0.0.2" }
+senken-plugin-kucoin = { path = "plugins/kucoin", version = "0.0.2" }
+senken-plugin-mexc = { path = "plugins/mexc", version = "0.0.2" }
+senken-plugin-okx = { path = "plugins/okx", version = "0.0.2" }
+senken-plugin-poloniex = { path = "plugins/poloniex", version = "0.0.2" }
+senken-plugin-whitebit = { path = "plugins/whitebit", version = "0.0.2" }
+senken-loader = { path = "crates/loader", version = "0.0.2" }
+senken-runtime = { path = "crates/runtime", version = "0.0.2" }
+senken-series = { path = "crates/series", version = "0.0.2" }
+senken-storage = { path = "crates/storage", version = "0.0.2" }
+senken-store = { path = "crates/store", version = "0.0.2" }
+senken-subscription = { path = "crates/subscription", version = "0.0.2" }
 # The venue half of implements `senken-subscription`'s
 # `VenueConnection`/`VenueConnector` ports against a real venue WebSocket.
-senken-feed = { path = "crates/feed", version = "0.0.1" }
-senken-venue = { path = "crates/venue", version = "0.0.1" }
-senken-workspace = { path = "crates/workspace", version = "0.0.1" }
+senken-feed = { path = "crates/feed", version = "0.0.2" }
+senken-venue = { path = "crates/venue", version = "0.0.2" }
+senken-workspace = { path = "crates/workspace", version = "0.0.2" }
 # `apps/senken` is the single binary; `apps/cli` holds the market-data
 # subcommands as a library so it can be reused without duplicating them
 #.
-senken-cli = { path = "apps/cli", version = "0.0.1" }
-senken-api = { path = "crates/api", version = "0.0.1" }
+senken-cli = { path = "apps/cli", version = "0.0.2" }
+senken-api = { path = "crates/api", version = "0.0.2" }
 
 # External. Features are kept minimal here; each crate enables what it needs
 # so a library consumer never inherits a runtime it did not ask for.
