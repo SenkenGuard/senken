@@ -1,0 +1,62 @@
+# The repository's labels, as data.
+#
+# GitHub has no native support for declaring labels in a file, and every
+# published solution is a third-party action. `.github/workflows/labels.yml`
+# applies this file with `gh label create --force` instead — a few lines of
+# shell, rather than handing an outside action `issues: write` on a
+# repository whose own workflows can publish releases.
+#
+# Adding a label here and merging applies it. Removing one from this file
+# does *not* delete it on GitHub: deleting a label strips it from every issue
+# that carried it, which is a loss no automation should perform silently.
+
+# --- What kind of thing is this ---
+- name: bug
+  color: d73a4a
+  description: Behaves differently from what it says it does
+- name: enhancement
+  color: a2eeef
+  description: Something Senken should be able to do and cannot
+- name: documentation
+  color: 0075ca
+  description: Docs, comments, or the README
+- name: security
+  color: b60205
+  description: Authentication, authorisation, credentials, or data escaping its bounds
+- name: performance
+  color: fbca04
+  description: Correct but slower or heavier than it should be
+
+# --- Where it lives ---
+- name: venue
+  color: 5319e7
+  description: A venue adapter, or a capability one venue is missing
+- name: area:charts
+  color: c5def5
+  description: Chart panes, indicators, drawing objects
+- name: area:market-data
+  color: c5def5
+  description: Instruments, bars, the loader, the store
+- name: area:api
+  color: c5def5
+  description: HTTP surface, WebSocket, authorisation over the wire
+- name: area:web
+  color: c5def5
+  description: The SvelteKit app
+- name: area:ci
+  color: c5def5
+  description: Workflows, the release path, tooling
+
+# --- What it needs from us ---
+- name: good first issue
+  color: 7057ff
+  description: Small, self-contained, and a good way in
+- name: help wanted
+  color: 008672
+  description: We would welcome someone picking this up
+- name: needs recorded response
+  color: e99695
+  description: Blocked until a real venue response is attached, not one copied from the docs
+- name: breaking change
+  color: d93f0b
+  description: Changes a stored format, a public API, or behaviour someone depends on

@@ -1,0 +1,42 @@
+name: Labels
+
+# Runs only when the label list itself changes, and on demand. `gh label
+# create --force` is create-or-update, so re-running this is safe and
+# idempotent.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yml
+      - .github/workflows/labels.yml
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: apply .github/labels.yml
+    runs-on: ubuntu-latest
+    permissions:
+      # The only permission this needs. Labels live on the issues API.
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # `yq` and `gh` are both present on GitHub-hosted runners, and the
+      # JSON hop keeps the shell out of the business of parsing YAML.
+      # Labels are never deleted here — see `.github/labels.yml`.
+      - name: Sync
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          yq -o=json '.' .github/labels.yml > /tmp/labels.json
+          python3 - <<'PY' > /tmp/labels.tsv
+          import json
+          for label in json.load(open("/tmp/labels.json")):
+              print("\t".join([label["name"], label["color"], label.get("description", "")]))
+          PY
+          while IFS=$'\t' read -r name color description; do
+            echo "::group::$name"
+            gh label create "$name" --color "$color" --description "$description" --force
+            echo "::endgroup::"
+          done < /tmp/labels.tsv
