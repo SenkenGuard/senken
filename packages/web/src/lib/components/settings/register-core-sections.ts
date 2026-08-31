@@ -13,6 +13,7 @@ import PaletteIcon from '@lucide/svelte/icons/palette';
 import ServerIcon from '@lucide/svelte/icons/server';
 import PuzzleIcon from '@lucide/svelte/icons/puzzle';
 import ShieldIcon from '@lucide/svelte/icons/shield';
+import InfoIcon from '@lucide/svelte/icons/info';
 
 import { registerSettingsSection } from '$lib/state/settings-registry.svelte';
 
@@ -21,6 +22,7 @@ import AppearanceSection, { searchIndex as appearanceSearchIndex } from './secti
 import ConnectionSection, { searchIndex as connectionSearchIndex } from './sections/connection-section.svelte';
 import PluginsSection, { searchIndex as pluginsSearchIndex } from './sections/plugins-section.svelte';
 import AccessSection, { searchIndex as accessSearchIndex } from './sections/access-section.svelte';
+import AboutSection, { searchIndex as aboutSearchIndex } from './sections/about-section.svelte';
 
 registerSettingsSection({
 	id: 'account',
@@ -66,4 +68,14 @@ registerSettingsSection({
 	searchIndex: accessSearchIndex,
 	adminOnly: true,
 	order: 50
+});
+
+// Last in the nav, where an About pane conventionally sits.
+registerSettingsSection({
+	id: 'about',
+	label: 'About',
+	icon: InfoIcon,
+	component: AboutSection,
+	searchIndex: aboutSearchIndex,
+	order: 60
 });
