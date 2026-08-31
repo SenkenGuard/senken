@@ -26,7 +26,7 @@ jobs:
     name: tag matches the workspace version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # One parser, shared with the local release script, rather than a
       # second one written in YAML that can drift away from it.
       - name: Compare the tag against Cargo.toml
@@ -48,7 +48,7 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install bun
         uses: oven-sh/setup-bun@v2
@@ -99,7 +99,7 @@ jobs:
             features: web
             no-default-features: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Populates `packages/web/build` before the Rust build — required ordering
       # since `rust-embed` reads this directory at compile
@@ -162,7 +162,7 @@ jobs:
       # `fetch-depth: 0` because the notes below are rendered from the commit
       # history between this tag and the previous one; a shallow clone has
       # neither.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

@@ -19,7 +19,7 @@ jobs:
       # The only permission this needs. Labels live on the issues API.
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `yq` and `gh` are both present on GitHub-hosted runners, and the
       # JSON hop keeps the shell out of the business of parsing YAML.
