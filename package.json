@@ -6,13 +6,13 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -k -n web,server -c cyan,green \"bun run --filter web dev\" \"cargo run --bin senken -- serve --port 4190\"",
-    "dev:gui": "concurrently -k -n web,gui -c cyan,magenta \"bun run --filter web dev\" \"cargo run --features gui --bin senken -- gui --port 4190 --ui http://localhost:5173\"",
+    "dev": "concurrently -k -n web,server -c cyan,green \"bun run --filter web dev\" \"cargo run --bin senken -- serve --port 4190 --data-dir .data\"",
+    "dev:gui": "concurrently -k -n web,gui -c cyan,magenta \"bun run --filter web dev\" \"cargo run --features gui --bin senken -- gui --port 4190 --data-dir .data --ui http://localhost:5173\"",
     "build:web": "bun run --filter web build && touch packages/web/build/.gitkeep",
     "build": "bun run build:web && cargo build --release --bin senken",
     "build:gui": "bun run build:web && cargo build --release --features gui --bin senken",
-    "serve": "bun run build:web && cargo run --bin senken -- serve --port 4190",
-    "gui": "bun run build:web && cargo run --features gui --bin senken -- gui --port 4190",
+    "serve": "bun run build:web && cargo run --bin senken -- serve --port 4190 --data-dir .data",
+    "gui": "bun run build:web && cargo run --features gui --bin senken -- gui --port 4190 --data-dir .data",
     "check": "bun run --filter web check && cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "test": "cargo test --workspace"
   },

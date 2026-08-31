@@ -28,6 +28,7 @@ gui = ["dep:tauri", "dep:tauri-build", "web"]
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+dirs = { workspace = true }
 senken-api = { workspace = true }
 senken-cli = { workspace = true }
 senken-identity = { workspace = true }

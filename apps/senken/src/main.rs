@@ -33,11 +33,42 @@ struct Cli {
     verbose: u8,
 
     /// Where cached data lives.
-    #[arg(long, global = true, env = "SENKEN_DATA_DIR", default_value = DEFAULT_DATA_DIR)]
+    #[arg(long, global = true, env = "SENKEN_DATA_DIR", default_value_os_t = default_data_dir())]
     data_dir: PathBuf,
 
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+/// Where this user's Senken data lives when `--data-dir` and
+/// `SENKEN_DATA_DIR` are both unset.
+///
+/// A distributed binary must not keep its database beside whatever directory
+/// the user happened to be in when they ran it: doing that gives one person
+/// several unrelated installations depending on their shell's history, and
+/// none of them where any backup or uninstall would look.
+///
+/// | Platform | Directory |
+/// |---|---|
+/// | Linux | `$XDG_DATA_HOME/senken`, else `~/.local/share/senken` |
+/// | macOS | `~/Library/Application Support/senken` |
+/// | Windows | `%LOCALAPPDATA%\senken` |
+///
+/// This is the *local* application-data directory, not the roaming one. On
+/// Windows the roaming directory is synchronised between machines when a
+/// user signs in, and this holds a Parquet market-data cache that can reach
+/// gigabytes — copying it over a network at login would be a fault, not a
+/// feature. It is also data rather than configuration, which is why Linux
+/// lands on `~/.local/share` rather than `~/.config`.
+///
+/// Falls back to [`DEFAULT_DATA_DIR`] — a relative `.data` — when no home
+/// directory can be determined at all, which is the ordinary case inside a
+/// scratch container.
+fn default_data_dir() -> PathBuf {
+    dirs::data_local_dir().map_or_else(
+        || PathBuf::from(DEFAULT_DATA_DIR),
+        |base| base.join("senken"),
+    )
 }
 
 #[derive(Debug, Subcommand)]

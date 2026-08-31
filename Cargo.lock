@@ -4104,6 +4104,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs",
  "senken-api",
  "senken-cli",
  "senken-identity",
