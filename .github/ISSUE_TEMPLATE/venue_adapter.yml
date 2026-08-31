@@ -1,0 +1,61 @@
+name: Venue adapter or capability
+description: Add a venue, or add bars / quotes / order book to one that exists.
+labels: ["venue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Venue facts in this project are never written from memory of a
+        venue's documentation — documentation goes stale, and a wrong rate
+        limit or row cap loses data with no error. Every adapter's test data
+        is a real recorded response.
+
+  - type: input
+    id: venue
+    attributes:
+      label: Venue
+      placeholder: "Coinbase Advanced Trade"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: capability
+    attributes:
+      label: What is missing
+      options:
+        - Instruments (the venue is not listed at all)
+        - Bars / klines
+        - Live trades
+        - Quotes (bid/ask)
+        - Order book depth
+    validations:
+      required: true
+
+  - type: input
+    id: endpoint
+    attributes:
+      label: Endpoint or channel
+      placeholder: "GET /api/v3/brokerage/products, or wss://... channel `ticker`"
+    validations:
+      required: true
+
+  - type: textarea
+    id: response
+    attributes:
+      label: A real response
+      description: >
+        Paste an actual response you received, not an example from the docs.
+        Trim it to a few entries. This becomes the fixture the adapter is
+        tested against.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: quirks
+    attributes:
+      label: Anything unusual
+      description: >
+        Row caps, pagination direction, a field whose unit differs from its
+        neighbours, a precision written as a count rather than an increment.
+        These are the things that cost the most when they are found late.

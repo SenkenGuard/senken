@@ -1,0 +1,35 @@
+name: Feature request
+description: Something Senken should be able to do and cannot.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and where does it stop working today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: How other platforms do it
+      description: >
+        A screenshot or a link to how TradingView, MetaTrader or another
+        platform handles this is genuinely useful — it saves a round of
+        guessing about what the behaviour should be.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This needs data from a venue that Senken does not currently request
+        - label: This changes something already stored (a layout, an alert, a saved series)

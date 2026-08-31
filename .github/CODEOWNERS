@@ -1,0 +1,14 @@
+# Default owner for everything.
+*                       @viandwi24
+
+# Areas where a mistake is expensive and a second pair of eyes is worth the
+# delay: authorisation, identity, and anything that decides what one user can
+# see of another's.
+/crates/acl/            @viandwi24
+/crates/identity/       @viandwi24
+/crates/api/            @viandwi24
+
+# The release path, and the workflows that hold write access to it.
+/.github/workflows/     @viandwi24
+/scripts/               @viandwi24
+/cliff.toml             @viandwi24

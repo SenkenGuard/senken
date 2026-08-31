@@ -1,0 +1,76 @@
+name: Bug report
+description: Something behaves differently from what it says it does.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a security problem, please close this and use
+        [private reporting](https://github.com/SenkenGuard/senken/security/advisories/new)
+        instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what you saw instead of what you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Settings → About, or `senken --version`."
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options:
+        - Charts
+        - Market data / instrument search
+        - Alerts
+        - Settings, users or permissions
+        - CLI
+        - Server / API
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: instrument
+    attributes:
+      label: Venue and instrument
+      description: Only if the problem involves market data. The venue's own symbol, please.
+      placeholder: "okx-spot:BTCUSDT, 1h"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Run with `-vv` and paste the relevant part. Remove anything that identifies you."
+      render: text
