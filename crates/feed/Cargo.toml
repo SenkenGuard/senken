@@ -1,0 +1,53 @@
+[package]
+name = "senken-feed"
+description = "Implements senken-subscription's VenueConnection/VenueConnector ports against a real venue WebSocket, sharing a venue's senken-venue rate budget"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `UnixNanos` timestamps every decoded `PriceUpdate`; `decimal_places`/
+# `parse_scaled` turn a venue's own decimal-string price into a scaled
+# integer at the precision the string itself carries — never
+# `f64` (the workspace-wide ban covers prices; only indicator values are
+# exempt, and this is neither).
+senken-core = { workspace = true }
+# `InstrumentId` (the lease key) and `normalise_symbol` — the exact helper
+# `senken-venue`'s own instrument adapters use to turn a venue-native symbol
+# into Senken's cross-venue form, reused here for the same translation in
+# the opposite direction (parsing an inbound message back into an
+# `InstrumentId`).
+senken-marketdata = { workspace = true }
+# The ports this crate implements (`VenueConnection`/`VenueConnector`), the
+# pool this crate publishes decoded prices into, and `PriceUpdate` itself.
+senken-subscription = { workspace = true }
+# `LimitGroup::acquire_for_connect` and `full_jitter`: a venue's live-price
+# socket shares the exact IP-level budget its REST catalog/kline traffic
+# already draws from, rather than an unbudgeted side channel.
+senken-venue = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `rt`/`sync`/`time` for the background read/reconnect task and its backoff
+# sleep; `macros` for `tokio::select!` in the connection's run loop. No
+# runtime flavour is forced on a caller.
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The fake venue server the required tests dial instead of a real one
+# (the constraint: "everything else must be testable against a
+# fake"). `net` for `TcpListener`, `macros`/`rt-multi-thread` to run async
+# tests.
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }

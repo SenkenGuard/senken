@@ -1,0 +1,138 @@
+//! The `OpenAPI` document.
+//! 006 S1 for workspaces/bars/indicators/alerts).
+//!
+//! `utoipa` derives this from the same `serde` structs and handler
+//! signatures the router actually uses (`crate::dto` plus every handler
+//! module), so a field renamed in Rust breaks `openapi-typescript`'s
+//! generated TypeScript rather than failing silently at runtime — the
+//! property required here, and exactly what the web client needs to
+//! regenerate the browser's types against this stage's new surface.
+//! Served at `GET /api/openapi.json` (`EndpointPermission::Public`: the
+//! document itself carries no account data) for `openapi-typescript` to
+//! read from a running server.
+
+use utoipa::OpenApi;
+
+use crate::dto::{
+    AlertDto, AlertsPage, AssignRoleRequest, BarDto, BarJobDto, BarRangeResponse,
+    BarsRequirementDto, ComputeIndicatorRequest, ComputeIndicatorResponse, ConditionDto,
+    CreateAlertRequest, CreateRoleRequest, CreateUserRequest, CreateWorkspaceRequest,
+    DefaultWorkspaceResponse, EnsureBarsRequest, EnsureBarsResponse, ErrorBody, GrantDto,
+    IdResponse, IndicatorCatalogEntry, IndicatorFieldValue, IndicatorPointDto, IndicatorSpecDto,
+    InstrumentSummaryDto, InstrumentsPage, LayerDto, LayerInputDto, LayerKindDto, LayoutDetailDto,
+    LayoutSummaryDto, LoginRequest, LoginResponse, MeResponse, PaneDto, PaneInputDto,
+    PluginGrantRequest, ProvisionalBarDto, RenameWorkspaceRequest, ReplaceLayoutRequest,
+    RoleSummaryDto, RolesPage, SetPasswordRequest, SourceCapabilityDto, SourcesResponse,
+    TimeRangeDto, UserSummaryDto, UsersPage, WorkspaceDto, WorkspacesPage, WsTicketResponse,
+};
+use crate::{
+    Health, admin_handlers, alert_handlers, bars_handlers, identity_handlers, indicator_handlers,
+    instrument_handlers, source_handlers, workspace_handlers, ws,
+};
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Senken API",
+        description = "Authentication, access control, workspaces, market data, indicators and alerts."
+    ),
+    paths(
+        crate::health,
+        identity_handlers::login,
+        identity_handlers::logout,
+        identity_handlers::set_password,
+        identity_handlers::me,
+        ws::issue_ticket,
+        admin_handlers::list_users,
+        admin_handlers::create_user,
+        admin_handlers::list_roles,
+        admin_handlers::create_role,
+        admin_handlers::assign_role,
+        admin_handlers::grant_direct,
+        admin_handlers::revoke_direct,
+        admin_handlers::grant_plugin_permission_to_user,
+        admin_handlers::revoke_plugin_permission_from_user,
+        admin_handlers::grant_plugin_permission_to_role,
+        admin_handlers::revoke_plugin_permission_from_role,
+        workspace_handlers::list_workspaces,
+        workspace_handlers::create_workspace,
+        workspace_handlers::default_workspace,
+        workspace_handlers::rename_workspace,
+        workspace_handlers::delete_workspace,
+        workspace_handlers::list_layouts,
+        workspace_handlers::get_layout,
+        workspace_handlers::replace_layout,
+        bars_handlers::plan_bars,
+        bars_handlers::range_bars,
+        bars_handlers::ensure_bars,
+        bars_handlers::bar_job_status,
+        indicator_handlers::list_indicators,
+        indicator_handlers::compute_indicator,
+        alert_handlers::list_alerts,
+        alert_handlers::get_alert,
+        alert_handlers::create_alert,
+        alert_handlers::delete_alert,
+        instrument_handlers::search_instruments,
+        source_handlers::list_sources,
+    ),
+    components(schemas(
+        Health,
+        LoginRequest,
+        LoginResponse,
+        SetPasswordRequest,
+        MeResponse,
+        WsTicketResponse,
+        ErrorBody,
+        GrantDto,
+        IdResponse,
+        UserSummaryDto,
+        UsersPage,
+        RoleSummaryDto,
+        RolesPage,
+        CreateUserRequest,
+        CreateRoleRequest,
+        AssignRoleRequest,
+        PluginGrantRequest,
+        WorkspaceDto,
+        WorkspacesPage,
+        CreateWorkspaceRequest,
+        RenameWorkspaceRequest,
+        DefaultWorkspaceResponse,
+        LayoutSummaryDto,
+        LayoutDetailDto,
+        PaneDto,
+        PaneInputDto,
+        LayerDto,
+        LayerInputDto,
+        LayerKindDto,
+        ReplaceLayoutRequest,
+        TimeRangeDto,
+        BarsRequirementDto,
+        BarDto,
+        BarRangeResponse,
+        EnsureBarsRequest,
+        EnsureBarsResponse,
+        BarJobDto,
+        IndicatorCatalogEntry,
+        IndicatorSpecDto,
+        ComputeIndicatorRequest,
+        IndicatorFieldValue,
+        IndicatorPointDto,
+        ComputeIndicatorResponse,
+        ConditionDto,
+        AlertDto,
+        AlertsPage,
+        CreateAlertRequest,
+        InstrumentSummaryDto,
+        ProvisionalBarDto,
+        SourceCapabilityDto,
+        SourcesResponse,
+        InstrumentsPage,
+    ))
+)]
+pub(crate) struct ApiDoc;
+
+/// `GET /api/openapi.json`.
+pub(crate) async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
+    axum::Json(ApiDoc::openapi())
+}

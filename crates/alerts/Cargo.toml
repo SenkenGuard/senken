@@ -1,0 +1,53 @@
+[package]
+name = "senken-alerts"
+description = "Standalone price/indicator alerts: (series key, indicator spec, condition) rows that lease the series themselves and outlive any chart"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+senken-acl = { workspace = true }
+# `UnixNanos` — a bucket's start, carried on `TickBarBuilder`'s internal
+# state. Not re-exported by `senken-series` itself, so this crate names it
+# directly, the same way `senken-subscription` already does for
+# `PriceUpdate::ts`.
+senken-core = { workspace = true }
+senken-identity = { workspace = true }
+senken-indicators = { workspace = true }
+# `InstrumentId` is an alert's lease key, reused rather than
+# re-declared — the same reasoning `senken-subscription` and `senken-workspace`
+# already document for their own copies of it.
+senken-marketdata = { workspace = true }
+# `Bar`/`BarSpec`/`Clock`/`bucket_start` — an alert's series identity and the
+# bucketing rule `TickBarBuilder` uses to fold live ticks into closed bars the
+# same way `senken_series::Aggregator` folds finer bars into coarser ones.
+senken-series = { workspace = true }
+# The pool an alert leases its series from, and `PriceUpdate`,
+# the tick `TickBarBuilder` folds into bars.
+senken-subscription = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+# `watch` (an `AlertRunner`'s own lease's price-update channel) and `rt`
+# (`AlertEngine` spawns one task per running alert, independent
+# of any chart or HTTP request).
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

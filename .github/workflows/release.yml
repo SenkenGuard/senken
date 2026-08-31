@@ -1,0 +1,145 @@
+name: Release
+
+# Tags only — this must never run on an ordinary push or a
+# pull request. Actually publishing a release is triggered by pushing a
+# `v*` tag, which is the maintainer's decision, not this workflow's.
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Built once and shared with every platform job below: the
+  # SvelteKit build output is platform-independent, and every target must
+  # see it before its `cargo build --release`, or `rust-embed` embeds
+  # nothing.
+  web:
+    name: build web assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned to the exact version this plan was verified against
+          # rather than "latest", for a reproducible release build.
+          bun-version: "1.3.14"
+
+      # Bun workspaces keep one lockfile at the repository root and hoist
+      # `node_modules` there, so both steps run from the root rather than
+      # from inside the package.
+      - name: Install web dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build web assets
+        run: bun run build:web
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: packages/web/build
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: web
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            features: gui
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            features: gui
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            features: gui
+            bin-ext: ".exe"
+          # The Linux release artifact is the "server/Docker build": no
+          # `gui`, since Tauri on Linux links WebKitGTK (concept
+          # doc §6; D1's `cargo check --no-default-features --features web`
+          # is exactly this configuration).
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            features: web
+            no-default-features: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # Populates `packages/web/build` before the Rust build — required ordering
+      # since `rust-embed` reads this directory at compile
+      # time for a release build.
+      - name: Download web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: packages/web/build
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.no-default-features }}" = "true" ]; then
+            cargo build --release --locked -p senken-app \
+              --target ${{ matrix.target }} \
+              --no-default-features --features ${{ matrix.features }}
+          else
+            cargo build --release --locked -p senken-app \
+              --target ${{ matrix.target }} \
+              --features ${{ matrix.features }}
+          fi
+
+      - name: Stage the raw binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/senken${{ matrix.bin-ext }}" \
+             "dist/senken-${{ matrix.target }}${{ matrix.bin-ext }}"
+
+      # Packaged bundles (.dmg/.msi/.deb/.AppImage) are
+      # deliberately not produced here. `cargo tauri build`'s bundler needs
+      # real signing/notarization on macOS (Part C8) and untested
+      # AppImage/deb packaging on Linux; shipping a bundler step we could
+      # not verify from this environment is worse than shipping the raw,
+      # verified binary. Part C explicitly anticipates this: "may need to
+      # be reduced to what actually builds." Bundling is a follow-up once
+      # someone can test it on the real targets.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: senken-${{ matrix.target }}
+          path: dist/senken-${{ matrix.target }}${{ matrix.bin-ext }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download every platform's binary
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "senken-*"
+          merge-multiple: true
+
+      - name: Publish to the GitHub Release for this tag
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

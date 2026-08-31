@@ -1,0 +1,46 @@
+[package]
+name = "senken-app"
+description = "Senken: one binary for the CLI, the server and the desktop shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[[bin]]
+name = "senken"
+path = "src/main.rs"
+
+[features]
+# `gui` is deliberately not defaulted: with it defaulted, `cargo check`/
+# `cargo clippy --all-features` on a Linux CI runner would pull in Tauri,
+# which needs WebKitGTK —. Server/Docker builds use
+# `--no-default-features --features web`.
+default = ["web"]
+web = ["senken-api/web"]
+# `gui` implies `web`: the Tauri window has nothing to display otherwise.
+gui = ["dep:tauri", "dep:tauri-build", "web"]
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+senken-api = { workspace = true }
+senken-cli = { workspace = true }
+senken-identity = { workspace = true }
+senken-runtime = { workspace = true }
+tauri = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+# Only used when `gui` is enabled (see build.rs) — generates the Tauri
+# context (icons, capabilities schema) `tauri::generate_context!()` expects.
+tauri-build = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,51 @@
+[package]
+name = "senken-indicators"
+description = "The incremental indicator engine: a stateful Indicator trait plus SMA, EMA, WMA, RSI, MACD, Bollinger Bands, ATR, Stochastic, VWAP and Volume"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+# `Bar` is the only input type an indicator ever sees — the
+# scale that turns its scaled-integer fields into real prices lives on the
+# series, not on the bar, so this crate never needs `senken-core` directly
+# outside of tests.
+senken-series = { workspace = true }
+
+[dev-dependencies]
+# Only for `test_support::bar`'s `UnixNanos::EPOCH` — production code never
+# names `senken-core` directly (see the comment above).
+senken-core = { workspace = true }
+
+# This crate cannot use `[lints] workspace = true` (Cargo rejects mixing
+# workspace inheritance with a local override in the same manifest), so the
+# workspace's rust/clippy tables are duplicated here verbatim, plus one
+# narrow addition explained below. Keep this in sync with `[workspace.lints]`
+# in the root `Cargo.toml` if that ever changes.
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+print_stdout = "warn"
+module_name_repetitions = "allow"
+# Converting `Bar`'s scaled-integer prices and volumes into `f64` for
+# indicator arithmetic is this crate's entire reason for existing: an EMA, an RSI, a standard deviation are fractional, display/decision
+# values, never money, so `f64` is correct for them and the precision loss
+# this lint warns about is understood and accepted, not a case this crate
+# failed to reason about. The conversion happens at exactly one place
+# (`src/convert.rs`). Scoped to this crate alone, not the workspace: B7's
+# boundary is that a price derived *from* an indicator must be rounded back
+# to a scaled integer before it reaches anything that trades, so every other
+# crate keeps the strict workspace default.
+cast_precision_loss = "allow"

@@ -1,0 +1,23 @@
+{
+ "status": "ok",
+ "data": [
+  {
+   "symbol": "BTC",
+   "contract_code": "BTC260904",
+   "contract_type": "this_week",
+   "contract_size": 100.0,
+   "price_tick": 0.01,
+   "delivery_time": "1788508800000",
+   "contract_status": 1
+  },
+  {
+   "symbol": "BTC",
+   "contract_code": "BTC260911",
+   "contract_type": "next_week",
+   "contract_size": 100.0,
+   "price_tick": 0.01,
+   "delivery_time": "1789113600000",
+   "contract_status": 1
+  }
+ ]
+}

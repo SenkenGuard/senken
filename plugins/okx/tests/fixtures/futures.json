@@ -1,0 +1,23 @@
+{
+ "code": "0",
+ "msg": "",
+ "data": [
+  {
+   "baseCcy": "",
+   "ctType": "inverse",
+   "ctVal": "100",
+   "ctValCcy": "USD",
+   "expTime": "1788508800000",
+   "instId": "BTC-USD-260904",
+   "instType": "FUTURES",
+   "lotSz": "0.1",
+   "optType": "",
+   "quoteCcy": "",
+   "settleCcy": "BTC",
+   "state": "live",
+   "stk": "",
+   "tickSz": "0.1",
+   "uly": "BTC-USD"
+  }
+ ]
+}

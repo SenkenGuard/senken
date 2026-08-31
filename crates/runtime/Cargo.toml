@@ -1,0 +1,38 @@
+[package]
+name = "senken-runtime"
+description = "The Senken runtime: assembles storage, plugins and every domain crate into one application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `SeriesData`'s `CatalogBarSource` bridges `senken-loader`'s own fetch port
+# onto a real `senken_plugin::BarSource`, resolving the venue-native symbol
+# from the instrument catalog on every call — hence
+# `senken-core` (`TimeRange`), `senken-series` (`BarSpec`, `SystemClock`'s
+# `Clock` trait) and `senken-store`/`senken-loader` themselves.
+async-trait = { workspace = true }
+senken-core = { workspace = true }
+senken-loader = { workspace = true }
+senken-marketdata = { workspace = true }
+# The runtime only orchestrates activation; the HTTP client is a plugin's
+# business, so it does not turn that feature on.
+senken-plugin = { workspace = true }
+senken-series = { workspace = true }
+senken-storage = { workspace = true }
+senken-store = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

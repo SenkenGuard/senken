@@ -1,0 +1,27 @@
+[package]
+name = "senken-plugin-poloniex"
+description = "Poloniex spot and perpetual market data source and Senken plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+senken-marketdata = { workspace = true }
+senken-plugin = { workspace = true, features = ["http"] }
+senken-venue = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }

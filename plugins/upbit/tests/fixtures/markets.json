@@ -1,0 +1,47 @@
+[
+ {
+  "market": "BTC-ETH",
+  "korean_name": "\uc774\ub354\ub9ac\uc6c0",
+  "english_name": "Ethereum",
+  "market_event": {
+   "warning": false,
+   "caution": {
+    "PRICE_FLUCTUATIONS": false,
+    "TRADING_VOLUME_SOARING": false,
+    "DEPOSIT_AMOUNT_SOARING": false,
+    "GLOBAL_PRICE_DIFFERENCES": false,
+    "CONCENTRATION_OF_SMALL_ACCOUNTS": false
+   }
+  }
+ },
+ {
+  "market": "KRW-BTC",
+  "korean_name": "\ube44\ud2b8\ucf54\uc778",
+  "english_name": "Bitcoin",
+  "market_event": {
+   "warning": false,
+   "caution": {
+    "PRICE_FLUCTUATIONS": false,
+    "TRADING_VOLUME_SOARING": false,
+    "DEPOSIT_AMOUNT_SOARING": false,
+    "GLOBAL_PRICE_DIFFERENCES": false,
+    "CONCENTRATION_OF_SMALL_ACCOUNTS": false
+   }
+  }
+ },
+ {
+  "market": "USDT-JASMY",
+  "korean_name": "\uc7ac\uc2a4\ubbf8\ucf54\uc778",
+  "english_name": "JasmyCoin",
+  "market_event": {
+   "warning": true,
+   "caution": {
+    "PRICE_FLUCTUATIONS": false,
+    "TRADING_VOLUME_SOARING": false,
+    "DEPOSIT_AMOUNT_SOARING": false,
+    "GLOBAL_PRICE_DIFFERENCES": true,
+    "CONCENTRATION_OF_SMALL_ACCOUNTS": false
+   }
+  }
+ }
+]

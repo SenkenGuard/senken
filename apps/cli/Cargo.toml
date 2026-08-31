@@ -1,0 +1,47 @@
+[package]
+name = "senken-cli"
+description = "Senken market-data CLI subcommands, shared by the senken binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+senken-core = { workspace = true }
+senken-loader = { workspace = true }
+senken-marketdata = { workspace = true }
+senken-series = { workspace = true }
+senken-plugin-bingx = { workspace = true }
+senken-plugin-bitfinex = { workspace = true }
+senken-plugin-bitmart = { workspace = true }
+senken-plugin-htx = { workspace = true }
+senken-plugin-phemex = { workspace = true }
+senken-plugin-upbit = { workspace = true }
+senken-plugin-binance = { workspace = true }
+senken-plugin-bitget = { workspace = true }
+senken-plugin-bitmex = { workspace = true }
+senken-plugin-bitstamp = { workspace = true }
+senken-plugin-bybit = { workspace = true }
+senken-plugin-coinbase = { workspace = true }
+senken-plugin-cryptocom = { workspace = true }
+senken-plugin-deribit = { workspace = true }
+senken-plugin-gate = { workspace = true }
+senken-plugin-gemini = { workspace = true }
+senken-plugin-kraken = { workspace = true }
+senken-plugin-kucoin = { workspace = true }
+senken-plugin-mexc = { workspace = true }
+senken-plugin-okx = { workspace = true }
+senken-plugin-poloniex = { workspace = true }
+senken-plugin-whitebit = { workspace = true }
+senken-runtime = { workspace = true }

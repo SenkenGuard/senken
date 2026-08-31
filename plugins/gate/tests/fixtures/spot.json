@@ -1,0 +1,18 @@
+[
+ {
+  "id": "BTC_USDT",
+  "base": "BTC",
+  "quote": "USDT",
+  "amount_precision": 6,
+  "precision": 1,
+  "trade_status": "tradable"
+ },
+ {
+  "id": "XAR_USDT",
+  "base": "XAR",
+  "quote": "USDT",
+  "amount_precision": 2,
+  "precision": 6,
+  "trade_status": "untradable"
+ }
+]

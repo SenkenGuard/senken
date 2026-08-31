@@ -1,0 +1,24 @@
+{
+ "code": 0,
+ "msg": "",
+ "data": [
+  {
+   "symbol": "BTC-USDT",
+   "size": "0.0001",
+   "quantityPrecision": 4,
+   "pricePrecision": 1,
+   "currency": "USDT",
+   "asset": "BTC",
+   "status": 1
+  },
+  {
+   "symbol": "NCFXEUR2JPY-USDT",
+   "size": "0.01",
+   "quantityPrecision": 2,
+   "pricePrecision": 3,
+   "currency": "USDT",
+   "asset": "NCFXEUR2JPY",
+   "status": 25
+  }
+ ]
+}

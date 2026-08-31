@@ -1,0 +1,221 @@
+@import 'tailwindcss';
+@import "tw-animate-css";
+@import "shadcn-svelte/tailwind.css";
+@import "@fontsource-variable/archivo";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Design tokens are the exact palette from the design reference, mapped
+ * onto shadcn's own variable names instead of
+ * shadcn's default oklch scale. `--ink` is an rgb triplet (not a color) so
+ * `rgba(var(--ink), <alpha>)` borders/fills work unchanged in both themes -
+ * the reference uses that pattern for every hairline border.
+ */
+:root {
+	--bg: #eeeeea;
+	--bg2: #f8f8f5;
+	--chrome: #ffffff;
+	--card: #ffffff;
+	--card2: #f6f6f2;
+	--pop: #ffffff;
+	--pop2: #f2f2ee;
+	--fg: #17181a;
+	--fg2: #3c3d3f;
+	--inv: #fafaf8;
+	--ink: 18, 19, 21;
+	--ink-shadow: 90, 92, 96;
+	--dim: rgba(18, 19, 21, 0.6);
+	--dim2: rgba(18, 19, 21, 0.74);
+
+	--gain: #7de0a3;
+	--loss: #e8836f;
+
+	--background: var(--bg);
+	--foreground: var(--fg);
+	--card-foreground: var(--fg);
+	--popover: var(--pop);
+	--popover-foreground: var(--fg);
+	--primary: var(--fg);
+	--primary-foreground: var(--inv);
+	--secondary: var(--bg2);
+	--secondary-foreground: var(--fg2);
+	--muted: var(--card2);
+	--muted-foreground: var(--dim2);
+	--accent: rgba(var(--ink), 0.07);
+	--accent-foreground: var(--fg);
+	--destructive: var(--loss);
+	--border: rgba(var(--ink), 0.09);
+	--input: rgba(var(--ink), 0.14);
+	--ring: var(--fg);
+	--chart-1: oklch(0.87 0 0);
+	--chart-2: oklch(0.556 0 0);
+	--chart-3: oklch(0.439 0 0);
+	--chart-4: oklch(0.371 0 0);
+	--chart-5: oklch(0.269 0 0);
+	--radius: 0;
+	--sidebar: var(--chrome);
+	--sidebar-foreground: var(--fg2);
+	--sidebar-primary: var(--fg);
+	--sidebar-primary-foreground: var(--inv);
+	--sidebar-accent: rgba(var(--ink), 0.07);
+	--sidebar-accent-foreground: var(--fg);
+	--sidebar-border: rgba(var(--ink), 0.09);
+	--sidebar-ring: var(--fg);
+}
+
+.dark {
+	--bg: #08080a;
+	--bg2: #0a0a0c;
+	--chrome: #0c0c0e;
+	--card: #0d0d10;
+	--card2: #101013;
+	--pop: #131317;
+	--pop2: #16161a;
+	--fg: #f2f2ef;
+	--fg2: #d8d8d4;
+	--inv: #101014;
+	--ink: 255, 255, 255;
+	--ink-shadow: 6, 6, 8;
+	--dim: rgba(255, 255, 255, 0.34);
+	--dim2: rgba(255, 255, 255, 0.5);
+	--chart-1: oklch(0.87 0 0);
+	--chart-2: oklch(0.556 0 0);
+	--chart-3: oklch(0.439 0 0);
+	--chart-4: oklch(0.371 0 0);
+	--chart-5: oklch(0.269 0 0);
+}
+
+@theme inline {
+	--font-sans: 'Archivo Variable', Helvetica, Arial, sans-serif;
+	--font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+	--color-gain: var(--gain);
+	--color-loss: var(--loss);
+	/*
+	 * Raw Part A3 tokens that don't have a shadcn slot of their own, exposed
+	 * as first-class Tailwind colors (`bg-chrome`, `text-dim`, `border-ink/9`,
+	 * …) so terminal/ and layout/ components can stay on tokens instead of
+	 * inline `style="color: var(--x)"`. `--color-ink` is the rgb triplet as
+	 * an opaque color — Tailwind's `/<alpha>` modifier then reproduces every
+	 * `rgba(var(--ink), 0.NN)` border the reference uses.
+	 */
+	--color-chrome: var(--chrome);
+	--color-bg2: var(--bg2);
+	--color-card2: var(--card2);
+	--color-pop2: var(--pop2);
+	--color-dim: var(--dim);
+	--color-dim2: var(--dim2);
+	--color-inv: var(--inv);
+	--color-ink: rgb(var(--ink));
+	/*
+	 * The reference's modal overlays (layer dialog, chart
+	 * settings, command palette — lines 921, 1034, 1142) all use
+	 * `rgba(var(--ink-shadow),0.72)`, noticeably darker than shadcn's default
+	 * `bg-black/10` backdrop. Exposed the same way `--color-ink` is, above,
+	 * so `ui/dialog/dialog-overlay.svelte` can use `bg-ink-shadow/72` instead
+	 * of hardcoding a one-off color no other component can reuse.
+	 */
+	--color-ink-shadow: rgb(var(--ink-shadow));
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--color-foreground: var(--foreground);
+	--color-background: var(--background);
+	--radius-sm: calc(var(--radius) * 0.6);
+	--radius-md: calc(var(--radius) * 0.8);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) * 1.4);
+	--radius-2xl: calc(var(--radius) * 1.8);
+	--radius-3xl: calc(var(--radius) * 2.2);
+	--radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	body {
+		@apply bg-background text-foreground;
+		font-size: 13px;
+		letter-spacing: 0.01em;
+	}
+	html {
+		@apply font-sans;
+	}
+}
+
+/* ------------------------------------------------------------------ *
+ * Desktop shell
+ *
+ * `apps/senken/src/gui.rs` stamps `data-shell` on the root element when the
+ * page is running inside the Tauri window. A browser never has it, so every
+ * rule below is inert there and no JavaScript branch is needed.
+ * ------------------------------------------------------------------ */
+
+/* macOS keeps its traffic lights native and floats them over the page, so the
+ * first cell of the header has to step aside. 78px clears all three at the
+ * standard 46px title-bar height.
+ *
+ * The cell also *grows* by that amount rather than absorbing it: padding alone
+ * would squeeze the brand block from 208px down to 130px, which wraps
+ * "RESEARCH TERMINAL" onto two lines and reads as broken. Widening keeps the
+ * brand exactly as wide as it is in the browser. */
+/* The rail widens to hold the traffic lights above it. This number and
+ * `RAIL_MACOS` in apps/senken/src/gui.rs must agree, or the lights drift out
+ * of the column they are supposed to sit in. */
+/* Our own title bar: a band the window controls can own outright.
+ *
+ * Hidden in the browser — there are no controls to make room for — so nothing
+ * about the web layout shifts. `--shell-title-h` is the single source of the
+ * height; `apps/senken/src/gui.rs` centres the traffic lights against the same
+ * number and the two must agree. */
+:root {
+	/* macOS's own title-bar height. The traffic lights are left at the system's
+	 * default position — forcing them with `traffic_light_position` put them
+	 * hard against the frame, because its y origin is not the window's top
+	 * edge — so the strip is sized to match where macOS actually draws them. */
+	--shell-title-h: 38px;
+}
+.shell-title-bar {
+	display: none;
+}
+:root[data-shell^='tauri'] .shell-title-bar {
+	display: flex;
+	height: var(--shell-title-h);
+}
+
+/* A drag region should not look like selectable text. */
+:root[data-shell^='tauri'] .shell-drag,
+:root[data-shell^='tauri'] .shell-drag * {
+	cursor: default;
+	user-select: none;
+}

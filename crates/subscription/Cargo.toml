@@ -1,0 +1,34 @@
+[package]
+name = "senken-subscription"
+description = "The live-data subscription pool: reference-counted, Drop-guarded leases on (source, symbol), sharded across a venue's per-connection stream cap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `UnixNanos` timestamps a `PriceUpdate` without this crate
+# ever reading a wall clock itself — the feed that publishes one supplies
+# the time.
+senken-core = { workspace = true }
+# `InstrumentId` is the lease key: a lease is on `(source,
+# symbol)`, which is exactly what `InstrumentId` already is, so it is reused
+# rather than re-declared here.
+senken-marketdata = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+# `sync` for the actor's mpsc/oneshot channels, `rt` because the actor task
+# is spawned with `tokio::spawn` (any executor flavour; none is forced).
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

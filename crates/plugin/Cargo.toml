@@ -1,0 +1,57 @@
+[package]
+name = "senken-plugin"
+description = "The Senken plugin contract: manifest, activation context, and lifecycle hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["http"]
+# The shared HTTP client, and the rate-limited `VenueClient`/`LimitGroup`
+# pair built on it, on `ActivationContext`. A plugin that reads local files
+# needs none of it, and this crate is only a trait contract, so the whole
+# HTTP and TLS stack stays opt-out.
+http = ["dep:reqwest", "dep:senken-venue"]
+
+[dependencies]
+# `BarSource` needs `TimeRange` and `Bar`/`BarSpec`; neither
+# pulls networking, so both stay unconditional dependencies exactly like
+# `senken-marketdata` (which `MarketDataSource` already needed the same way).
+async-trait = { workspace = true }
+reqwest = { workspace = true, optional = true }
+# Plugin-declared permissions: `PluginNamespace` and
+# `PluginPermissionName` for the manifest, `PluginPermissionRecord` for
+# orphan reconciliation. Pure domain types (`serde`/`thiserror` only, see
+# `senken-acl`'s own `Cargo.toml`), so — like `senken-core`/`senken-marketdata`
+# below — this stays an unconditional dependency rather than living behind
+# the `http` feature.
+senken-acl = { workspace = true }
+senken-core = { workspace = true }
+senken-marketdata = { workspace = true }
+senken-series = { workspace = true }
+senken-venue = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+wiremock = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[[test]]
+name = "limit_group"
+path = "tests/limit_group.rs"
+# Drives `ActivationContext::limit_group`/`venue_client`, both `http`-only;
+# without this cargo would try to build it under
+# `--no-default-features --all-targets` and fail to compile.
+required-features = ["http"]

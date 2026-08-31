@@ -1,0 +1,21 @@
+{
+ "code": "00000",
+ "msg": "success",
+ "data": [
+  {
+   "symbol": "BTCUSDU26",
+   "baseCoin": "BTC",
+   "quoteCoin": "USD",
+   "supportMarginCoins": [
+    "BTC"
+   ],
+   "priceEndStep": "1",
+   "volumePlace": "3",
+   "pricePlace": "1",
+   "sizeMultiplier": "0.001",
+   "symbolType": "delivery",
+   "symbolStatus": "normal",
+   "deliveryTime": "1790323200000"
+  }
+ ]
+}

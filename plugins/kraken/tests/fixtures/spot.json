@@ -1,0 +1,35 @@
+{
+ "error": [],
+ "result": {
+  "XXBTZUSD": {
+   "altname": "XBTUSD",
+   "wsname": "XBT/USD",
+   "base": "XXBT",
+   "quote": "ZUSD",
+   "pair_decimals": 1,
+   "lot_decimals": 8,
+   "tick_size": "0.1",
+   "status": "online"
+  },
+  "XETHZUSD": {
+   "altname": "ETHUSD",
+   "wsname": "ETH/USD",
+   "base": "XETH",
+   "quote": "ZUSD",
+   "pair_decimals": 2,
+   "lot_decimals": 8,
+   "tick_size": "0.01",
+   "status": "online"
+  },
+  "ACXEUR": {
+   "altname": "ACXEUR",
+   "wsname": "ACX/EUR",
+   "base": "ACX",
+   "quote": "ZEUR",
+   "pair_decimals": 5,
+   "lot_decimals": 5,
+   "tick_size": "0.00001",
+   "status": "cancel_only"
+  }
+ }
+}

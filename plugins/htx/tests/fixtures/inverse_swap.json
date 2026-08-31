@@ -1,0 +1,21 @@
+{
+ "status": "ok",
+ "data": [
+  {
+   "symbol": "BTC",
+   "contract_code": "BTC-USD",
+   "contract_size": 100.0,
+   "price_tick": 0.1,
+   "delivery_time": "",
+   "contract_status": 1
+  },
+  {
+   "symbol": "ETH",
+   "contract_code": "ETH-USD",
+   "contract_size": 10.0,
+   "price_tick": 0.01,
+   "delivery_time": "",
+   "contract_status": 1
+  }
+ ]
+}

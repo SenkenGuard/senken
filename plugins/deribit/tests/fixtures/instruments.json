@@ -1,0 +1,82 @@
+{
+ "jsonrpc": "2.0",
+ "result": [
+  {
+   "settlement_currency": "BTC",
+   "quote_currency": "USD",
+   "is_active": true,
+   "instrument_type": "reversed",
+   "tick_size": 0.5,
+   "min_trade_amount": 10.0,
+   "instrument_name": "BTC-PERPETUAL",
+   "kind": "future",
+   "counter_currency": "USD",
+   "base_currency": "BTC",
+   "expiration_timestamp": 32503708800000,
+   "settlement_period": "perpetual",
+   "contract_size": 10.0
+  },
+  {
+   "settlement_currency": "USDC",
+   "quote_currency": "USDC",
+   "is_active": true,
+   "instrument_type": "linear",
+   "tick_size": 0.005,
+   "min_trade_amount": 0.1,
+   "instrument_name": "AVAX_USDC-30AUG26",
+   "kind": "future",
+   "counter_currency": "USDC",
+   "base_currency": "AVAX",
+   "expiration_timestamp": 1788076800000,
+   "settlement_period": "day",
+   "contract_size": 0.1
+  },
+  {
+   "kind": "option",
+   "instrument_name": "BTC-30AUG26-69000-C",
+   "instrument_type": "reversed",
+   "expiration_timestamp": 1788076800000,
+   "is_active": true,
+   "contract_size": 1.0,
+   "tick_size": 0.0001,
+   "strike": 69000.0,
+   "counter_currency": "USD",
+   "base_currency": "BTC",
+   "quote_currency": "BTC",
+   "settlement_currency": "BTC",
+   "option_type": "call",
+   "min_trade_amount": 0.1,
+   "settlement_period": "day"
+  },
+  {
+   "kind": "spot",
+   "instrument_name": "BNB_USDC",
+   "instrument_type": "linear",
+   "expiration_timestamp": 32503708800000,
+   "is_active": true,
+   "contract_size": 1e-05,
+   "tick_size": 0.01,
+   "counter_currency": "USDC",
+   "base_currency": "BNB",
+   "quote_currency": "USDC",
+   "min_trade_amount": 1e-05
+  },
+  {
+   "kind": "future_combo",
+   "instrument_name": "BTC-FS-30AUG26_PERP",
+   "instrument_type": "reversed",
+   "expiration_timestamp": 1788076800000,
+   "is_active": true,
+   "contract_size": 10.0,
+   "tick_size": 0.5,
+   "counter_currency": "USD",
+   "base_currency": "BTC",
+   "quote_currency": "USD",
+   "settlement_currency": "BTC",
+   "min_trade_amount": 10.0,
+   "settlement_period": "day"
+  }
+ ],
+ "usIn": 0,
+ "usOut": 0
+}

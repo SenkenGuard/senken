@@ -1,0 +1,40 @@
+{
+ "code": "0",
+ "msg": "",
+ "data": [
+  {
+   "baseCcy": "",
+   "ctType": "inverse",
+   "ctVal": "1",
+   "ctValCcy": "BTC",
+   "expTime": "1788076800000",
+   "instId": "BTC-USD-260830-70000-C",
+   "instType": "OPTION",
+   "lotSz": "1",
+   "optType": "C",
+   "quoteCcy": "",
+   "settleCcy": "BTC",
+   "state": "live",
+   "stk": "70000",
+   "tickSz": "0.0001",
+   "uly": "BTC-USD"
+  },
+  {
+   "baseCcy": "",
+   "ctType": "inverse",
+   "ctVal": "1",
+   "ctValCcy": "BTC",
+   "expTime": "1788076800000",
+   "instId": "BTC-USD-260830-70000-P",
+   "instType": "OPTION",
+   "lotSz": "1",
+   "optType": "P",
+   "quoteCcy": "",
+   "settleCcy": "BTC",
+   "state": "live",
+   "stk": "70000",
+   "tickSz": "0.0001",
+   "uly": "BTC-USD"
+  }
+ ]
+}

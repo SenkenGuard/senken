@@ -1,0 +1,38 @@
+{
+ "symbols": [
+  {
+   "symbol": "BTCUSDT",
+   "status": "1",
+   "baseAsset": "BTC",
+   "baseAssetPrecision": 8,
+   "quoteAsset": "USDT",
+   "quotePrecision": 2,
+   "isSpotTradingAllowed": true,
+   "filters": [
+    {
+     "filterType": "PERCENT_PRICE_BY_SIDE",
+     "bidMultiplierUp": "0.005",
+     "askMultiplierDown": "0.005"
+    }
+   ],
+   "st": false
+  },
+  {
+   "symbol": "PALMAIUSDT",
+   "status": "1",
+   "baseAsset": "PALMAI",
+   "baseAssetPrecision": 2,
+   "quoteAsset": "USDT",
+   "quotePrecision": 4,
+   "isSpotTradingAllowed": false,
+   "filters": [
+    {
+     "filterType": "PERCENT_PRICE_BY_SIDE",
+     "bidMultiplierUp": "0.2",
+     "askMultiplierDown": "0.2"
+    }
+   ],
+   "st": false
+  }
+ ]
+}

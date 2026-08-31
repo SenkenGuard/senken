@@ -1,0 +1,44 @@
+{
+ "id": -1,
+ "method": "public/get-instruments",
+ "code": 0,
+ "result": {
+  "data": [
+   {
+    "symbol": "1INCH_USD",
+    "inst_type": "CCY_PAIR",
+    "base_ccy": "1INCH",
+    "quote_ccy": "USD",
+    "price_tick_size": "0.00001",
+    "qty_tick_size": "0.1",
+    "tradable": true,
+    "expiry_timestamp_ms": 0,
+    "product_type": "DIGITAL_CURRENCIES"
+   },
+   {
+    "symbol": "1INCHUSD-PERP",
+    "inst_type": "PERPETUAL_SWAP",
+    "base_ccy": "1INCH",
+    "quote_ccy": "USD",
+    "price_tick_size": "0.00001",
+    "qty_tick_size": "1",
+    "tradable": true,
+    "expiry_timestamp_ms": 0,
+    "contract_size": "1",
+    "product_type": "DIGITAL_CURRENCIES"
+   },
+   {
+    "symbol": "BTCUSD-260828",
+    "inst_type": "FUTURE",
+    "base_ccy": "BTC",
+    "quote_ccy": "USD",
+    "price_tick_size": "0.1",
+    "qty_tick_size": "0.0001",
+    "tradable": false,
+    "expiry_timestamp_ms": 1787904000000,
+    "contract_size": "1",
+    "product_type": "DIGITAL_CURRENCIES"
+   }
+  ]
+ }
+}

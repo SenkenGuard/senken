@@ -1,0 +1,35 @@
+[package]
+name = "senken-plugin-binance"
+description = "Binance Spot market data source and Senken plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+senken-core = { workspace = true }
+senken-marketdata = { workspace = true }
+senken-plugin = { workspace = true, features = ["http"] }
+senken-series = { workspace = true }
+senken-venue = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `SystemClock`: Binance's klines carry no closed-candle flag
+# and no server-time field, so this plugin needs a real `Clock` to close
+# candles against — see `clock.rs`. `time` is the only feature it needs.
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+wiremock = { workspace = true }

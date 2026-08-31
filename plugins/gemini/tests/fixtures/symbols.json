@@ -1,0 +1,35 @@
+[
+ {
+  "symbol": "BTCUSD",
+  "quote_currency": "USD",
+  "tick_size": 1e-08,
+  "quote_increment": 0.01,
+  "status": "open",
+  "product_type": "spot",
+  "contract_type": "vanilla",
+  "contract_price_currency": "USD",
+  "base_currency": "BTC"
+ },
+ {
+  "symbol": "AVAXGUSDPERP",
+  "quote_currency": "GUSD",
+  "tick_size": 0.1,
+  "quote_increment": 0.001,
+  "status": "open",
+  "product_type": "swap",
+  "contract_type": "linear",
+  "contract_price_currency": "GUSD",
+  "base_currency": "AVAX"
+ },
+ {
+  "symbol": "EFILFIL",
+  "quote_currency": "FIL",
+  "tick_size": 1e-06,
+  "quote_increment": 0.0001,
+  "status": "closed",
+  "product_type": "spot",
+  "contract_type": "vanilla",
+  "contract_price_currency": "FIL",
+  "base_currency": "EFIL"
+ }
+]

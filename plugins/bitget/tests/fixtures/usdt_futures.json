@@ -1,0 +1,21 @@
+{
+ "code": "00000",
+ "msg": "success",
+ "data": [
+  {
+   "symbol": "BTCUSDT",
+   "baseCoin": "BTC",
+   "quoteCoin": "USDT",
+   "supportMarginCoins": [
+    "USDT"
+   ],
+   "priceEndStep": "1",
+   "volumePlace": "4",
+   "pricePlace": "1",
+   "sizeMultiplier": "0.0001",
+   "symbolType": "perpetual",
+   "symbolStatus": "normal",
+   "deliveryTime": ""
+  }
+ ]
+}

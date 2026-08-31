@@ -1,0 +1,28 @@
+{
+ "code": 1000,
+ "message": "OK",
+ "data": {
+  "symbols": [
+   {
+    "symbol": "BTCUSDT",
+    "expire_timestamp": 0,
+    "base_currency": "BTC",
+    "quote_currency": "USDT",
+    "contract_size": "0.001",
+    "price_precision": "0.1",
+    "vol_precision": "1",
+    "status": "Trading"
+   },
+   {
+    "symbol": "BTCUSD",
+    "expire_timestamp": 0,
+    "base_currency": "BTC",
+    "quote_currency": "USD",
+    "contract_size": "100",
+    "price_precision": "0.1",
+    "vol_precision": "1",
+    "status": "Trading"
+   }
+  ]
+ }
+}

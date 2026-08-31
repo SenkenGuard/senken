@@ -1,0 +1,36 @@
+[package]
+name = "senken-store"
+description = "Parquet-backed bar storage: filename-derived coverage, immutable non-overlapping files. The only crate in the workspace allowed to depend on Arrow/Parquet, and only behind a feature."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Layout and coverage — filename encoding, path building, directory
+# listing — need no columnar dependency at all; only the actual Parquet
+# read/write path does. A consumer who only wants to know what data exists
+# on disk should not have to compile Arrow.
+default = ["parquet"]
+parquet = ["dep:arrow", "dep:parquet"]
+
+[dependencies]
+senken-core = { workspace = true }
+senken-series = { workspace = true }
+senken-storage = { workspace = true }
+thiserror = { workspace = true }
+arrow = { workspace = true, optional = true }
+# `arrow`: lets this crate build/read `RecordBatch`es against Parquet.
+# `zstd`: the compression codec this store writes with.
+parquet = { workspace = true, optional = true, features = ["arrow", "zstd"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

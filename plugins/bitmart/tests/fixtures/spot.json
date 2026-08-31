@@ -1,0 +1,26 @@
+{
+ "code": 1000,
+ "message": "OK",
+ "data": {
+  "symbols": [
+   {
+    "symbol": "BTC_USDT",
+    "base_currency": "BTC",
+    "quote_currency": "USDT",
+    "quote_increment": "0.00001",
+    "price_min_precision": -1,
+    "price_max_precision": 2,
+    "trade_status": "trading"
+   },
+   {
+    "symbol": "PEPE_USDT",
+    "base_currency": "PEPE",
+    "quote_currency": "USDT",
+    "quote_increment": "1",
+    "price_min_precision": 9,
+    "price_max_precision": 12,
+    "trade_status": "trading"
+   }
+  ]
+ }
+}

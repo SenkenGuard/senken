@@ -1,0 +1,38 @@
+{
+ "code": 0,
+ "msg": "",
+ "data": {
+  "products": [
+   {
+    "symbol": "BTCUSD",
+    "type": "Perpetual",
+    "settleCurrency": "BTC",
+    "quoteCurrency": "USD",
+    "contractSize": 1.0,
+    "lotSize": 1,
+    "tickSize": 0.1,
+    "status": "Listed"
+   },
+   {
+    "symbol": "sBTCUSDT",
+    "type": "Spot",
+    "quoteCurrency": "USDT",
+    "baseCurrency": "BTC",
+    "baseTickSize": "0.000001 BTC",
+    "quoteTickSize": "0.01 USDT",
+    "status": "Listed"
+   }
+  ],
+  "perpProductsV2": [
+   {
+    "symbol": "BTCUSDT",
+    "type": "PerpetualV2",
+    "settleCurrency": "USDT",
+    "quoteCurrency": "USDT",
+    "tickSize": "0.1",
+    "baseCurrency": "BTC",
+    "status": "Listed"
+   }
+  ]
+ }
+}

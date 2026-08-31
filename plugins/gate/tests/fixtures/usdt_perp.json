@@ -1,0 +1,11 @@
+[
+ {
+  "in_delisting": false,
+  "order_price_round": "0.1",
+  "order_size_min": 1,
+  "name": "BTC_USDT",
+  "type": "direct",
+  "quanto_multiplier": "0.0001",
+  "status": "trading"
+ }
+]

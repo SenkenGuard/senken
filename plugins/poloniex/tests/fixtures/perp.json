@@ -1,0 +1,17 @@
+{
+ "code": 200,
+ "msg": "",
+ "data": [
+  {
+   "symbol": "BTC_USDT_PERP",
+   "bCcy": "BTC",
+   "qCcy": "USDT",
+   "sCcy": "USDT",
+   "tSz": "0.01",
+   "lotSz": 1,
+   "ctVal": "0.001",
+   "status": "OPEN",
+   "ctType": "LINEAR"
+  }
+ ]
+}

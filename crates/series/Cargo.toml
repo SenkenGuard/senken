@@ -1,0 +1,23 @@
+[package]
+name = "senken-series"
+description = "Bar and trade types, timeframe specs, and M1-to-N aggregation — pure computation, no I/O, no Arrow, no Parquet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `Clock` must be `dyn`-usable across a `.await` point, which a bare
+# `async fn` in a trait cannot express.
+async-trait = { workspace = true }
+senken-core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

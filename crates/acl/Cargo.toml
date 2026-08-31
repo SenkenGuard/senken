@@ -1,0 +1,19 @@
+[package]
+name = "senken-acl"
+description = "Authorisation as a pure domain: actions, resources, scopes and the decision function that turns them into a WHERE clause a storage layer can apply — no I/O, no HTTP, no database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

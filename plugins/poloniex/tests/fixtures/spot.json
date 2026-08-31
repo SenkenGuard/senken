@@ -1,0 +1,24 @@
+[
+ {
+  "symbol": "BTC_USDT",
+  "baseCurrencyName": "BTC",
+  "quoteCurrencyName": "USDT",
+  "state": "NORMAL",
+  "symbolTradeLimit": {
+   "symbol": "BTC_USDT",
+   "priceScale": 2,
+   "quantityScale": 6
+  }
+ },
+ {
+  "symbol": "XRPBULL_USDT",
+  "baseCurrencyName": "XRPBULL",
+  "quoteCurrencyName": "USDT",
+  "state": "PAUSE",
+  "symbolTradeLimit": {
+   "symbol": "XRPBULL_USDT",
+   "priceScale": 8,
+   "quantityScale": 0
+  }
+ }
+]

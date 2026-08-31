@@ -1,0 +1,119 @@
+[package]
+name = "senken-api"
+description = "Placeholder HTTP shell: health check plus embedded web assets"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[features]
+default = []
+# Serves the SvelteKit build embedded via `rust-embed`. Left out of default
+# so `cargo check -p senken-api --no-default-features` proves
+# the API-only shape compiles with zero web assets in the binary.
+web = ["dep:rust-embed"]
+
+[dependencies]
+axum = { workspace = true }
+rust-embed = { workspace = true, optional = true }
+# The permission vocabulary: `EndpointPermission::Acl` names
+# an `(Action, Resource)` pair for `mount()` to check via
+# `AuthenticatedUser::authorize` before a user/role management handler ever
+# runs. This crate still does not build any `senken_acl::Grant` or call
+# `decide` itself — it only names the check, the same way `mount`'s other
+# `EndpointPermission` variants name a transport-level requirement.
+senken-acl = { workspace = true }
+# Standalone alerts: `AlertStore` is mounted
+# directly, and `IndicatorSpec`/`ConcreteIndicator`/`IndicatorField`/
+# `Comparator` are reused (not re-declared) for the indicators-compute
+# endpoint too — both alerts and charts are just two consumers of the same
+# ten built-in indicators.
+senken-alerts = { workspace = true }
+# Live price feed wiring: `WsVenueConnector`/`okx::OkxTradesProtocol`
+# build the one `SubscriptionPool` this build actually knows a live venue
+# protocol for (OKX's public trades channel — see `feed.rs`'s own docs).
+senken-feed = { workspace = true }
+# The accounts store this crate exposes over HTTP.
+senken-identity = { workspace = true }
+# `SeriesKey`/`BarSpec`/`Anchor`/`Origin` — the bars endpoints' request/
+# response shapes are built from these directly, not a re-declared copy.
+senken-series = { workspace = true }
+# `TimeRange`/`UnixNanos` — the wire format bars/indicators requests and
+# responses use for a range, reused from the one time type this project
+# uses everywhere (see that crate's own module docs).
+senken-core = { workspace = true }
+# `InstrumentId` — parses a request's `source:symbol` the same way every
+# other consumer of `senken-marketdata` does.
+senken-marketdata = { workspace = true }
+# `SeriesLoader`/`Priority`/`Requirement`/`JobSnapshot`
+# 006 B7/S1): the bars endpoints go through this crate's resolution ladder
+# exactly the way `senken-cli`'s own `bars` subcommand already does, so the
+# cache/store/aggregate/backfill behaviour is not
+# reimplemented at the HTTP boundary.
+senken-loader = { workspace = true }
+# Assembles storage, the instrument catalog and one `SeriesLoader` per
+# registered bar source into the one `Runtime` this crate's `serve` takes,
+# so `AppState` holds exactly what `senken-cli`'s own market-data
+# subcommands already hold — no second wiring path.
+senken-runtime = { workspace = true }
+# The lease pool itself: the WS endpoint takes a `Lease` per
+# subscribed topic, exactly the way a chart pane or an alert would.
+senken-subscription = { workspace = true }
+# `LimitGroup` for the OKX WS connection's own dial/reconnect budget
+# (see `feed.rs`'s doc on why this is a dedicated budget
+# rather than the OKX plugin's own REST one).
+senken-venue = { workspace = true }
+# Chart workspace persistence: `WorkspaceStore`
+# is mounted directly, the same way `senken-alerts`' `AlertStore` is.
+senken-workspace = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "sync"] }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+# Splits the WS endpoint's socket into independent send/receive halves
+#: a live-price forwarder task and the client's own
+# subscribe/unsubscribe frames must both reach the one socket concurrently.
+futures = { workspace = true }
+# WS tickets: a single-use, short-lived identifier that is
+# not the session token itself. `uuid` is already a workspace dependency
+# (`senken-identity`'s user/role ids), so ticket generation reuses it rather
+# than adding a second random-id crate.
+uuid = { workspace = true }
+# OpenAPI document generation: derives the
+# document from the same `serde` structs the handlers use.
+utoipa = { workspace = true }
+
+[dev-dependencies]
+# Test-only: implementing `senken_plugin::{MarketDataSource, BarSource}` for
+# the fake venue the bars/indicators integration tests register through a
+# `senken_runtime::Runtime`, instead of ever touching a real one (tests must
+# not hit the network).
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+# Test-only: the fake venue plugin the bars/indicators tests register.
+senken-plugin = { workspace = true }
+# Test-only: opens a second raw connection to the same accounts database
+# file a test's `IdentityStore` already created, to simulate a state
+# `senken-identity`'s own public API cannot produce yet (an account whose
+# password is unset again after a session was minted) — see the B4
+# defense-in-depth test in `lib.rs`.
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# Test-only: drives a real WS handshake against `serve()` for the ticket/
+# query-string tests. Not used by any non-test
+# code, so it stays a dev-dependency here rather than a workspace one used
+# elsewhere — but the version is still pinned at the workspace root per this
+# repo's convention of not hand-versioning external crates per member.
+tokio-tungstenite = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[
+ {
+  "in_delisting": false,
+  "expire_time": 1789113600,
+  "order_price_round": "0.0001",
+  "order_size_min": 1,
+  "name": "ARB_USDT_20260911",
+  "type": "direct",
+  "quanto_multiplier": "1"
+ },
+ {
+  "in_delisting": false,
+  "expire_time": 1788508800,
+  "order_price_round": "0.0001",
+  "order_size_min": 1,
+  "name": "ARB_USDT_20260904",
+  "type": "direct",
+  "quanto_multiplier": "1"
+ }
+]

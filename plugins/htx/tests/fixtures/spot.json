@@ -1,0 +1,21 @@
+{
+ "status": "ok",
+ "data": [
+  {
+   "symbol": "btcusdt",
+   "state": "online",
+   "bc": "btc",
+   "qc": "usdt",
+   "pp": 2,
+   "ap": 6
+  },
+  {
+   "symbol": "cvcbtc",
+   "state": "offline",
+   "bc": "cvc",
+   "qc": "btc",
+   "pp": 8,
+   "ap": 0
+  }
+ ]
+}

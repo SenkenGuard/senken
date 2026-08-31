@@ -1,0 +1,41 @@
+{
+ "code": "200000",
+ "data": [
+  {
+   "symbol": "XBTUSDTM",
+   "expireDate": null,
+   "baseCurrency": "XBT",
+   "quoteCurrency": "USDT",
+   "settleCurrency": "USDT",
+   "lotSize": 1,
+   "tickSize": 0.1,
+   "multiplier": 0.001,
+   "isInverse": false,
+   "status": "Open"
+  },
+  {
+   "symbol": "ETHUSDM",
+   "expireDate": null,
+   "baseCurrency": "ETH",
+   "quoteCurrency": "USD",
+   "settleCurrency": "ETH",
+   "lotSize": 1,
+   "tickSize": 0.01,
+   "multiplier": -1.0,
+   "isInverse": true,
+   "status": "Open"
+  },
+  {
+   "symbol": "XBTMU26",
+   "expireDate": 1790323200000,
+   "baseCurrency": "XBT",
+   "quoteCurrency": "USD",
+   "settleCurrency": "XBT",
+   "lotSize": 1,
+   "tickSize": 0.1,
+   "multiplier": -1.0,
+   "isInverse": true,
+   "status": "Open"
+  }
+ ]
+}

@@ -1,0 +1,60 @@
+{
+  "timezone": "UTC",
+  "serverTime": 1756512000000,
+  "rateLimits": [
+    { "rateLimitType": "REQUEST_WEIGHT", "interval": "MINUTE", "intervalNum": 1, "limit": 6000 }
+  ],
+  "exchangeFilters": [],
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "status": "TRADING",
+      "baseAsset": "BTC",
+      "baseAssetPrecision": 8,
+      "quoteAsset": "USDT",
+      "quotePrecision": 8,
+      "quoteAssetPrecision": 8,
+      "orderTypes": ["LIMIT", "MARKET"],
+      "icebergAllowed": true,
+      "isSpotTradingAllowed": true,
+      "filters": [
+        { "filterType": "PRICE_FILTER", "minPrice": "0.01000000", "maxPrice": "1000000.00000000", "tickSize": "0.01000000" },
+        { "filterType": "LOT_SIZE", "minQty": "0.00001000", "maxQty": "9000.00000000", "stepSize": "0.00001000" },
+        { "filterType": "NOTIONAL", "minNotional": "5.00000000", "applyMinToMarket": true },
+        { "filterType": "PERCENT_PRICE_BY_SIDE", "bidMultiplierUp": "5", "askMultiplierDown": "0.2" },
+        { "filterType": "SOME_FUTURE_FILTER", "whatever": [1, 2, 3] }
+      ],
+      "permissionSets": [["SPOT", "MARGIN"]],
+      "aNewFieldBinanceAddedLastWeek": { "nested": true }
+    },
+    {
+      "symbol": "ETHBTC",
+      "status": "TRADING",
+      "baseAsset": "ETH",
+      "quoteAsset": "BTC",
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.00001000" },
+        { "filterType": "LOT_SIZE", "stepSize": "0.00010000" }
+      ]
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "status": "BREAK",
+      "baseAsset": "LUNA",
+      "quoteAsset": "USDT",
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.00000100" },
+        { "filterType": "LOT_SIZE", "stepSize": "0.01000000" }
+      ]
+    },
+    {
+      "symbol": "BROKENUSDT",
+      "status": "TRADING",
+      "baseAsset": "BROKEN",
+      "quoteAsset": "USDT",
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.01000000" }
+      ]
+    }
+  ]
+}

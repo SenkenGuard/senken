@@ -1,0 +1,67 @@
+[
+ {
+  "symbol": "XBTUSD",
+  "state": "Open",
+  "typ": "FFWCSX",
+  "underlying": "XBT",
+  "quoteCurrency": "USD",
+  "lotSize": 100,
+  "tickSize": 0.1,
+  "multiplier": -100000000,
+  "settlCurrency": "XBt",
+  "isQuanto": false,
+  "isInverse": true
+ },
+ {
+  "symbol": "SOLUSD",
+  "state": "Open",
+  "typ": "FFWCSX",
+  "underlying": "SOL",
+  "quoteCurrency": "USD",
+  "lotSize": 1,
+  "tickSize": 0.01,
+  "multiplier": 100,
+  "settlCurrency": "XBt",
+  "isQuanto": true,
+  "isInverse": false
+ },
+ {
+  "symbol": "XBTU26",
+  "state": "Open",
+  "typ": "FFCCSX",
+  "expiry": "2026-09-25T12:00:00.000Z",
+  "underlying": "XBT",
+  "quoteCurrency": "USD",
+  "lotSize": 100,
+  "tickSize": 0.5,
+  "multiplier": -100000000,
+  "settlCurrency": "XBt",
+  "isQuanto": false,
+  "isInverse": true
+ },
+ {
+  "symbol": "XRP_USDT",
+  "state": "Open",
+  "typ": "IFXXXP",
+  "underlying": "XRP",
+  "quoteCurrency": "USDT",
+  "lotSize": 1000000,
+  "tickSize": 0.0001,
+  "multiplier": 1,
+  "isQuanto": false,
+  "isInverse": false
+ },
+ {
+  "symbol": "SUIUSDT",
+  "state": "Open",
+  "typ": "FFWCSX",
+  "underlying": "SUI",
+  "quoteCurrency": "USDT",
+  "lotSize": 100,
+  "tickSize": 0.0001,
+  "multiplier": 1000,
+  "settlCurrency": "USDt",
+  "isQuanto": false,
+  "isInverse": false
+ }
+]

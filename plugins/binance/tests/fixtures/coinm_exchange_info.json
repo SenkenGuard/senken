@@ -1,0 +1,55 @@
+{
+ "timezone": "UTC",
+ "symbols": [
+  {
+   "symbol": "BTCUSD_PERP",
+   "pair": "BTCUSD",
+   "contractType": "PERPETUAL",
+   "deliveryDate": 4133404800000,
+   "contractStatus": "TRADING",
+   "baseAsset": "BTC",
+   "quoteAsset": "USD",
+   "marginAsset": "BTC",
+   "contractSize": 100,
+   "filters": [
+    {
+     "maxPrice": "4520958",
+     "tickSize": "0.1",
+     "minPrice": "1000",
+     "filterType": "PRICE_FILTER"
+    },
+    {
+     "filterType": "LOT_SIZE",
+     "maxQty": "1000000",
+     "minQty": "1",
+     "stepSize": "1"
+    }
+   ]
+  },
+  {
+   "symbol": "BNBUSD_260925",
+   "pair": "BNBUSD",
+   "contractType": "CURRENT_QUARTER",
+   "deliveryDate": 1790323200000,
+   "contractStatus": "TRADING",
+   "baseAsset": "BNB",
+   "quoteAsset": "USD",
+   "marginAsset": "BNB",
+   "contractSize": 10,
+   "filters": [
+    {
+     "minPrice": "7",
+     "filterType": "PRICE_FILTER",
+     "tickSize": "0.010",
+     "maxPrice": "41461"
+    },
+    {
+     "stepSize": "1",
+     "minQty": "1",
+     "filterType": "LOT_SIZE",
+     "maxQty": "1000000"
+    }
+   ]
+  }
+ ]
+}

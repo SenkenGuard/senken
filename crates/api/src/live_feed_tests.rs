@@ -1,0 +1,445 @@
+//! End-to-end proof of the wiring, against a fake venue's
+//! WebSocket (never a real one — the access-boundary
+//! constraint) so this suite carries no network dependency.
+//!
+//! Both milestones share one setup (a real `WsVenueConnector`/
+//! `SubscriptionPool` dialling a loopback fake server) because the property
+//! S6 cares about most — an alert outlives the chart that created it — is
+//! only real proof once it is shown through the same pool a chart pane's WS
+//! subscription actually leases from, not only through two directly-held
+//! `Lease`s in a unit test (`senken_alerts::runner`'s own test already
+//! covers that half in isolation).
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use futures::{SinkExt, StreamExt};
+use senken_core::UnixNanos;
+use senken_identity::DEFAULT_ADMIN_EMAIL;
+use senken_marketdata::InstrumentId;
+use senken_subscription::{ConnectionError, PriceUpdate, SubscriptionPool};
+use senken_venue::LimitGroup;
+use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+use crate::test_support::{
+    ADMIN_TEST_PASSWORD, body_json, get_auth, post_json, post_json_auth,
+    serve_unfenced_test_server_with_feed, temp_empty_runtime,
+};
+
+const TEST_SOURCE: &str = "test-venue";
+
+/// A tiny in-process WebSocket server standing in for a venue — the same
+/// shape `crates/feed/tests/live_engine.rs` already uses for the generic
+/// dial/subscribe/publish engine, reproduced here (not imported: it is
+/// private to that crate's own test binary) for this crate's own wiring
+/// tests.
+struct FakeServer {
+    listener: TcpListener,
+    addr: std::net::SocketAddr,
+}
+
+impl FakeServer {
+    async fn bind() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        Self { listener, addr }
+    }
+
+    fn ws_url(&self) -> String {
+        format!("ws://{}", self.addr)
+    }
+
+    async fn accept(&self) -> FakeConn {
+        let (stream, _peer) = self.listener.accept().await.unwrap();
+        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        FakeConn { ws }
+    }
+}
+
+struct FakeConn {
+    ws: WebSocketStream<TcpStream>,
+}
+
+impl FakeConn {
+    async fn recv_text(&mut self) -> String {
+        loop {
+            match self.ws.next().await {
+                Some(Ok(WsMessage::Text(text))) => return text.to_string(),
+                Some(Ok(_)) => {}
+                Some(Err(error)) => panic!("server-side read error: {error}"),
+                None => panic!("client disconnected before sending the expected frame"),
+            }
+        }
+    }
+
+    async fn send_text(&mut self, text: &str) {
+        self.ws.send(WsMessage::text(text)).await.unwrap();
+    }
+}
+
+/// A deliberately trivial wire format, distinct from `senken_feed::okx`'s
+/// real one and from `live_engine.rs`'s own test protocol only in that a
+/// price frame carries its own timestamp — this suite needs two ticks in
+/// two different minutes to close a real bar.
+struct TestProtocol {
+    url: String,
+}
+
+impl senken_feed::VenueProtocol for TestProtocol {
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    fn venue(&self) -> &'static str {
+        TEST_SOURCE
+    }
+
+    fn subscribe_frame(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
+        Ok(format!("SUB {}", instrument.symbol()))
+    }
+
+    fn unsubscribe_frame(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
+        Ok(format!("UNSUB {}", instrument.symbol()))
+    }
+
+    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, PriceUpdate)> {
+        // "PRICE <symbol> <price> <scale> <ts_millis>"
+        let mut parts = text.split_whitespace();
+        if parts.next() != Some("PRICE") {
+            return Vec::new();
+        }
+        let Some(symbol) = parts.next() else {
+            return Vec::new();
+        };
+        let Some(price) = parts.next().and_then(|p| p.parse::<i64>().ok()) else {
+            return Vec::new();
+        };
+        let Some(price_scale) = parts.next().and_then(|p| p.parse::<u8>().ok()) else {
+            return Vec::new();
+        };
+        let Some(ts_millis) = parts.next().and_then(|p| p.parse::<i64>().ok()) else {
+            return Vec::new();
+        };
+        let Ok(instrument) = InstrumentId::new(TEST_SOURCE, symbol) else {
+            return Vec::new();
+        };
+        let Some(ts) = UnixNanos::from_millis(ts_millis) else {
+            return Vec::new();
+        };
+        vec![(
+            instrument,
+            PriceUpdate {
+                ts,
+                price,
+                price_scale,
+                qty: 0,
+                qty_scale: 0,
+            },
+        )]
+    }
+}
+
+/// Builds a real `WsVenueConnector`/`SubscriptionPool` pair dialling
+/// `server`, following `senken_feed::WsVenueConnector`'s own documented
+/// two-step construction — the exact plumbing `crate::feed::build_feed_pools`
+/// builds for OKX, minus OKX itself.
+fn fake_pool(server: &FakeServer) -> HashMap<String, SubscriptionPool> {
+    let protocol = TestProtocol {
+        url: server.ws_url(),
+    };
+    let group = LimitGroup::new(TEST_SOURCE);
+    let connector = senken_feed::WsVenueConnector::new(protocol, group);
+    let pool = SubscriptionPool::new(TEST_SOURCE, connector.clone());
+    connector.bind_pool(pool.clone());
+    HashMap::from([(TEST_SOURCE.to_owned(), pool)])
+}
+
+async fn admin_token(addr: std::net::SocketAddr) -> String {
+    let response = post_json(
+        format!("http://{addr}/api/login"),
+        serde_json::json!({ "email": DEFAULT_ADMIN_EMAIL, "password": ADMIN_TEST_PASSWORD }),
+    )
+    .await;
+    body_json(response).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn ws_ticket(addr: std::net::SocketAddr, token: &str) -> String {
+    let response = post_json_auth(
+        format!("http://{addr}/api/ws/ticket"),
+        token,
+        serde_json::json!({}),
+    )
+    .await;
+    body_json(response).await["ticket"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A user with exactly the grants a real "Alerts User" role carries —
+/// mirrors `alert_handlers`'s own test helper of the same shape.
+fn alerts_user(
+    identity: &senken_identity::IdentityStore,
+    admin: &senken_identity::AuthenticatedUser,
+    email: &str,
+) -> senken_identity::AuthenticatedUser {
+    use senken_acl::{Action, Grant, Resource, Scope};
+    let user_id = identity
+        .create_user(admin, email, "Alerts User", Some("a very long password"))
+        .unwrap();
+    for action in [Action::View, Action::Create, Action::Delete] {
+        identity
+            .grant_direct(
+                admin,
+                user_id,
+                Grant::new(action, Resource::Alert, Scope::Own),
+            )
+            .unwrap();
+    }
+    let (_uid, token) = identity.login(email, "a very long password").unwrap();
+    identity.resolve_session(token.reveal()).unwrap().unwrap()
+}
+
+/// A source this build cannot stream must be answered, not ignored: silence
+/// is indistinguishable from "the feed is fine, nothing has traded yet", and
+/// a client that cannot tell them apart shows a live state for a feed that
+/// is not running.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_topic_with_no_feed_is_answered_as_unsupported() {
+    let server = FakeServer::bind().await;
+    let feed_pools = fake_pool(&server);
+    let (_runtime_dir, runtime) = temp_empty_runtime();
+    let (handle, _identity, _dir) = serve_unfenced_test_server_with_feed(runtime, feed_pools).await;
+    let addr = handle.local_addr();
+    let token = admin_token(addr).await;
+    let ticket = ws_ticket(addr, &token).await;
+
+    let (mut client, _resp) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws?ticket={ticket}"))
+            .await
+            .unwrap();
+    let _connected = client.next().await.unwrap().unwrap();
+
+    client
+        .send(WsMessage::text(
+            r#"{"type":"subscribe","topic":"no-such-venue:BTCUSDT"}"#,
+        ))
+        .await
+        .unwrap();
+
+    let frame: serde_json::Value =
+        serde_json::from_str(client.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(frame["type"], "unsupported");
+    assert_eq!(frame["topic"], "no-such-venue:BTCUSDT");
+}
+
+/// a WS client subscribing to a live topic leases the pool
+/// exactly the way a chart pane does, and closing the connection — without
+/// ever sending `Unsubscribe` — releases it, unprompted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ws_subscription_streams_ticks_and_releases_on_disconnect() {
+    let server = FakeServer::bind().await;
+    let feed_pools = fake_pool(&server);
+    let (_runtime_dir, runtime) = temp_empty_runtime();
+    let (handle, _identity, _dir) = serve_unfenced_test_server_with_feed(runtime, feed_pools).await;
+    let addr = handle.local_addr();
+    let token = admin_token(addr).await;
+    let ticket = ws_ticket(addr, &token).await;
+
+    let server_task = tokio::spawn(async move {
+        let mut conn = server.accept().await;
+        let sub = conn.recv_text().await;
+        (server, conn, sub)
+    });
+
+    let (mut client, _resp) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws?ticket={ticket}"))
+            .await
+            .unwrap();
+    // "connected"
+    let _ = client.next().await.unwrap().unwrap();
+
+    client
+        .send(WsMessage::text(
+            r#"{"type":"subscribe","topic":"test-venue:BTCUSDT"}"#,
+        ))
+        .await
+        .unwrap();
+    // "subscribed" ack, sent before the lease necessarily completes.
+    let ack: serde_json::Value =
+        serde_json::from_str(client.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(ack["type"], "subscribed");
+
+    let (server, mut conn, sub) = server_task.await.unwrap();
+    assert_eq!(
+        sub, "SUB BTCUSDT",
+        "the WS subscribe must have leased the pool, dialling the fake venue"
+    );
+
+    conn.send_text("PRICE BTCUSDT 78146 2 1000").await;
+    let price: serde_json::Value =
+        serde_json::from_str(client.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(price["type"], "price");
+    assert_eq!(price["topic"], "test-venue:BTCUSDT");
+    assert_eq!(price["price"], 78146);
+    assert_eq!(price["price_scale"], 2);
+
+    // Ungraceful close — no `Unsubscribe` frame at all, the same as a
+    // browser tab or laptop lid just closing.
+    drop(client);
+
+    let unsub = tokio::time::timeout(Duration::from_secs(5), conn.recv_text())
+        .await
+        .expect("the dropped connection must release its lease without anyone calling anything");
+    assert_eq!(unsub, "UNSUB BTCUSDT");
+
+    drop(conn);
+    drop(server);
+    handle.shutdown().await.unwrap();
+}
+
+/// The property this file exists to prove, through the real server rather
+/// than only through
+/// `senken_alerts::runner`'s own unit test: an alert leases its instrument
+/// independently of any chart, keeps running after a chart pane sharing the
+/// same instrument disconnects, and its fire is recorded and visible over
+/// HTTP.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_alert_outlives_its_chart_pane_and_records_a_fire_over_http() {
+    let server = FakeServer::bind().await;
+    let feed_pools = fake_pool(&server);
+    let (_runtime_dir, runtime) = temp_empty_runtime();
+    let (handle, identity, _dir) = serve_unfenced_test_server_with_feed(runtime, feed_pools).await;
+    let addr = handle.local_addr();
+
+    let (_uid, admin_session) = identity
+        .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+        .unwrap();
+    let admin = identity
+        .resolve_session(admin_session.reveal())
+        .unwrap()
+        .unwrap();
+    let alice = alerts_user(&identity, &admin, "alice-live@example.com");
+    let (_uid2, alice_token) = identity
+        .login("alice-live@example.com", "a very long password")
+        .unwrap();
+    let alice_token = alice_token.reveal().to_owned();
+    drop(alice);
+
+    // The alert is created first, so its own lease is what dials the fake
+    // venue — the "chart" below shares the same, already-open subscription.
+    let server_task = tokio::spawn(async move {
+        let mut conn = server.accept().await;
+        let sub = conn.recv_text().await;
+        (server, conn, sub)
+    });
+
+    let create = post_json_auth(
+        format!("http://{addr}/api/alerts"),
+        &alice_token,
+        serde_json::json!({
+            "instrument": "test-venue:BTCUSDT",
+            "timeframe": "1m",
+            "indicator": { "name": "Sma", "params": r#"{"period":1}"# },
+            "condition": { "field": "Value", "comparator": "GreaterThan", "threshold": 100.0 },
+        }),
+    )
+    .await;
+    assert_eq!(create.status(), reqwest::StatusCode::CREATED);
+    let alert_id = body_json(create).await["id"].as_str().unwrap().to_owned();
+
+    let (server, mut conn, sub) = server_task.await.unwrap();
+    assert_eq!(
+        sub, "SUB BTCUSDT",
+        "creating the alert must have leased the pool immediately"
+    );
+
+    // A "chart pane" leases the exact same instrument over the WS endpoint
+    // — the pool must not dial a second connection (`sub` above was the
+    // only subscribe frame the fake venue will ever see).
+    let ticket = ws_ticket(addr, &alice_token).await;
+    let (mut pane, _resp) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws?ticket={ticket}"))
+            .await
+            .unwrap();
+    let _ = pane.next().await.unwrap().unwrap(); // "connected"
+    pane.send(WsMessage::text(
+        r#"{"type":"subscribe","topic":"test-venue:BTCUSDT"}"#,
+    ))
+    .await
+    .unwrap();
+    let ack: serde_json::Value =
+        serde_json::from_str(pane.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(ack["type"], "subscribed");
+
+    // The chart closes. The alert must keep running — nothing here ever
+    // touches the alert's own lease.
+    drop(pane);
+    let no_unsub_yet = tokio::time::timeout(Duration::from_millis(300), conn.recv_text()).await;
+    assert!(
+        no_unsub_yet.is_err(),
+        "the alert's own lease must keep the venue subscription alive after the chart pane disconnects"
+    );
+
+    // Two ticks across a minute boundary: the first opens (and, with only
+    // one tick in it, also closes at) minute 0 with price 150.00; the
+    // second, in minute 1, is what closes minute 0's bucket. Only the
+    // *closed* bar's value (150.00) is ever compared against the
+    // threshold — never the still-forming minute 1 tick (5.00, which is
+    // below the threshold and would not have fired at all).
+    // A watch channel only ever holds the *latest* value, so two publishes
+    // made back-to-back before anything reads the channel would coalesce
+    // into one and the first (bucket-opening) tick would be lost — the
+    // same reason `senken_alerts::runner`'s own test interleaves a sleep
+    // between its two ticks. This is what gives the alert's own task room
+    // to actually observe both.
+    conn.send_text("PRICE BTCUSDT 150 2 0").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    conn.send_text("PRICE BTCUSDT 5 2 65000").await;
+
+    let fired = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let record = body_json(
+                get_auth(format!("http://{addr}/api/alerts/{alert_id}"), &alice_token).await,
+            )
+            .await;
+            if record["fire_count"].as_u64().unwrap_or(0) > 0 {
+                return record;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the alert must fire well within this generous timeout");
+
+    assert_eq!(fired["fire_count"], 1);
+    assert!(
+        (fired["last_fired_value"].as_f64().unwrap() - 150.0).abs() < 1e-9,
+        "must fire on the closed bar's own close (150.0), not the still-forming tick (5.0): {fired}"
+    );
+
+    // Deleting the alert must stop it — no further lease, so a later
+    // release the fake venue could observe is provable by shutting it down
+    // cleanly, which only succeeds if nothing is left holding the socket.
+    let delete = reqwest::Client::new()
+        .delete(format!("http://{addr}/api/alerts/{alert_id}"))
+        .header("authorization", format!("Bearer {alice_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let unsub = tokio::time::timeout(Duration::from_secs(5), conn.recv_text())
+        .await
+        .expect("deleting the alert must release its lease");
+    assert_eq!(unsub, "UNSUB BTCUSDT");
+
+    drop(conn);
+    drop(server);
+    handle.shutdown().await.unwrap();
+}

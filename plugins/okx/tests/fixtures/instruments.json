@@ -1,0 +1,78 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "alias": "",
+      "auctionEndTime": "",
+      "baseCcy": "BTC",
+      "category": "1",
+      "ctMult": "",
+      "ctType": "",
+      "ctVal": "",
+      "ctValCcy": "",
+      "expTime": "",
+      "instFamily": "",
+      "instId": "BTC-USDT",
+      "instType": "SPOT",
+      "lever": "10",
+      "listTime": "1548133413000",
+      "lotSz": "0.00000001",
+      "maxIcebergSz": "9999999999.0000000000000000",
+      "maxLmtAmt": "20000000",
+      "maxLmtSz": "9999999999",
+      "maxMktAmt": "1000000",
+      "maxMktSz": "1000000",
+      "maxStopSz": "1000000",
+      "maxTriggerSz": "9999999999.0000000000000000",
+      "maxTwapSz": "9999999999.0000000000000000",
+      "minSz": "0.00001",
+      "optType": "",
+      "quoteCcy": "USDT",
+      "ruleType": "normal",
+      "settleCcy": "",
+      "state": "live",
+      "stk": "",
+      "tickSz": "0.1",
+      "tradeQuoteCcyList": ["USDT"],
+      "uly": "",
+      "aFieldOkxAddedLastWeek": { "nested": [1, 2] }
+    },
+    {
+      "baseCcy": "ETH",
+      "instId": "ETH-USDT",
+      "instType": "SPOT",
+      "lotSz": "0.000001",
+      "quoteCcy": "USDT",
+      "state": "live",
+      "tickSz": "0.01"
+    },
+    {
+      "baseCcy": "OLD",
+      "instId": "OLD-USDT",
+      "instType": "SPOT",
+      "lotSz": "0.01",
+      "quoteCcy": "USDT",
+      "state": "suspend",
+      "tickSz": "0.0001"
+    },
+    {
+      "baseCcy": "SCI",
+      "instId": "SCI-USDT",
+      "instType": "SPOT",
+      "lotSz": "1e-8",
+      "quoteCcy": "USDT",
+      "state": "live",
+      "tickSz": "0.01"
+    },
+    {
+      "baseCcy": "BAD",
+      "instId": "BAD-USDT",
+      "instType": "SPOT",
+      "lotSz": "0",
+      "quoteCcy": "USDT",
+      "state": "live",
+      "tickSz": "0.01"
+    }
+  ]
+}

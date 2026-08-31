@@ -1,0 +1,20 @@
+[
+ {
+  "id": "BTC-USD",
+  "base_currency": "BTC",
+  "quote_currency": "USD",
+  "quote_increment": "0.01",
+  "base_increment": "0.00000001",
+  "status": "online",
+  "trading_disabled": false
+ },
+ {
+  "id": "YFII-USD",
+  "base_currency": "YFII",
+  "quote_currency": "USD",
+  "quote_increment": "0.01",
+  "base_increment": "0.00000001",
+  "status": "delisted",
+  "trading_disabled": true
+ }
+]

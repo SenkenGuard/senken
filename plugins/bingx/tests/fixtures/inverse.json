@@ -1,0 +1,14 @@
+{
+ "code": 0,
+ "msg": "",
+ "data": [
+  {
+   "symbol": "BTC-USD",
+   "pricePrecision": 1,
+   "minTickSize": "100",
+   "minTradeValue": "100",
+   "minQty": "1.00000000",
+   "status": 1
+  }
+ ]
+}

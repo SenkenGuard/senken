@@ -1,0 +1,31 @@
+[package]
+name = "senken-identity"
+description = "SQLite-backed identity store: users, roles, sessions and Argon2 password hashing behind a guarded, senken-acl-scoped query API"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+senken-acl = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

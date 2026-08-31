@@ -1,0 +1,4 @@
+[toolchain]
+# Keep in sync with `rust-version` in Cargo.toml (the MSRV); CI checks both.
+channel = "1.97"
+components = ["clippy", "rustfmt"]

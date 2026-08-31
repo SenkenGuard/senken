@@ -1,0 +1,59 @@
+[package]
+name = "senken-marketdata"
+description = "Market data domain types, the source contract, and a cached multi-source instrument catalog"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["registry"]
+# `MarketData`, the source contract and the on-disk catalog cache. Without
+# it the crate is only the domain types, with serde as the heaviest
+# dependency.
+registry = [
+  "dep:async-trait",
+  "dep:chrono",
+  "dep:futures",
+  "dep:senken-storage",
+  "dep:tokio",
+  "dep:tracing",
+]
+
+[dependencies]
+async-trait = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+senken-core = { workspace = true }
+senken-storage = { workspace = true, optional = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+# `sync` for OnceCell, `rt` for spawn_blocking around disk I/O. Callers must
+# be inside a Tokio runtime, though no flavour is forced on them.
+tokio = { workspace = true, features = ["rt", "sync"], optional = true }
+tracing = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dev-dependencies]
+divan = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[[bench]]
+name = "search"
+harness = false
+# The bench drives `MarketData`; without this cargo would try to build it
+# under `--no-default-features --all-targets` and fail to compile.
+required-features = ["registry"]

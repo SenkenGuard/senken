@@ -1,0 +1,20 @@
+# Venue and product names that are legitimately mixed-case. Without these,
+# `clippy::doc_markdown` reads every brand in a doc comment as an unquoted
+# identifier and asks for backticks around ordinary prose.
+doc-valid-idents = [
+  "BingX",
+  "BitMEX",
+  "BitMart",
+  "Bitfinex",
+  "Bitstamp",
+  "CoinEx",
+  "Deribit",
+  "KuCoin",
+  "OKX",
+  "Poloniex",
+  "WhiteBIT",
+  # Not a venue, but the same problem: a legitimately mixed-case name that
+  # `senken-identity` mentions constantly in its docs.
+  "SQLite",
+  "..",
+]

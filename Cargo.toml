@@ -1,0 +1,194 @@
+[workspace]
+resolver = "3"
+members = ["apps/*", "crates/*", "plugins/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.97.0"
+license = "LGPL-3.0-only"
+authors = ["viandwi24 <viandwi24@pm.me>"]
+homepage = "https://viandwi24.com/senken"
+repository = "https://github.com/viandwi24/senken"
+categories = ["finance", "simulation", "asynchronous"]
+keywords = [
+  "finance",
+  "trading",
+  "research",
+  "trading-platform",
+  "algorithmic-trading",
+  "quantitative-finance",
+]
+
+[workspace.dependencies]
+# Internal crates. `crates/*` are usable on their own; `plugins/*` and
+# `crates/runtime` exist to assemble them into the Senken application.
+senken-acl = { path = "crates/acl", version = "0.0.1" }
+senken-alerts = { path = "crates/alerts", version = "0.0.1" }
+senken-core = { path = "crates/core", version = "0.0.1" }
+senken-identity = { path = "crates/identity", version = "0.0.1" }
+senken-indicators = { path = "crates/indicators", version = "0.0.1" }
+senken-marketdata = { path = "crates/marketdata", version = "0.0.1" }
+# Lean by default inside this workspace: only the venue plugins ask for
+# `features = ["http"]`. External users get the HTTP client by default.
+senken-plugin = { path = "crates/plugin", version = "0.0.1", default-features = false }
+senken-plugin-bingx = { path = "plugins/bingx", version = "0.0.1" }
+senken-plugin-bitfinex = { path = "plugins/bitfinex", version = "0.0.1" }
+senken-plugin-bitmart = { path = "plugins/bitmart", version = "0.0.1" }
+senken-plugin-htx = { path = "plugins/htx", version = "0.0.1" }
+senken-plugin-phemex = { path = "plugins/phemex", version = "0.0.1" }
+senken-plugin-upbit = { path = "plugins/upbit", version = "0.0.1" }
+senken-plugin-binance = { path = "plugins/binance", version = "0.0.1" }
+senken-plugin-bitget = { path = "plugins/bitget", version = "0.0.1" }
+senken-plugin-bitmex = { path = "plugins/bitmex", version = "0.0.1" }
+senken-plugin-bitstamp = { path = "plugins/bitstamp", version = "0.0.1" }
+senken-plugin-bybit = { path = "plugins/bybit", version = "0.0.1" }
+senken-plugin-coinbase = { path = "plugins/coinbase", version = "0.0.1" }
+senken-plugin-cryptocom = { path = "plugins/cryptocom", version = "0.0.1" }
+senken-plugin-deribit = { path = "plugins/deribit", version = "0.0.1" }
+senken-plugin-gate = { path = "plugins/gate", version = "0.0.1" }
+senken-plugin-gemini = { path = "plugins/gemini", version = "0.0.1" }
+senken-plugin-kraken = { path = "plugins/kraken", version = "0.0.1" }
+senken-plugin-kucoin = { path = "plugins/kucoin", version = "0.0.1" }
+senken-plugin-mexc = { path = "plugins/mexc", version = "0.0.1" }
+senken-plugin-okx = { path = "plugins/okx", version = "0.0.1" }
+senken-plugin-poloniex = { path = "plugins/poloniex", version = "0.0.1" }
+senken-plugin-whitebit = { path = "plugins/whitebit", version = "0.0.1" }
+senken-loader = { path = "crates/loader", version = "0.0.1" }
+senken-runtime = { path = "crates/runtime", version = "0.0.1" }
+senken-series = { path = "crates/series", version = "0.0.1" }
+senken-storage = { path = "crates/storage", version = "0.0.1" }
+senken-store = { path = "crates/store", version = "0.0.1" }
+senken-subscription = { path = "crates/subscription", version = "0.0.1" }
+# The venue half of implements `senken-subscription`'s
+# `VenueConnection`/`VenueConnector` ports against a real venue WebSocket.
+senken-feed = { path = "crates/feed", version = "0.0.1" }
+senken-venue = { path = "crates/venue", version = "0.0.1" }
+senken-workspace = { path = "crates/workspace", version = "0.0.1" }
+# `apps/senken` is the single binary; `apps/cli` holds the market-data
+# subcommands as a library so it can be reused without duplicating them
+#.
+senken-cli = { path = "apps/cli", version = "0.0.1" }
+senken-api = { path = "crates/api", version = "0.0.1" }
+
+# External. Features are kept minimal here; each crate enables what it needs
+# so a library consumer never inherits a runtime it did not ask for.
+anyhow = "1.0.100"
+# `senken-identity`: Argon2id password hashing. Parameters
+# (m=19456, t=2, p=1) are set explicitly in that crate, not taken from this
+# crate's defaults.
+argon2 = "0.6.0"
+# `senken-store` is the only crate allowed to depend on these.
+# `default-features = false` must live here — a workspace member cannot
+# override features on an inherited workspace dependency — and `senken-store`
+# gates them behind its own `parquet` feature so the layout/coverage half
+# compiles without pulling either in.
+arrow = { version = "59.2.0", default-features = false }
+async-trait = "0.1.92"
+# `senken-api`: axum and tower-http are released independently
+# of each other, unlike arrow/parquet above. `features = ["ws"]` is set here
+# because a workspace member cannot override features on an inherited
+# workspace dependency — `axum::extract::ws` does not exist
+# without it, verified by compiling before this was added.
+axum = { version = "0.8.9", features = ["ws"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.6", features = ["derive", "env"] }
+divan = "0.1.21"
+futures = { version = "0.3.34", default-features = false, features = ["std"] }
+# Byte-bounded caches in `senken-loader`: verified available and
+# MSRV-compatible so a hand-rolled LRU is not reinvented.
+lru = "0.18.3"
+# `arrow` and `parquet` are released in lockstep — keep their
+# versions identical. See `arrow`'s entry above for why `default-features =
+# false` is pinned at the workspace root.
+parquet = { version = "59.2.0", default-features = false }
+# `senken-identity`: the OS RNG for session tokens and Argon2
+# salts. Stable version is `0.10.2`, not `0.8.x` — an
+# earlier lookup got this wrong by reading `versions[0]` from the crates.io
+# API instead of `max_stable_version`.
+rand = "0.10.2"
+# Plugins decode bodies themselves (`bytes()` + serde_json) for error
+# control, so the `json` feature is not needed.
+reqwest = { version = "0.13.4", features = ["gzip"] }
+# `senken-identity`: the accounts database.
+# `bundled` vendors SQLite so the build does not depend on a system library.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# `senken-api`'s `web` feature: embeds the built `web/` SPA.
+# `interpolate-folder-path` lets `#[folder = "$CARGO_MANIFEST_DIR/..."]`
+# resolve relative to the crate rather than the workspace root.
+rust-embed = { version = "8.12.0", features = ["interpolate-folder-path"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+# `senken-identity`: hashing session tokens before they are
+# stored, never storing the raw token. Not a dependency of the hashing itself (which does not
+# mention it) because that part predates the decision to hash tokens at rest;
+# version resolved via `cargo add`, which queries the registry directly and
+# is not subject to the `versions[0]` ordering bug A2 warns about.
+sha2 = "0.11.0"
+# `senken-identity`: constant-time session-token comparison so
+# a plain `==` cannot leak a token's prefix through timing.
+subtle = "2.6.1"
+# `apps/senken`'s `gui` feature only; used as a library, no scaffolded app
+#. `tauri-build` is still needed as a build-dependency: it
+# generates the context (icons, capabilities schema) `generate_context!()`
+# expects, even though there is no separate `src-tauri` crate.
+tauri = "2.11.5"
+tauri-build = "2.6.3"
+tempfile = "3.27.0"
+thiserror = "2.0.20"
+# `senken-identity`: session and account timestamps (created_at, expires_at,
+# last_seen_at).
+time = "0.3.55"
+tokio = { version = "1.53.1", default-features = false }
+# `senken-api`'s WS tests drive a real client-side WebSocket
+# handshake against `serve()` over plain `ws://`, needing no TLS backend.
+# `senken-feed` dials real venues over `wss://`, so the
+# feature is set here — a workspace member cannot override features on an
+# inherited workspace dependency (the same limitation already hit for
+# axum). `rustls-tls-native-roots`, not `native-tls`: `reqwest` already
+# pulls in `rustls` plus the OS certificate store via `rustls-native-certs`
+# (see `hyper-rustls` in Cargo.lock) for the exact same reason `governor`
+# and a second RNG crate were rejected elsewhere in this project — one TLS
+# stack, not two.
+tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-native-roots"] }
+tower-http = { version = "0.7.0", features = ["trace", "cors"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# `senken-api`: derives an OpenAPI document from the
+# same `serde` structs the handlers use, so `openapi-typescript` can turn it
+# into the TypeScript types Q5/Q6 consume. The Rust structs stay the single
+# source of truth.
+utoipa = "5.5.0"
+# `senken-identity`: user, role and session ids.
+uuid = { version = "1.26.0", features = ["v4"] }
+wiremock = "0.6"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+print_stdout = "warn"
+# Types like `SourceCatalog` in module `catalog` are the natural names here.
+module_name_repetitions = "allow"
+
+[profile.dev]
+# Full DWARF debug info across 39 crates and ~2,600 dependency artifacts is
+# what made `target/` reach 61 GB. `line-tables-only` keeps file and line in
+# every backtrace — the part we actually read — and drops the variable and
+# type information only a stepping debugger uses. Switch it back temporarily
+# if you ever need one.
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# Silent wrap-around is never acceptable when the integers are money.
+overflow-checks = true
+
+[profile.bench]
+debug = true

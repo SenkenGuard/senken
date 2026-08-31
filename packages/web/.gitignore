@@ -1,0 +1,28 @@
+node_modules
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+# `senken-api`'s `web` feature embeds this directory via rust-embed, which
+# needs the directory to exist to compile at all (verified;
+# see crates/api/README.md). `.gitkeep` is tracked so a clean checkout has
+# it even though a real build's output does not need to be.
+/build/*
+!/build/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*

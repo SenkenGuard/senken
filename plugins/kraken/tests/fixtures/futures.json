@@ -1,0 +1,40 @@
+{
+ "result": "success",
+ "instruments": [
+  {
+   "symbol": "PF_XBTUSD",
+   "type": "flexible_futures",
+   "tickSize": 1,
+   "contractSize": 1,
+   "tradeable": true,
+   "contractValueTradePrecision": 4,
+   "base": "BTC",
+   "quote": "USD",
+   "isExpired": false
+  },
+  {
+   "symbol": "PI_XBTUSD",
+   "type": "futures_inverse",
+   "tickSize": 0.5,
+   "contractSize": 1,
+   "tradeable": true,
+   "contractValueTradePrecision": 0,
+   "base": "BTC",
+   "quote": "USD",
+   "isExpired": false
+  },
+  {
+   "symbol": "FI_ETHUSD_260925",
+   "type": "futures_inverse",
+   "lastTradingTime": "2026-09-25T15:00:00Z",
+   "tickSize": 0.05,
+   "contractSize": 1,
+   "tradeable": true,
+   "contractValueTradePrecision": 0,
+   "base": "ETH",
+   "quote": "USD",
+   "isExpired": false
+  }
+ ],
+ "serverTime": "2026-08-30T00:00:00.000Z"
+}

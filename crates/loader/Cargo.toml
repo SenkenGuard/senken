@@ -1,0 +1,44 @@
+[package]
+name = "senken-loader"
+description = "The resolution ladder between a chart and senken-store: memory/store/aggregation resolution, chunk-keyed single-flight fetching, generation-invalidated caching, and observable, cancellable jobs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `senken-store` is depended on with its default (`parquet`) feature on:
+# unlike a library consumer who only wants coverage/layout, the loader's
+# whole job is reading and writing real bar data. Arrow itself stays
+# confined to `senken-store` — this crate never names `arrow`
+# or `parquet` as a dependency; it consumes `senken_store::bars_from_batch`
+# instead of touching a `RecordBatch` itself.
+senken-core = { workspace = true }
+senken-series = { workspace = true }
+senken-store = { workspace = true }
+# For `plugin_adapter` only: bridges a real
+# `senken_plugin::BarSource` onto this crate's own `BarSource` port so the
+# two traits do not drift apart. `senken-plugin` inherits `default-features
+# = false` from its own workspace entry, so this pulls in no HTTP/TLS
+# stack — only the plain contract types and, transitively,
+# `senken-marketdata` for `SourceError`, which this module needs directly
+# to translate it into `FetchError`.
+senken-marketdata = { workspace = true }
+senken-plugin = { workspace = true }
+async-trait = { workspace = true }
+lru = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

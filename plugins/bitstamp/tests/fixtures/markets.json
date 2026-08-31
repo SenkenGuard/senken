@@ -1,0 +1,33 @@
+[
+ {
+  "name": "BTC/USD",
+  "market_symbol": "btcusd",
+  "base_currency": "BTC",
+  "base_decimals": 8,
+  "counter_currency": "USD",
+  "counter_decimals": 2,
+  "trading": "Enabled",
+  "market_type": "SPOT"
+ },
+ {
+  "name": "BTC/USD-PERP",
+  "market_symbol": "btcusd-perp",
+  "base_currency": "BTC",
+  "base_decimals": 5,
+  "counter_currency": "USD",
+  "counter_decimals": 0,
+  "trading": "Enabled",
+  "market_type": "PERPETUAL",
+  "contract_size": "1.00000000"
+ },
+ {
+  "name": "ZK/EUR",
+  "market_symbol": "zkeur",
+  "base_currency": "ZK",
+  "base_decimals": 0,
+  "counter_currency": "EUR",
+  "counter_decimals": 6,
+  "trading": "Disabled",
+  "market_type": "SPOT"
+ }
+]
