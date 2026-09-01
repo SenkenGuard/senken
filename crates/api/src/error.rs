@@ -269,6 +269,41 @@ impl From<senken_notes::NoteError> for HandlerError {
     }
 }
 
+/// `storage_handlers`' translation from `senken_store::StoreError`.
+/// Unlike every other guarded-store mapping in this file, this one has no
+/// `Identity` variant to defer to — `senken-store` has no notion of a
+/// user, so `storage_handlers` calls `AuthenticatedUser::authorize` itself
+/// and maps that separately.
+impl From<senken_store::StoreError> for HandlerError {
+    fn from(error: senken_store::StoreError) -> Self {
+        use senken_store::StoreError;
+        match error {
+            // The one caller-triggerable case: a `source_id`/`symbol`/
+            // `series_id` that is not a single safe path segment.
+            StoreError::InvalidPathSegment(segment) => {
+                Self::BadRequest(format!("{segment:?} is not a valid path segment"))
+            }
+            StoreError::Io { path, source } => {
+                tracing::error!(?path, %source, "store: io error");
+                Self::Internal
+            }
+            StoreError::Storage(source) => {
+                tracing::error!(%source, "store: storage error");
+                Self::Internal
+            }
+            // `Rejected`/`Parquet`/`Arrow` only ever arise on the
+            // read/write-bars path, never on usage accounting or deletion —
+            // reachable here only if `senken-store` grows a new caller of
+            // this same error type, so they fail closed like any other
+            // unmapped variant.
+            other => {
+                tracing::error!(?other, "store: unmapped error variant");
+                Self::Internal
+            }
+        }
+    }
+}
+
 impl axum::response::IntoResponse for HandlerError {
     fn into_response(self) -> axum::response::Response {
         use axum::Json;

@@ -50,6 +50,7 @@ pub mod paths;
 pub mod range;
 mod spec_token;
 mod store;
+mod usage;
 
 mod error;
 
@@ -66,6 +67,7 @@ pub use crate::error::{StoreError, WriteAssertionError};
 pub use crate::range::{decode_range, encode_range};
 pub use crate::spec_token::{decode_spec_token, encode_spec_token};
 pub use crate::store::Store;
+pub use crate::usage::{InstrumentUsage, SeriesKind, SeriesUsage, SourceUsage};
 
 #[cfg(feature = "parquet")]
 pub use crate::reader::bars_from_batch;

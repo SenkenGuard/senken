@@ -32,6 +32,7 @@ mod notes_handlers;
 mod openapi;
 mod pagination;
 mod source_handlers;
+mod storage_handlers;
 #[cfg(test)]
 mod test_support;
 mod watchlist_handlers;
@@ -427,6 +428,7 @@ fn router(state: AppState, allowed_origins: &[String]) -> Router {
     api = mount_instrument_routes(api, &state);
     api = mount_watchlist_routes(api, &state);
     api = mount_notes_routes(api, &state);
+    api = mount_storage_routes(api, &state);
     let api: Router = api.fallback(api_not_found).with_state(state.clone());
 
     let router = Router::new().nest("/api", api);
@@ -887,6 +889,32 @@ fn mount_instrument_routes(mut api: Router<AppState>, state: &AppState) -> Route
         state,
         "/sources",
         get(source_handlers::list_sources),
+        EndpointPermission::Authenticated,
+    )
+}
+
+/// Mounts the storage usage/reclamation surface, split out of [`router`]
+/// the same way [`mount_workspace_routes`] is — but, unlike every route
+/// mounted at plain `Authenticated` above, each handler here calls
+/// `senken_identity::AuthenticatedUser::authorize` on `senken_acl::Resource::Storage`
+/// itself: `senken-store` has no notion of a user for a guarded store to
+/// check against, so this is the one surface in this crate where the
+/// router-level guard is only "a valid, unfenced session", with the real
+/// `Action`/`Resource`/`Scope::All` check performed inside
+/// `storage_handlers` on every call.
+fn mount_storage_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/storage",
+        get(storage_handlers::storage_report),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/storage/delete",
+        post(storage_handlers::delete_storage),
         EndpointPermission::Authenticated,
     )
 }

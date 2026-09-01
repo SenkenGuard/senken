@@ -47,7 +47,10 @@ import type {
 	NotesPage,
 	NoteDto,
 	CreateNoteRequest,
-	UpdateNoteRequest
+	UpdateNoteRequest,
+	StorageReportDto,
+	DeleteStorageRequest,
+	DeleteStorageResponse
 } from './types';
 
 export type SessionExpiredHandler = () => void;
@@ -603,6 +606,28 @@ class ApiClient {
 	/** `DELETE /api/notes/{id}`. */
 	async deleteNote(id: string): Promise<void> {
 		await this.request<void>(`/api/notes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+	}
+
+	// ------------------------------------------------------------------
+	// Storage: what this server is holding on disk, and reclaiming it.
+	// `senken_store::Store` has no notion of a user, so both endpoints check
+	// `Resource::Storage` at `Scope::All` themselves rather than delegating
+	// to a per-account guarded store the way every block above does.
+	// ------------------------------------------------------------------
+
+	/** `GET /api/storage`. */
+	async storageReport(): Promise<StorageReportDto> {
+		return this.request<StorageReportDto>('/api/storage');
+	}
+
+	/** `POST /api/storage/delete`. Naming only `source_id` deletes the whole
+	 * source; adding `symbol` narrows to one instrument; adding `series_id`
+	 * too narrows to one series. */
+	async deleteStorage(body: DeleteStorageRequest): Promise<DeleteStorageResponse> {
+		return this.request<DeleteStorageResponse>('/api/storage/delete', {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
 	}
 
 	/**

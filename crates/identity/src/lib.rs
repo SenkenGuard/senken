@@ -1326,6 +1326,139 @@ mod tests {
         assert!(matches!(err, IdentityError::Forbidden));
     }
 
+    // --- Superadmin resource backfill (a Resource added after an -----
+    // --- existing install's first run must still reach the seeded ----
+    // --- superadmin, not 403 it forever) -------------------------------
+    //
+    // `seed_default_admin` only ever runs its `ALL_RESOURCES` loop once, on
+    // a database with zero users. An existing install never sees it again,
+    // so a `Resource` variant added later needs its own catch-up — these
+    // tests exercise that catch-up directly against the raw SQLite file,
+    // the same way an existing install's superadmin row would look right
+    // after an upgrade: some resources present from the original seeding,
+    // one missing entirely.
+
+    /// Every action `role_grants` a full seeding writes for one resource —
+    /// mirrors `store::ALL_ACTIONS`, but as plain strings so a test can
+    /// drive the raw database without reaching into a private const.
+    const ALL_ACTION_TOKENS: [&str; 5] = ["view", "create", "edit", "delete", "share"];
+
+    fn superadmin_role_id(db_path: &std::path::Path) -> String {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.query_row(
+            "SELECT id FROM roles WHERE name = 'Superadmin' AND builtin = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn grant_count_for_resource(db_path: &std::path::Path, role_id: &str, resource: &str) -> i64 {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM role_grants WHERE role_id = ?1 AND resource = ?2",
+            rusqlite::params![role_id, resource],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn total_grant_count(db_path: &std::path::Path) -> i64 {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM role_grants", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_resource_stripped_of_every_grant_is_backfilled_at_scope_all_on_reopen() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("accounts.db");
+        // First run: seeds the Superadmin role with every `ALL_RESOURCES`
+        // entry, `Storage` included.
+        drop(IdentityStore::open(&db_path).unwrap());
+        let role_id = superadmin_role_id(&db_path);
+
+        // Simulate the world *before* `Resource::Storage` existed: strip
+        // every grant row for it, as an install that predates the variant
+        // would never have had one written in the first place.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute(
+                "DELETE FROM role_grants WHERE role_id = ?1 AND resource = 'storage'",
+                rusqlite::params![role_id],
+            )
+            .unwrap();
+        }
+        assert_eq!(grant_count_for_resource(&db_path, &role_id, "storage"), 0);
+
+        // Reopening must backfill the full action set at `Scope::All`,
+        // exactly as a fresh seeding would have written.
+        let store = IdentityStore::open(&db_path).unwrap();
+        let admin = admin_auth(&store);
+        let page = store.list_roles(&admin, 50, 0).unwrap();
+        let superadmin = page.rows.iter().find(|r| r.name == "Superadmin").unwrap();
+        for action in [
+            Action::View,
+            Action::Create,
+            Action::Edit,
+            Action::Delete,
+            Action::Share,
+        ] {
+            assert!(
+                superadmin
+                    .grants
+                    .contains(&Grant::new(action, Resource::Storage, Scope::All)),
+                "missing {action:?}/Storage/All after backfill"
+            );
+        }
+        assert_eq!(
+            grant_count_for_resource(&db_path, &superadmin_role_id(&db_path), "storage"),
+            i64::try_from(ALL_ACTION_TOKENS.len()).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_resource_missing_only_one_action_is_left_alone_not_topped_up() {
+        // The rule is "no grant on the resource at all", not "missing an
+        // action" — an operator who deliberately removed one action from a
+        // resource that still has others must keep it removed.
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("accounts.db");
+        drop(IdentityStore::open(&db_path).unwrap());
+        let role_id = superadmin_role_id(&db_path);
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute(
+                "DELETE FROM role_grants WHERE role_id = ?1 AND resource = 'alert' AND action = 'delete'",
+                rusqlite::params![role_id],
+            )
+            .unwrap();
+        }
+        assert_eq!(grant_count_for_resource(&db_path, &role_id, "alert"), 4);
+
+        drop(IdentityStore::open(&db_path).unwrap());
+
+        assert_eq!(
+            grant_count_for_resource(&db_path, &role_id, "alert"),
+            4,
+            "a resource with *some* remaining grant must not be topped back up"
+        );
+    }
+
+    #[test]
+    fn reopening_an_already_complete_database_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("accounts.db");
+        drop(IdentityStore::open(&db_path).unwrap());
+        let before = total_grant_count(&db_path);
+
+        drop(IdentityStore::open(&db_path).unwrap());
+        let after = total_grant_count(&db_path);
+
+        assert_eq!(before, after, "the backfill must be a no-op once complete");
+    }
+
     #[test]
     fn a_headless_caller_without_the_edit_role_grant_cannot_revoke_a_plugin_permission_from_a_role_via_the_store()
      {

@@ -35,6 +35,14 @@ pub enum StoreError {
     #[error(transparent)]
     Rejected(#[from] WriteAssertionError),
 
+    /// A `source_id`, `symbol`, or series directory name given to a
+    /// [`crate::Store`] usage or deletion call was not a single safe path
+    /// segment (empty, `.`, `..`, or containing a path separator). Rejected
+    /// outright rather than sanitised: a caller that could pass `../../..`
+    /// here could otherwise delete the accounts database.
+    #[error("{0:?} is not a valid path segment")]
+    InvalidPathSegment(String),
+
     /// The Arrow/Parquet write or read path failed. Only constructible
     /// with the `parquet` feature enabled.
     #[cfg(feature = "parquet")]

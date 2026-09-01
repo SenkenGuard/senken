@@ -88,15 +88,17 @@ export interface SettingsSection {
 	 * need to reflect live values — search finds a *setting by name*, not
 	 * by its current value. */
 	searchIndex: SettingsSearchEntry[];
-	/** hiding a section is cosmetic only, never access
-	 * control — the admin-only sections' own content is what must enforce
-	 * a real check against the API and handle a `403` gracefully. This
-	 * flag exists purely so the nav does not clutter every user's view
-	 * with controls they cannot use; it must never be the only thing
-	 * standing between a user and an admin action. */
-	adminOnly?: boolean;
-	/** Hides the section outside the desktop app. Unlike `adminOnly` this
-	 * is not a permission at all: the settings it holds are meaningless in
+	/** The `Resource` names this section administers; it is shown when the
+	 * caller holds a grant on any of them.
+	 *
+	 * Hiding a section is cosmetic only, never access control — the
+	 * section's own content is what must enforce a real check against the
+	 * API and handle a `403` gracefully. This exists purely so the nav does
+	 * not clutter every user's view with controls they cannot use; it must
+	 * never be the only thing standing between a user and an admin action. */
+	requiresAnyResource?: readonly string[];
+	/** Hides the section outside the desktop app. Unlike
+	 * `requiresAnyResource` this is not a permission at all: the settings it holds are meaningless in
 	 * a browser tab, which is served *by* one server and cannot be pointed
 	 * at another without navigating away from it. Nothing is being withheld
 	 * — there is simply no choice to offer. */

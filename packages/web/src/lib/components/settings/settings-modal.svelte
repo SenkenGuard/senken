@@ -25,7 +25,7 @@
 		isSettingsSectionVisible
 	} from '$lib/state/settings-registry.svelte';
 	import { isDesktopShell } from '$lib/shell';
-	import { accessVisibility, canSeeAccessSection } from './access-visibility.svelte';
+	import { accessVisibility, grantedResources } from './access-visibility.svelte';
 	import { settingsModal, closeSettings } from '$lib/state/settings.svelte';
 	import XIcon from '@lucide/svelte/icons/x';
 
@@ -38,7 +38,7 @@
 	const sections = $derived(
 		listSettingsSections().filter((section) =>
 			isSettingsSectionVisible(section, {
-				isAdmin: canSeeAccessSection(accessVisibility.profile),
+				grantedResources: grantedResources(accessVisibility.profile),
 				isDesktop: isDesktopShell()
 			})
 		)

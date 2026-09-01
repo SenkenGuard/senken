@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 use senken_acl::{Action, Grant, PluginPermissionName, PluginPermissionRecord, Resource, Scope};
 
-use crate::actor::{AuthenticatedUser, decode_grant, encode_grant, load_actor};
+use crate::actor::{AuthenticatedUser, decode_grant, encode_grant, load_actor, resource_to_sql};
 use crate::error::IdentityError;
 use crate::id::{PluginPermissionId, RoleId, UserId};
 use crate::password::{check_password_len, hash_password, verify_dummy, verify_password};
@@ -38,7 +38,7 @@ const ALL_ACTIONS: [Action; 5] = [
 
 /// Every `Resource` this crate knows about, for the same seeding purpose as
 /// [`ALL_ACTIONS`].
-const ALL_RESOURCES: [Resource; 11] = [
+const ALL_RESOURCES: [Resource; 12] = [
     Resource::ChartWorkspace,
     Resource::ChartLayout,
     Resource::Alert,
@@ -50,6 +50,7 @@ const ALL_RESOURCES: [Resource; 11] = [
     Resource::Indicator,
     Resource::Watchlist,
     Resource::Note,
+    Resource::Storage,
 ];
 
 /// Idle session lifetime: 30 days, refreshed on every use.
@@ -141,7 +142,7 @@ impl IdentityStore {
             conn: Arc::new(Mutex::new(conn)),
         };
         store.seed_default_admin()?;
-        store.ensure_builtin_role_grants()?;
+        store.backfill_superadmin_resource_grants()?;
         Ok(store)
     }
 
@@ -168,49 +169,15 @@ impl IdentityStore {
         Arc::clone(&self.conn)
     }
 
-    /// Gives the built-in `Superadmin` role every grant its own description
-    /// promises, on every open.
-    ///
-    /// [`seed_default_admin`](Self::seed_default_admin) writes these once, on
-    /// a database with no users, and never again. That made adding a
-    /// [`Resource`] variant a silent, delayed failure: the enum forces its
-    /// authorisation to be written, and `ALL_RESOURCES` forces a *new*
-    /// database to grant it, but every database that already existed kept the
-    /// grants it was seeded with. A user who had been running Senken since
-    /// before the variant existed was simply told they had no permission,
-    /// with nothing in the code looking wrong.
-    ///
-    /// Closing that by hand — one backfill per migration — puts the same
-    /// trap back for the next variant. Reconciling here instead means the
-    /// role means what it says for as long as it exists, and a resource added
-    /// tomorrow needs no migration at all.
-    ///
-    /// Only the built-in role, and only insertions: a role an administrator
-    /// authored is theirs, and a grant deliberately removed from a custom
-    /// role must stay removed.
-    fn ensure_builtin_role_grants(&self) -> Result<(), IdentityError> {
-        let conn = self.lock();
-        let role_id: Option<RoleId> = conn
-            .query_row(
-                "SELECT id FROM roles WHERE builtin = 1 AND name = ?1",
-                params![SUPERADMIN_ROLE_NAME],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(role_id) = role_id else {
-            return Ok(());
-        };
-        for action in ALL_ACTIONS {
-            for resource in ALL_RESOURCES {
-                let (a, r, s) = encode_grant(Grant::new(action, resource, Scope::All))?;
-                conn.execute(
-                    "INSERT OR IGNORE INTO role_grants (role_id, action, resource, scope)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![role_id, a, r, s],
-                )?;
-            }
-        }
-        Ok(())
+    /// The accounts database's own file path on disk, when it is backed by
+    /// a real file (always true here — this crate never opens an
+    /// in-memory connection). Exists for `senken-api`'s storage-usage
+    /// report: an admin reclaiming disk space needs this database's own
+    /// size too, and `senken-identity`, not its caller, is the one crate
+    /// that actually knows where its file lives.
+    #[must_use]
+    pub fn db_path(&self) -> Option<std::path::PathBuf> {
+        self.lock().path().map(std::path::PathBuf::from)
     }
 
     /// Creates the built-in `Superadmin` role and the `admin@mail.com`
@@ -257,6 +224,62 @@ impl IdentityStore {
             email = DEFAULT_ADMIN_EMAIL,
             "seeded default superadmin with no password"
         );
+        Ok(())
+    }
+
+    /// Grants the built-in `Superadmin` role full access to any `Resource`
+    /// it has never held a grant on at all, on every `open()`.
+    ///
+    /// [`seed_default_admin`](Self::seed_default_admin) only ever runs its
+    /// `ALL_RESOURCES` loop once, on a database with zero users — an
+    /// **existing** install never sees it again, so a `Resource` variant
+    /// added after that install's first run would otherwise 403 its own
+    /// superadmin forever. This is that catch-up, and it is deliberately
+    /// narrower than "re-seed everything": the rule is "the role has *no*
+    /// row for this resource, at any action" — a resource the role already
+    /// has *some* grant on (even a deliberately reduced one, e.g. an
+    /// operator who removed `Delete` on `Alert`) is left completely alone.
+    /// Idempotent: once every `ALL_RESOURCES` entry has at least one grant
+    /// row, every later `open()` finds nothing left to do.
+    fn backfill_superadmin_resource_grants(&self) -> Result<(), IdentityError> {
+        let conn = self.lock();
+        let role_id: Option<RoleId> = conn
+            .query_row(
+                "SELECT id FROM roles WHERE name = ?1 AND builtin = 1",
+                [SUPERADMIN_ROLE_NAME],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // No built-in Superadmin role exists — nothing to backfill onto.
+        let Some(role_id) = role_id else {
+            return Ok(());
+        };
+
+        for resource in ALL_RESOURCES {
+            let resource_token = resource_to_sql(resource);
+            let has_any_grant: bool = conn
+                .query_row(
+                    "SELECT 1 FROM role_grants WHERE role_id = ?1 AND resource = ?2 LIMIT 1",
+                    params![role_id, resource_token],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if has_any_grant {
+                continue;
+            }
+            for action in ALL_ACTIONS {
+                let (a, r, s) = encode_grant(Grant::new(action, resource, Scope::All))?;
+                conn.execute(
+                    "INSERT INTO role_grants (role_id, action, resource, scope) VALUES (?1, ?2, ?3, ?4)",
+                    params![role_id, a, r, s],
+                )?;
+            }
+            tracing::info!(
+                resource = resource_token,
+                "backfilled superadmin grant for a resource newly added to this crate"
+            );
+        }
         Ok(())
     }
 

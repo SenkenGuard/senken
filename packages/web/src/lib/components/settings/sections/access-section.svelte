@@ -79,7 +79,8 @@
 		'Role',
 		'Indicator',
 		'Watchlist',
-		'Note'
+		'Note',
+		'Storage'
 	] as const;
 	/** Mirrors `crates/acl/src/scope.rs::Scope` exactly. */
 	const SCOPES = ['Own', 'All'] as const;
