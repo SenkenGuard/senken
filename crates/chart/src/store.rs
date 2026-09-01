@@ -75,6 +75,20 @@ pub enum ItemSource {
     Anchored {
         /// What kind of drawing this is, and its geometry.
         kind: DrawingKind,
+        /// The instrument this annotation was drawn against.
+        ///
+        /// A drawing's anchors are prices and instants on one particular
+        /// market: a trend line across Bitcoin's range says nothing about
+        /// Ethereum, and drawing it over Ethereum's candles because the
+        /// same pane happens to be showing them is a claim nobody made.
+        /// A pane keeps its annotations per instrument and shows the ones
+        /// that belong to whatever it is currently displaying.
+        ///
+        /// `None` for a drawing stored before this field existed: its
+        /// instrument is genuinely unknown, and guessing one would be
+        /// worse than saying so. A reader deciding what to draw treats
+        /// `None` as "belongs to no instrument in particular".
+        instrument: Option<InstrumentId>,
     },
 }
 
@@ -314,8 +328,14 @@ pub struct ChartWorkspaceSummary {
     /// Unix timestamp of creation.
     pub created_at: i64,
     /// Unix timestamp of the last change to the workspace's own fields
-    /// (its name) — a layout's own `updated_at` moves independently.
+    /// (its name or its `settings`) — a layout's own `updated_at` moves
+    /// independently.
     pub updated_at: i64,
+    /// Display settings for the workspace as a whole, as opaque
+    /// JSON-object text — this crate does not interpret it beyond checking
+    /// it parses as a JSON object, the same non-interpretation rule
+    /// [`PaneInput::settings`] already documents for a pane's own settings.
+    pub settings: String,
 }
 
 /// One pane to write, supplied to
@@ -482,7 +502,7 @@ impl ChartWorkspaceStore {
                     |row| row.get(0),
                 )?;
                 let mut stmt = conn.prepare(
-                    "SELECT id, owner_id, name, created_at, updated_at FROM chart_workspaces
+                    "SELECT id, owner_id, name, created_at, updated_at, settings FROM chart_workspaces
                      WHERE owner_id = ?1 ORDER BY created_at ASC LIMIT ?2 OFFSET ?3",
                 )?;
                 let rows = stmt
@@ -496,7 +516,7 @@ impl ChartWorkspaceStore {
                         row.get(0)
                     })?;
                 let mut stmt = conn.prepare(
-                    "SELECT id, owner_id, name, created_at, updated_at FROM chart_workspaces
+                    "SELECT id, owner_id, name, created_at, updated_at, settings FROM chart_workspaces
                      ORDER BY created_at ASC LIMIT ?1 OFFSET ?2",
                 )?;
                 let rows = stmt
@@ -544,6 +564,39 @@ impl ChartWorkspaceStore {
         conn.execute(
             "UPDATE chart_workspaces SET name = ?1, updated_at = ?2 WHERE id = ?3",
             params![new_name, now_unix(), workspace_id],
+        )?;
+        Ok(())
+    }
+
+    /// Replaces a workspace's own display settings — a field-level edit,
+    /// the same shape as [`rename_workspace`](Self::rename_workspace) but
+    /// for `settings` rather than `name`. This crate does not interpret
+    /// `settings` beyond checking it is a JSON object; the chart front end
+    /// owns everything inside it.
+    ///
+    /// Requires `auth` to hold `Action::Edit` on `Resource::ChartWorkspace`,
+    /// scoped against this workspace's owner the same way
+    /// [`rename_workspace`](Self::rename_workspace) is.
+    ///
+    /// # Errors
+    /// [`ChartError::InvalidWorkspaceSettings`] if `settings` is not a JSON
+    /// object; [`ChartError::WorkspaceNotFound`] if `workspace_id` does not
+    /// exist; [`ChartError::Identity`] if `auth` may not edit this
+    /// workspace; otherwise as [`ChartError::Database`].
+    pub fn update_workspace_settings(
+        &self,
+        auth: &AuthenticatedUser,
+        workspace_id: ChartWorkspaceId,
+        settings: &str,
+    ) -> Result<(), ChartError> {
+        validate_workspace_settings(settings)?;
+        let scope = auth.authorize(Action::Edit, Resource::ChartWorkspace)?;
+        let conn = self.lock();
+        let owner = workspace_owner(&conn, workspace_id)?;
+        ensure_scope_allows(scope, owner, auth.user_id())?;
+        conn.execute(
+            "UPDATE chart_workspaces SET settings = ?1, updated_at = ?2 WHERE id = ?3",
+            params![settings, now_unix(), workspace_id],
         )?;
         Ok(())
     }
@@ -1255,12 +1308,16 @@ fn encode_item_source(source: &ItemSource) -> ItemSourceColumns {
             None,
             None,
         ),
-        ItemSource::Anchored { kind } => {
+        ItemSource::Anchored { kind, instrument } => {
             let (tool_kind, price, time1, price1, time2, price2, label_text, label_anchor) =
                 encode_drawing_kind(kind);
             (
                 "anchored",
-                None,
+                // The same column a `referenced` item stores its overlay
+                // instrument in: one nullable text column, two source kinds
+                // that each name an instrument, no second column to keep in
+                // step with it.
+                instrument.as_ref().map(|id| id.as_str().to_owned()),
                 None,
                 None,
                 Some(tool_kind.to_owned()),
@@ -1331,7 +1388,15 @@ fn decode_item_source(
                 label_text,
                 label_anchor,
             )?;
-            Ok(ItemSource::Anchored { kind })
+            // A row written before this field existed has no instrument at
+            // all, which is a real answer rather than a corrupt one — unlike
+            // a `referenced` row, where a missing instrument means the row
+            // cannot say what it draws.
+            let instrument = instrument
+                .map(|text| InstrumentId::parse(&text))
+                .transpose()
+                .map_err(|e| ChartError::CorruptInstrumentId(e.to_string()))?;
+            Ok(ItemSource::Anchored { kind, instrument })
         }
         other => Err(ChartError::CorruptPaneItem(format!(
             "unknown source_kind `{other}`"
@@ -1675,6 +1740,22 @@ fn validate_pane_settings(settings: &str) -> Result<(), ChartError> {
     Ok(())
 }
 
+/// Checks a workspace's `settings` parses as a JSON **object** before it is
+/// ever written — stricter than [`validate_pane_settings`] (which only
+/// requires valid JSON) because a workspace's settings are meant to be
+/// extended key by key over time, the same shape every reader of
+/// [`ChartWorkspaceSummary::settings`] can then rely on without checking
+/// what kind of JSON value it got back.
+fn validate_workspace_settings(settings: &str) -> Result<(), ChartError> {
+    let invalid = |msg: String| ChartError::InvalidWorkspaceSettings(msg);
+    let value: serde_json::Value =
+        serde_json::from_str(settings).map_err(|e| invalid(e.to_string()))?;
+    if !value.is_object() {
+        return Err(invalid(format!("expected a JSON object, got: {settings}")));
+    }
+    Ok(())
+}
+
 /// Checks a drawing's style before it is ever written: `width` must be one
 /// of the four `lightweight-charts` stroke widths, and `color` must be a
 /// plain `#rrggbb` hex string — the same vocabulary this project's own
@@ -1706,6 +1787,7 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChartWorkspaceS
         name: row.get(2)?,
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
+        settings: row.get(5)?,
     })
 }
 
@@ -1721,7 +1803,7 @@ fn insert_default_workspace(
     let workspace_id = ChartWorkspaceId::new();
     let now = now_unix();
     tx.execute(
-        "INSERT INTO chart_workspaces (id, owner_id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+        "INSERT INTO chart_workspaces (id, owner_id, name, created_at, updated_at, settings) VALUES (?1, ?2, ?3, ?4, ?4, '{}')",
         params![workspace_id, owner, name, now],
     )?;
 
@@ -2074,6 +2156,7 @@ mod tests {
                         .to_json(),
                         source: ItemSource::Anchored {
                             kind: DrawingKind::HorizontalLine { price: 2450.5 },
+                            instrument: None,
                         },
                     },
                 ],
@@ -2107,7 +2190,8 @@ mod tests {
         assert_eq!(
             detail.panes[0].items[1].source,
             ItemSource::Anchored {
-                kind: DrawingKind::HorizontalLine { price: 2450.5 }
+                kind: DrawingKind::HorizontalLine { price: 2450.5 },
+                instrument: None,
             }
         );
         assert_eq!(
@@ -2150,6 +2234,7 @@ mod tests {
                     style: style.clone(),
                     source: ItemSource::Anchored {
                         kind: DrawingKind::Ray { start, end },
+                        instrument: None,
                     },
                 },
                 PaneItemInput {
@@ -2159,6 +2244,7 @@ mod tests {
                     style: style.clone(),
                     source: ItemSource::Anchored {
                         kind: DrawingKind::FibRetracement { start, end },
+                        instrument: None,
                     },
                 },
                 PaneItemInput {
@@ -2172,6 +2258,7 @@ mod tests {
                             text: "Breakout level".to_owned(),
                             anchor: LabelAnchor::Above,
                         },
+                        instrument: None,
                     },
                 },
             ],
@@ -2186,13 +2273,15 @@ mod tests {
         assert_eq!(
             detail.panes[0].items[0].source,
             ItemSource::Anchored {
-                kind: DrawingKind::Ray { start, end }
+                kind: DrawingKind::Ray { start, end },
+                instrument: None,
             }
         );
         assert_eq!(
             detail.panes[0].items[1].source,
             ItemSource::Anchored {
-                kind: DrawingKind::FibRetracement { start, end }
+                kind: DrawingKind::FibRetracement { start, end },
+                instrument: None,
             }
         );
         assert_eq!(
@@ -2202,7 +2291,141 @@ mod tests {
                     at: start,
                     text: "Breakout level".to_owned(),
                     anchor: LabelAnchor::Above,
-                }
+                },
+                instrument: None,
+            }
+        );
+    }
+
+    // A drawing's anchors are prices and instants on one particular market.
+    // Storing which market that was is what lets a pane show a reader only
+    // the annotations that belong to whatever it is currently displaying,
+    // instead of painting Bitcoin's trend line over Ethereum's candles.
+    #[test]
+    fn an_anchored_item_remembers_the_instrument_it_was_drawn_against() {
+        let (_dir, identity, workspace) = temp_stores();
+        let alice = admin_auth(&identity);
+        let (_, layout_id) = workspace.get_or_create_default_workspace(&alice).unwrap();
+        let drawn_on = InstrumentId::parse("binance-spot:ETHUSDT").unwrap();
+
+        workspace
+            .replace_layout(
+                &alice,
+                layout_id,
+                LayoutPreset::One,
+                &[PaneInput {
+                    position: 0,
+                    instrument: drawn_on.clone(),
+                    timeframe: senken_series::BarSpec::new(1, BarUnit::Hour),
+                    items: vec![PaneItemInput {
+                        position: 0,
+                        slot: Slot::Main,
+                        visible: true,
+                        style: DrawingStyle {
+                            color: "#f2f2ef".to_owned(),
+                            width: 1,
+                            line_style: DrawingLineStyle::Solid,
+                        }
+                        .to_json(),
+                        source: ItemSource::Anchored {
+                            kind: DrawingKind::HorizontalLine { price: 2450.5 },
+                            instrument: Some(drawn_on.clone()),
+                        },
+                    }],
+                    settings: empty_style(),
+                }],
+            )
+            .unwrap();
+
+        let detail = workspace.get_layout(&alice, layout_id).unwrap();
+        let ItemSource::Anchored { instrument, .. } = &detail.panes[0].items[0].source else {
+            panic!("the item written as a drawing must read back as one");
+        };
+        assert_eq!(instrument.as_ref(), Some(&drawn_on));
+
+        // The pane's own instrument can change without touching what its
+        // drawings were drawn against — that separation is the whole point.
+        workspace
+            .replace_layout(
+                &alice,
+                layout_id,
+                LayoutPreset::One,
+                &[PaneInput {
+                    position: 0,
+                    instrument: InstrumentId::parse("binance-spot:SOLUSDT").unwrap(),
+                    timeframe: senken_series::BarSpec::new(1, BarUnit::Hour),
+                    items: vec![PaneItemInput {
+                        position: 0,
+                        slot: Slot::Main,
+                        visible: true,
+                        style: DrawingStyle {
+                            color: "#f2f2ef".to_owned(),
+                            width: 1,
+                            line_style: DrawingLineStyle::Solid,
+                        }
+                        .to_json(),
+                        source: ItemSource::Anchored {
+                            kind: DrawingKind::HorizontalLine { price: 2450.5 },
+                            instrument: Some(drawn_on.clone()),
+                        },
+                    }],
+                    settings: empty_style(),
+                }],
+            )
+            .unwrap();
+
+        let detail = workspace.get_layout(&alice, layout_id).unwrap();
+        let ItemSource::Anchored { instrument, .. } = &detail.panes[0].items[0].source else {
+            panic!("the item written as a drawing must read back as one");
+        };
+        assert_eq!(instrument.as_ref(), Some(&drawn_on));
+    }
+
+    // Every drawing stored before this field existed has no instrument, and
+    // that is a real answer rather than a corrupt row: a reader shows such a
+    // drawing whatever the pane is displaying, because nothing ever recorded
+    // what it was drawn against.
+    #[test]
+    fn a_drawing_with_no_recorded_instrument_reads_back_as_none_rather_than_failing() {
+        let (_dir, identity, workspace) = temp_stores();
+        let alice = admin_auth(&identity);
+        let (_, layout_id) = workspace.get_or_create_default_workspace(&alice).unwrap();
+
+        workspace
+            .replace_layout(
+                &alice,
+                layout_id,
+                LayoutPreset::One,
+                &[PaneInput {
+                    position: 0,
+                    instrument: InstrumentId::parse("binance-spot:ETHUSDT").unwrap(),
+                    timeframe: senken_series::BarSpec::new(1, BarUnit::Hour),
+                    items: vec![PaneItemInput {
+                        position: 0,
+                        slot: Slot::Main,
+                        visible: true,
+                        style: DrawingStyle {
+                            color: "#f2f2ef".to_owned(),
+                            width: 1,
+                            line_style: DrawingLineStyle::Solid,
+                        }
+                        .to_json(),
+                        source: ItemSource::Anchored {
+                            kind: DrawingKind::HorizontalLine { price: 1.0 },
+                            instrument: None,
+                        },
+                    }],
+                    settings: empty_style(),
+                }],
+            )
+            .unwrap();
+
+        let detail = workspace.get_layout(&alice, layout_id).unwrap();
+        assert_eq!(
+            detail.panes[0].items[0].source,
+            ItemSource::Anchored {
+                kind: DrawingKind::HorizontalLine { price: 1.0 },
+                instrument: None,
             }
         );
     }
@@ -2230,6 +2453,7 @@ mod tests {
                 .to_json(),
                 source: ItemSource::Anchored {
                     kind: DrawingKind::HorizontalLine { price: 1.0 },
+                    instrument: None,
                 },
             }],
             settings: empty_style(),
@@ -2268,6 +2492,7 @@ mod tests {
                 .to_json(),
                 source: ItemSource::Anchored {
                     kind: DrawingKind::HorizontalLine { price: 1.0 },
+                    instrument: None,
                 },
             }],
             settings: empty_style(),
@@ -2307,6 +2532,7 @@ mod tests {
                 .to_json(),
                 source: ItemSource::Anchored {
                     kind: DrawingKind::HorizontalLine { price: 1.0 },
+                    instrument: None,
                 },
             }],
             settings: empty_style(),
@@ -2570,6 +2796,7 @@ mod tests {
                 .to_json(),
                 source: ItemSource::Anchored {
                     kind: DrawingKind::HorizontalLine { price: 1.0 },
+                    instrument: None,
                 },
             }],
             settings: empty_style(),
@@ -2596,5 +2823,53 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, ChartError::ItemSourceMismatch));
+    }
+
+    #[test]
+    fn a_valid_json_object_round_trips_through_workspace_settings() {
+        let (_dir, identity, workspace) = temp_stores();
+        let admin = admin_auth(&identity);
+        let alice = charts_user(&identity, &admin, "settings-round-trip@example.com");
+        let workspace_id = workspace
+            .create_workspace(&alice, "Alice's Charts")
+            .unwrap();
+
+        let page = workspace.list_workspaces(&alice, 50, 0).unwrap();
+        assert_eq!(
+            page.rows[0].settings, "{}",
+            "a freshly created workspace must start with an empty settings object"
+        );
+
+        let new_settings = r#"{"theme":"dark","gridVisible":false}"#;
+        workspace
+            .update_workspace_settings(&alice, workspace_id, new_settings)
+            .unwrap();
+
+        let page = workspace.list_workspaces(&alice, 50, 0).unwrap();
+        assert_eq!(page.rows[0].settings, new_settings);
+    }
+
+    #[test]
+    fn non_object_json_is_refused_as_workspace_settings() {
+        let (_dir, identity, workspace) = temp_stores();
+        let admin = admin_auth(&identity);
+        let alice = charts_user(&identity, &admin, "settings-non-object@example.com");
+        let workspace_id = workspace
+            .create_workspace(&alice, "Alice's Charts")
+            .unwrap();
+
+        for invalid in ["[1,2,3]", "\"a string\"", "42", "null", "not json at all"] {
+            let error = workspace
+                .update_workspace_settings(&alice, workspace_id, invalid)
+                .unwrap_err();
+            assert!(
+                matches!(error, ChartError::InvalidWorkspaceSettings(_)),
+                "expected InvalidWorkspaceSettings for {invalid:?}, got {error:?}"
+            );
+        }
+
+        // Refused before the row is ever touched.
+        let page = workspace.list_workspaces(&alice, 50, 0).unwrap();
+        assert_eq!(page.rows[0].settings, "{}");
     }
 }

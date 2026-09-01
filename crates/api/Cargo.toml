@@ -77,6 +77,13 @@ senken-venue = { workspace = true }
 # Chart workspace persistence: `ChartWorkspaceStore`
 # is mounted directly, the same way `senken-alerts`' `AlertStore` is.
 senken-chart = { workspace = true }
+# Watchlist groups and their membership: `WatchlistStore` is mounted
+# directly, sharing `senken-identity`'s connection the same way
+# `senken-chart`'s `ChartWorkspaceStore` does.
+senken-watchlist = { workspace = true }
+# Freeform notes: `NoteStore` is mounted directly, the same way
+# `senken-watchlist`'s `WatchlistStore` is.
+senken-notes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

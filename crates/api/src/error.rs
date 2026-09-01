@@ -148,6 +148,12 @@ impl From<senken_chart::ChartError> for HandlerError {
             ChartError::ItemSourceMismatch => Self::BadRequest(
                 "cannot change a pane item's kind through this endpoint".to_owned(),
             ),
+            ChartError::InvalidPaneSettings(reason) => {
+                Self::BadRequest(format!("pane settings are not valid JSON: {reason}"))
+            }
+            ChartError::InvalidWorkspaceSettings(reason) => Self::BadRequest(format!(
+                "workspace settings must be a JSON object: {reason}"
+            )),
             ChartError::Database(source) => {
                 tracing::error!(%source, "chart store: database error");
                 Self::Internal
@@ -186,6 +192,63 @@ impl From<senken_alerts::AlertError> for HandlerError {
             // as `WorkspaceError`'s corrupt-row arm above.
             other => {
                 tracing::error!(?other, "alert store: unmapped error variant");
+                Self::Internal
+            }
+        }
+    }
+}
+
+/// `watchlist_handlers`' translation from `senken_watchlist::WatchlistStore`'s
+/// error type, mirroring [`From<senken_chart::ChartError>`] exactly — the
+/// same guarded-store shape, the same "the store's `Identity` error reuses
+/// this crate's own `IdentityError` mapping" reasoning. A missing group or
+/// member is `BadRequest`, not a `404`, the same choice this crate already
+/// makes for `ChartError::WorkspaceNotFound`/`AlertError::AlertNotFound` —
+/// `HandlerError` has no `NotFound` variant, and introducing one for this
+/// store alone would make "no such row" mean two different statuses
+/// depending on which resource a caller asked about.
+impl From<senken_watchlist::WatchlistError> for HandlerError {
+    fn from(error: senken_watchlist::WatchlistError) -> Self {
+        use senken_watchlist::WatchlistError;
+        match error {
+            WatchlistError::Identity(source) => source.into(),
+            WatchlistError::GroupNotFound => Self::BadRequest("no such watchlist group".to_owned()),
+            WatchlistError::MemberNotFound => {
+                Self::BadRequest("no such watchlist member".to_owned())
+            }
+            WatchlistError::Database(source) => {
+                tracing::error!(%source, "watchlist store: database error");
+                Self::Internal
+            }
+            // `CorruptInstrument`, plus any future `#[non_exhaustive]`
+            // variant: a stored row this build cannot even parse back is
+            // this crate's own bug or a hand-edited database, never
+            // something a caller's request could have caused — same
+            // reasoning as `ChartError`'s corrupt-row arm.
+            other => {
+                tracing::error!(?other, "watchlist store: unmapped error variant");
+                Self::Internal
+            }
+        }
+    }
+}
+
+/// `notes_handlers`' translation from `senken_notes::NoteStore`'s error
+/// type, mirroring [`From<senken_watchlist::WatchlistError>`] exactly.
+impl From<senken_notes::NoteError> for HandlerError {
+    fn from(error: senken_notes::NoteError) -> Self {
+        use senken_notes::NoteError;
+        match error {
+            NoteError::Identity(source) => source.into(),
+            NoteError::NoteNotFound => Self::BadRequest("no such note".to_owned()),
+            NoteError::Database(source) => {
+                tracing::error!(%source, "note store: database error");
+                Self::Internal
+            }
+            // Any future `#[non_exhaustive]` variant fails closed the same
+            // way every other guarded store's mapping here does.
+            other => {
+                tracing::error!(?other, "note store: unmapped error variant");
                 Self::Internal
             }
         }

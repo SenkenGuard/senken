@@ -28,11 +28,13 @@ mod indicator_handlers;
 mod instrument_handlers;
 #[cfg(test)]
 mod live_feed_tests;
+mod notes_handlers;
 mod openapi;
 mod pagination;
 mod source_handlers;
 #[cfg(test)]
 mod test_support;
+mod watchlist_handlers;
 mod workspace_handlers;
 mod ws;
 
@@ -56,8 +58,10 @@ use utoipa::ToSchema;
 use senken_alerts::{AlertEngine, AlertStore};
 use senken_chart::ChartWorkspaceStore;
 use senken_identity::{DEFAULT_ADMIN_EMAIL, IdentityStore};
+use senken_notes::NoteStore;
 use senken_runtime::Runtime;
 use senken_subscription::{BookSource, IndicatorSessionRegistry, SubscriptionPool};
+use senken_watchlist::WatchlistStore;
 
 use crate::auth::{EndpointPermission, mount};
 pub(crate) use crate::error::HandlerError;
@@ -137,6 +141,12 @@ pub(crate) struct AppState {
     /// Standalone alerts, sharing `identity`'s
     /// connection the same way `workspace` does.
     pub(crate) alerts: Arc<AlertStore>,
+    /// Watchlist groups and their membership, sharing `identity`'s
+    /// connection the same way `workspace`/`alerts` do.
+    pub(crate) watchlists: Arc<WatchlistStore>,
+    /// Freeform notes, sharing `identity`'s connection the same way
+    /// `watchlists` does.
+    pub(crate) notes: Arc<NoteStore>,
     /// Storage, the instrument catalog and one `SeriesLoader` per
     /// registered bar source — everything `bars_handlers`
     /// and `indicator_handlers` resolve a request against.
@@ -219,6 +229,8 @@ pub(crate) async fn serve_with_feed_pools(
 
     let workspace = Arc::new(ChartWorkspaceStore::new(&identity));
     let alerts = Arc::new(AlertStore::new(&identity));
+    let watchlists = Arc::new(WatchlistStore::new(&identity));
+    let notes = Arc::new(NoteStore::new(&identity));
     let feed_pools = Arc::new(feed_pools);
     // reconciles every already-enabled alert against those
     // pools right now, and stays running for the life of this server —
@@ -231,6 +243,8 @@ pub(crate) async fn serve_with_feed_pools(
         identity,
         workspace,
         alerts,
+        watchlists,
+        notes,
         runtime,
         feed_pools,
         alert_engine,
@@ -411,6 +425,8 @@ fn router(state: AppState, allowed_origins: &[String]) -> Router {
     api = mount_indicator_routes(api, &state);
     api = mount_alert_routes(api, &state);
     api = mount_instrument_routes(api, &state);
+    api = mount_watchlist_routes(api, &state);
+    api = mount_notes_routes(api, &state);
     let api: Router = api.fallback(api_not_found).with_state(state.clone());
 
     let router = Router::new().nest("/api", api);
@@ -573,6 +589,13 @@ fn mount_workspace_routes(mut api: Router<AppState>, state: &AppState) -> Router
     api = mount(
         api,
         state,
+        "/workspaces/{workspace_id}/settings",
+        patch(workspace_handlers::update_workspace_settings),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
         "/workspaces/{workspace_id}/layouts",
         get(workspace_handlers::list_layouts),
         EndpointPermission::Authenticated,
@@ -723,6 +746,126 @@ fn mount_alert_routes(mut api: Router<AppState>, state: &AppState) -> Router<App
         state,
         "/alerts/{alert_id}",
         delete(alert_handlers::delete_alert),
+        EndpointPermission::Authenticated,
+    )
+}
+
+/// Mounts the watchlist-groups-and-membership surface, split out of
+/// [`router`] the same way [`mount_alert_routes`] is. Every route is
+/// mounted at plain `EndpointPermission::Authenticated`, for the same
+/// reason [`mount_alert_routes`]'s routes are: `senken_watchlist::WatchlistStore`
+/// performs its own guarded check on every read and write.
+///
+/// `/api/watchlists/reorder` is mounted before nothing needs ordering
+/// between `mount` calls (each names its own full path), but the route
+/// itself is deliberately a literal segment sharing `{group_id}`'s
+/// position — see `watchlist_handlers`' own module docs for why that does
+/// not collide, and `reordering_groups_persists_over_http` for the proof.
+fn mount_watchlist_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/watchlists",
+        get(watchlist_handlers::list_watchlist_groups),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/watchlists",
+        post(watchlist_handlers::create_watchlist_group),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/watchlists/reorder",
+        post(watchlist_handlers::reorder_watchlist_groups),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/watchlists/{group_id}",
+        patch(watchlist_handlers::rename_watchlist_group),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/watchlists/{group_id}",
+        delete(watchlist_handlers::delete_watchlist_group),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/watchlists/{group_id}/members",
+        get(watchlist_handlers::list_watchlist_members),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/watchlists/{group_id}/members",
+        post(watchlist_handlers::add_watchlist_member),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/watchlists/{group_id}/members/reorder",
+        post(watchlist_handlers::reorder_watchlist_members),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/watchlist-members/{member_id}",
+        delete(watchlist_handlers::remove_watchlist_member),
+        EndpointPermission::Authenticated,
+    )
+}
+
+/// Mounts the notes surface, split out of [`router`] the same way
+/// [`mount_alert_routes`] is. Every route is mounted at plain
+/// `EndpointPermission::Authenticated`, for the same reason
+/// [`mount_alert_routes`]'s routes are: `senken_notes::NoteStore` performs
+/// its own guarded check on every read and write.
+fn mount_notes_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/notes",
+        get(notes_handlers::list_notes),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/notes",
+        post(notes_handlers::create_note),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/notes/{note_id}",
+        get(notes_handlers::get_note),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/notes/{note_id}",
+        put(notes_handlers::update_note),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/notes/{note_id}",
+        delete(notes_handlers::delete_note),
         EndpointPermission::Authenticated,
     )
 }

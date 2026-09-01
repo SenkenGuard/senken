@@ -65,6 +65,16 @@ pub enum ChartError {
     #[error("pane settings are not valid JSON: {0}")]
     InvalidPaneSettings(String),
 
+    /// A workspace's `settings` was not a JSON object — either not valid
+    /// JSON at all, or valid JSON that is not an object (an array, a
+    /// number, `null`). This crate does not interpret a workspace's
+    /// display settings at all (the chart front end's job), the same as
+    /// [`InvalidPaneSettings`](Self::InvalidPaneSettings), but checks it
+    /// is at least an object so every reader can extend it with new keys
+    /// without special-casing the value's shape.
+    #[error("workspace settings must be a JSON object: {0}")]
+    InvalidWorkspaceSettings(String),
+
     /// A `chart_panes.instrument` or a referenced item's `instrument`
     /// column held text that no longer parses as a
     /// `senken_marketdata::InstrumentId` — the database was written by an
