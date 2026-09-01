@@ -65,6 +65,11 @@ senken-loader = { workspace = true }
 # so `AppState` holds exactly what `senken-cli`'s own market-data
 # subcommands already hold — no second wiring path.
 senken-runtime = { workspace = true }
+# `StoreError`, for `storage_handlers`' translation into `HandlerError` —
+# the usage/delete surface itself goes through `Runtime::store()`, reusing
+# the exact `Store` a bar loader was built against, so this crate never
+# constructs a second one pointed at the same directory.
+senken-store = { workspace = true }
 # The lease pool itself: the WS endpoint takes a `Lease` per
 # subscribed topic, exactly the way a chart pane or an alert would.
 senken-subscription = { workspace = true }

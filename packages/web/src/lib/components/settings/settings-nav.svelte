@@ -20,7 +20,7 @@
 		type SettingsVisibilityContext
 	} from '$lib/state/settings-registry.svelte';
 	import { settingsModal, selectSettingsSection, jumpToSettingsRow } from '$lib/state/settings.svelte';
-	import { accessVisibility, loadAccessVisibility, canSeeAccessSection } from './access-visibility.svelte';
+	import { accessVisibility, loadAccessVisibility, grantedResources } from './access-visibility.svelte';
 	import { isDesktopShell } from '$lib/shell';
 
 	// `section.adminOnly` now does filter this list, as of
@@ -32,7 +32,7 @@
 	onMount(loadAccessVisibility);
 
 	const visibility = $derived<SettingsVisibilityContext>({
-		isAdmin: canSeeAccessSection(accessVisibility.profile),
+		grantedResources: grantedResources(accessVisibility.profile),
 		isDesktop: isDesktopShell()
 	});
 	const sections = $derived(

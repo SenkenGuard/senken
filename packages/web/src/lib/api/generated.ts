@@ -537,6 +537,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/storage`. Requires `Action::View` on `Resource::Storage` at
+         *     `Scope::All`.
+         */
+        get: operations["storage_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/storage/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/storage/delete`. Requires `Action::Delete` on
+         *     `Resource::Storage` at `Scope::All`. `series_id` with no `symbol` is
+         *     rejected — there is no whole-source concept of "this one series" to
+         *     narrow to.
+         */
+        post: operations["delete_storage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users": {
         parameters: {
             query?: never;
@@ -1307,6 +1349,35 @@ export interface components {
             workspace_id: string;
         };
         /**
+         * @description `POST /api/storage/delete` request body. Naming only `source_id`
+         *     deletes the whole source; adding `symbol` narrows that to one
+         *     instrument; adding `series_id` too narrows it to one series.
+         *     `series_id` with no `symbol` is rejected — there is no whole-source
+         *     concept of "this one series" to delete.
+         */
+        DeleteStorageRequest: {
+            /**
+             * @description Narrows the delete to one series under `symbol` — the `id` a
+             *     [`StorageSeriesDto`] reported. Requires `symbol` to be given too.
+             */
+            series_id?: string | null;
+            /**
+             * @description The source to delete from (or delete entirely, if nothing else is
+             *     given).
+             */
+            source_id: string;
+            /** @description Narrows the delete to one instrument under `source_id`. */
+            symbol?: string | null;
+        };
+        /** @description `POST /api/storage/delete` response body. */
+        DeleteStorageResponse: {
+            /**
+             * Format: int64
+             * @description Bytes actually freed by the delete.
+             */
+            freed_bytes: number;
+        };
+        /**
          * @description `POST /api/bars/m1-download` request body.
          *
          *     Minute bars are requested separately from chart loading because they are
@@ -2008,6 +2079,25 @@ export interface components {
             token: string;
         };
         /**
+         * @description The market-data half of `GET /api/storage`: every source, instrument
+         *     and series `senken-store` is holding under `sources/`, plus the totals
+         *     across all of them.
+         */
+        MarketDataUsageDto: {
+            /** @description Every source, biggest first. */
+            sources: components["schemas"]["StorageSourceDto"][];
+            /**
+             * Format: int64
+             * @description Total bytes across every source.
+             */
+            total_bytes: number;
+            /**
+             * Format: int64
+             * @description Total file count across every source.
+             */
+            total_files: number;
+        };
+        /**
          * @description `GET /api/me` response body: the caller's own profile, plus the roles and effective grants that let the client cosmetically hide
          *     admin sections. **UI convenience only**: every
          *     endpoint re-checks a real grant on every request regardless of what this
@@ -2299,6 +2389,112 @@ export interface components {
         SourcesResponse: {
             /** @description Every registered source, ordered by id. */
             sources: components["schemas"]["SourceCapabilityDto"][];
+        };
+        /**
+         * @description One SQLite database this server keeps, reported as a single figure —
+         *     everything but market data lives in the accounts database, and gets no
+         *     fake tree of its own the way `senken-store`'s Parquet layout does.
+         */
+        StorageDatabaseDto: {
+            /**
+             * Format: int64
+             * @description The file's size, plus its `-wal`/`-shm` siblings when present —
+             *     SQLite's write-ahead log can hold real, not-yet-checkpointed data.
+             */
+            bytes: number;
+            /**
+             * @description What this database is, for a person reading the report (e.g.
+             *     `"Accounts"`).
+             */
+            label: string;
+            /** @description The database's file path on disk. */
+            path: string;
+        };
+        /** @description One instrument's usage, as reported to a client. */
+        StorageInstrumentDto: {
+            /**
+             * Format: int64
+             * @description Total bytes across every series under this instrument.
+             */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description Total file count across every series under this instrument.
+             */
+            files: number;
+            /** @description Every series under this instrument, biggest first. */
+            series: components["schemas"]["StorageSeriesDto"][];
+            /**
+             * @description The decoded symbol (or the raw on-disk directory name when it
+             *     could not be decoded — still reported, never skipped).
+             */
+            symbol: string;
+        };
+        /** @description `GET /api/storage` response body. */
+        StorageReportDto: {
+            /** @description The data directory everything below is rooted under. */
+            data_dir: string;
+            /** @description Every other database this server keeps, each as a single figure. */
+            databases: components["schemas"]["StorageDatabaseDto"][];
+            /**
+             * @description Market data: Parquet-backed bar and trade series, with their full
+             *     source/instrument/series breakdown.
+             */
+            market_data: components["schemas"]["MarketDataUsageDto"];
+        };
+        /** @description One series' usage, as reported to a client. */
+        StorageSeriesDto: {
+            /**
+             * Format: int64
+             * @description Total bytes of every real file under this series' directory.
+             */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description Total file count under this series' directory.
+             */
+            files: number;
+            /**
+             * @description The on-disk directory name — pass this back as `series_id` to
+             *     delete exactly this series.
+             */
+            id: string;
+            /** @description What this series is. */
+            kind: components["schemas"]["StorageSeriesKindDto"];
+            /**
+             * @description A human-readable label: the spec and origin for bars (e.g.
+             *     `"1m · venue"`), `"Trades"` for trades, or the raw directory name
+             *     for anything unrecognised.
+             */
+            label: string;
+        };
+        /**
+         * @description One series' kind, on the wire — a plain string rather than a tagged
+         *     object, since (unlike `LayerKindDto`) nothing here carries per-kind
+         *     data the client needs back; the spec/origin/anchor that produced it are
+         *     already folded into [`StorageSeriesDto::label`].
+         * @enum {string}
+         */
+        StorageSeriesKindDto: "bars" | "trades" | "unrecognised";
+        /** @description One source's usage, as reported to a client. */
+        StorageSourceDto: {
+            /**
+             * Format: int64
+             * @description Total bytes across every instrument under this source.
+             */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description Total file count across every instrument under this source.
+             */
+            files: number;
+            /** @description Every instrument under this source, biggest first. */
+            instruments: components["schemas"]["StorageInstrumentDto"][];
+            /**
+             * @description The decoded source id (or the raw on-disk directory name when it
+             *     could not be decoded — still reported, never skipped).
+             */
+            source_id: string;
         };
         /**
          * @description A half-open `[from, to)` span of time, on the wire — Unix nanoseconds at
@@ -3783,6 +3979,88 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    storage_report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageReportDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_storage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteStorageRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteStorageResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

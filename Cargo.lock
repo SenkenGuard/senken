@@ -4085,6 +4085,7 @@ dependencies = [
  "senken-plugin",
  "senken-runtime",
  "senken-series",
+ "senken-store",
  "senken-subscription",
  "senken-venue",
  "senken-watchlist",

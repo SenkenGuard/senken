@@ -147,3 +147,17 @@ export type NotesPage = Schemas['NotesPage'];
 export type NoteDto = Schemas['NoteDto'];
 export type CreateNoteRequest = Schemas['CreateNoteRequest'];
 export type UpdateNoteRequest = Schemas['UpdateNoteRequest'];
+
+// Storage (`GET /api/storage`, `POST /api/storage/delete`) — what this
+// server is holding on disk, and reclaiming it. Only market data gets a
+// tree (`senken-store`'s Parquet layout); everything else lives in the
+// accounts database and is reported as a single figure per `databases` row.
+export type StorageReportDto = Schemas['StorageReportDto'];
+export type MarketDataUsageDto = Schemas['MarketDataUsageDto'];
+export type StorageSourceDto = Schemas['StorageSourceDto'];
+export type StorageInstrumentDto = Schemas['StorageInstrumentDto'];
+export type StorageSeriesDto = Schemas['StorageSeriesDto'];
+export type StorageSeriesKindDto = Schemas['StorageSeriesKindDto'];
+export type StorageDatabaseDto = Schemas['StorageDatabaseDto'];
+export type DeleteStorageRequest = Schemas['DeleteStorageRequest'];
+export type DeleteStorageResponse = Schemas['DeleteStorageResponse'];
