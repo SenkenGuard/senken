@@ -19,11 +19,18 @@ export class NetworkError extends ApiError {
 	}
 }
 
-/** `401 Unauthorized` — B16 point 2: the session is gone. `ApiClient`
- * handles clearing the credential and routing to login itself before this
- * ever reaches a caller; a caller only sees this if it chose to inspect the
- * failure reason after the fact (e.g. to show a message before the
- * redirect takes effect). */
+/** `401 Unauthorized` — the request carried no usable identity. `ApiClient`
+ * clears the credential and routes to login itself *when a credential was
+ * actually sent*; a caller only sees this if it chose to inspect the
+ * failure reason after the fact (e.g. to show a message before the redirect
+ * takes effect).
+ *
+ * The default message is the session-expiry one because that is what a 401
+ * means on every endpoint that needs a session. It is a *default*, not the
+ * only answer: a rejected login is also a 401, and telling someone who
+ * mistyped their password that their session expired is both wrong and
+ * useless, so `ApiClient` passes the server's own message through whenever
+ * the response carried one. */
 export class UnauthorizedError extends ApiError {
 	constructor(message = 'Session expired.') {
 		super(message);
@@ -67,12 +74,23 @@ export function describeError(error: unknown): string {
  * characters" messages. Falls back to `fallback` for a `NetworkError` (no
  * response to read a message from) or a body that didn't parse as JSON. */
 export function getErrorMessage(error: unknown, fallback: string): string {
-	if (error instanceof HttpError && error.body && typeof error.body === 'object' && 'error' in error.body) {
-		const message = (error.body as { error?: unknown }).error;
-		if (typeof message === 'string' && message.length > 0) return message;
+	if (error instanceof HttpError) {
+		const message = errorBodyMessage(error.body);
+		if (message) return message;
 	}
 	if (error instanceof ForbiddenError || error instanceof UnauthorizedError) return error.message;
 	return fallback;
+}
+
+/** The `error` string out of a parsed `ErrorBody`, or `null` when the body
+ * is absent, not an object, or carries nothing readable. Shared by
+ * `getErrorMessage` above and by `ApiClient`'s 401 branch, which needs the
+ * server's own wording *before* it constructs the error — a rejected login
+ * and an expired session are both 401 and must not read the same. */
+export function errorBodyMessage(body: unknown): string | null {
+	if (!body || typeof body !== 'object' || !('error' in body)) return null;
+	const message = (body as { error?: unknown }).error;
+	return typeof message === 'string' && message.length > 0 ? message : null;
 }
 
 export type ResponseOutcome = 'ok' | 'no-content' | 'unauthorized' | 'forbidden' | 'http-error';

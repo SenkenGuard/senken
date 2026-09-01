@@ -43,6 +43,20 @@ pub(crate) enum HandlerError {
     /// clear its stored credential and route to login on this, exactly
     /// once.
     Unauthorized,
+    /// `401 Unauthorized`, but for a login attempt that was answered rather
+    /// than a session that ran out. Both are the same status — the request
+    /// did not carry a usable identity either way — but they mean opposite
+    /// things to the person reading the screen: one says "sign in again",
+    /// the other says "that email and password do not match". Sharing
+    /// [`Unauthorized`](Self::Unauthorized)'s body left a failed login
+    /// telling the user their session had expired, when they had no session
+    /// to expire.
+    ///
+    /// The message deliberately does not say *which* half was wrong. An
+    /// account that exists and one that does not must be indistinguishable
+    /// to anyone probing this endpoint, which is the same reason
+    /// `IdentityStore::login` returns one error for both.
+    InvalidCredentials,
     /// `403 Forbidden`: a session is valid, but the account is still behind
     /// the B4 fence, or (once senken-acl-checked endpoints exist) the
     /// actor lacks the grant. never a logout, only a message.
@@ -80,7 +94,7 @@ impl From<senken_identity::IdentityError> for HandlerError {
             IdentityError::PluginPermissionOrphaned(name) => Self::BadRequest(format!(
                 "plugin permission `{name}` is orphaned and cannot be newly granted"
             )),
-            IdentityError::InvalidCredentials => Self::Unauthorized,
+            IdentityError::InvalidCredentials => Self::InvalidCredentials,
             IdentityError::PasswordNotSet => {
                 Self::Forbidden("this account has not set a password yet".to_owned())
             }
@@ -263,6 +277,10 @@ impl axum::response::IntoResponse for HandlerError {
         let (status, message) = match self {
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_owned()),
+            Self::InvalidCredentials => (
+                StatusCode::UNAUTHORIZED,
+                "that email and password do not match an account".to_owned(),
+            ),
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, message),
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::TooManyRequests => (

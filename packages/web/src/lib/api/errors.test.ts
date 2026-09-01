@@ -7,7 +7,8 @@ import {
 	UnauthorizedError,
 	classifyResponse,
 	describeError,
-	getErrorMessage
+	getErrorMessage,
+	errorBodyMessage
 } from './errors';
 
 function fakeResponse(status: number): Pick<Response, 'status' | 'ok'> {
@@ -95,5 +96,28 @@ describe('getErrorMessage — surfacing the server\'s own ErrorBody.error', () =
 
 	test("uses UnauthorizedError's own message", () => {
 		expect(getErrorMessage(new UnauthorizedError('Session expired.'), 'fallback')).toBe('Session expired.');
+	});
+});
+
+describe('a rejected login must not read as an expired session', () => {
+	test("the server's own wording survives into an UnauthorizedError", () => {
+		// A wrong password is a 401 like any other, but it answers a
+		// different question — and the default message answers the other one.
+		const message = errorBodyMessage({ error: 'that email and password do not match an account' });
+		expect(message).toBe('that email and password do not match an account');
+		expect(getErrorMessage(new UnauthorizedError(message ?? undefined), 'fallback')).toBe(
+			'that email and password do not match an account'
+		);
+	});
+
+	test('a 401 with nothing readable in it still falls back to the session message', () => {
+		// Every endpoint that needs a session answers 401 the same way, and
+		// there "your session ended" is the correct thing to say.
+		expect(errorBodyMessage(undefined)).toBeNull();
+		expect(errorBodyMessage('unauthorized')).toBeNull();
+		expect(errorBodyMessage({})).toBeNull();
+		expect(errorBodyMessage({ error: '' })).toBeNull();
+		expect(errorBodyMessage({ error: 42 })).toBeNull();
+		expect(getErrorMessage(new UnauthorizedError(), 'fallback')).toBe('Session expired.');
 	});
 });
