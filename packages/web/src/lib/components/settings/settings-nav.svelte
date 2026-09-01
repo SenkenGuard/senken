@@ -13,9 +13,15 @@
 	import { onMount } from 'svelte';
 	import { cn } from '$lib/utils.js';
 	import SearchIcon from '@lucide/svelte/icons/search';
-	import { listSettingsSections, searchSettings } from '$lib/state/settings-registry.svelte';
+	import {
+		listSettingsSections,
+		searchSettings,
+		isSettingsSectionVisible,
+		type SettingsVisibilityContext
+	} from '$lib/state/settings-registry.svelte';
 	import { settingsModal, selectSettingsSection, jumpToSettingsRow } from '$lib/state/settings.svelte';
 	import { accessVisibility, loadAccessVisibility, canSeeAccessSection } from './access-visibility.svelte';
+	import { isDesktopShell } from '$lib/shell';
 
 	// `section.adminOnly` now does filter this list, as of
 	// Q10.2: `GET /api/me`'s `roles`/`grants` fields finally
@@ -25,13 +31,15 @@
 	// every request, is unaffected by whatever this list shows or hides.
 	onMount(loadAccessVisibility);
 
+	const visibility = $derived<SettingsVisibilityContext>({
+		isAdmin: canSeeAccessSection(accessVisibility.profile),
+		isDesktop: isDesktopShell()
+	});
 	const sections = $derived(
-		listSettingsSections().filter(
-			(section) => !section.adminOnly || canSeeAccessSection(accessVisibility.profile)
-		)
+		listSettingsSections().filter((section) => isSettingsSectionVisible(section, visibility))
 	);
 	const query = $derived(settingsModal.query);
-	const results = $derived(searchSettings(query));
+	const results = $derived(searchSettings(query, visibility));
 	const matchedSectionIds = $derived(new Set(results.map((r) => r.sectionId)));
 	const isSearching = $derived(query.trim() !== '');
 

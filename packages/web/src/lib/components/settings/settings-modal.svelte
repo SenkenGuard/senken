@@ -20,14 +20,29 @@
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import SettingsNav from './settings-nav.svelte';
-	import { listSettingsSections } from '$lib/state/settings-registry.svelte';
+	import {
+		listSettingsSections,
+		isSettingsSectionVisible
+	} from '$lib/state/settings-registry.svelte';
+	import { isDesktopShell } from '$lib/shell';
+	import { accessVisibility, canSeeAccessSection } from './access-visibility.svelte';
 	import { settingsModal, closeSettings } from '$lib/state/settings.svelte';
 	import XIcon from '@lucide/svelte/icons/x';
 
 	let navRef = $state<{ focusSearch: () => void } | null>(null);
 	let scrollEl = $state<HTMLDivElement | null>(null);
 
-	const sections = $derived(listSettingsSections());
+	// The same list the nav shows. Resolving the active section against the
+	// unfiltered registry would render a section the nav does not list —
+	// reachable by a stale `activeSectionId` from a previous session.
+	const sections = $derived(
+		listSettingsSections().filter((section) =>
+			isSettingsSectionVisible(section, {
+				isAdmin: canSeeAccessSection(accessVisibility.profile),
+				isDesktop: isDesktopShell()
+			})
+		)
+	);
 	const activeSection = $derived(
 		sections.find((s) => s.id === settingsModal.activeSectionId) ?? sections[0] ?? null
 	);

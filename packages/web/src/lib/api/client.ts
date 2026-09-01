@@ -6,7 +6,7 @@
 import { activeServer, resolveBaseUrl, selectServer } from './servers.svelte';
 import { connectionStore, setConnectionState } from './connection.svelte';
 import { credentialReader, establishSession, endSession, refreshSessionPresence } from './session.svelte';
-import { NetworkError, UnauthorizedError, ForbiddenError, HttpError, describeError, classifyResponse } from './errors';
+import { NetworkError, UnauthorizedError, ForbiddenError, HttpError, describeError, classifyResponse, errorBodyMessage } from './errors';
 import { backoffDelay } from './backoff';
 import { OnceGuard } from './once-guard';
 import type {
@@ -112,9 +112,18 @@ class ApiClient {
 		}
 
 		switch (classifyResponse(response)) {
-			case 'unauthorized':
-				this.handleSessionExpired(server.id);
-				throw new UnauthorizedError();
+			case 'unauthorized': {
+				// Only a request that actually carried a credential can have
+				// had a session expire. A 401 answering a login attempt, or
+				// any other call made with nothing to send, means "you are
+				// not signed in" — running the expiry path there clears a
+				// credential that was never there and announces a session
+				// ending that never began, which is how a mistyped password
+				// came to report "Session expired."
+				if (token) this.handleSessionExpired(server.id);
+				const body = await safeJson(response);
+				throw new UnauthorizedError(errorBodyMessage(body) ?? undefined);
+			}
 			case 'forbidden':
 				// B16 point 3: 403 is authenticated-but-not-permitted, never
 				// a logout. It becomes a typed error a caller can turn into
