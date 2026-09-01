@@ -28,12 +28,29 @@ export interface ServerConfig {
 /** The server every install starts pointed at: wherever the page came
  * from. Not persisted itself — it's the fallback when no server has been
  * added yet — but it is a normal entry once the user picks it, like any
- * other. */
+ * other.
+ *
+ * Named in plain language rather than by address. The desktop app runs its
+ * own server and the webview loads from it, so this resolves to something
+ * like `http://localhost:4190` — a host and a port number that mean nothing
+ * to someone who just opened a trading app, and read as a misconfiguration
+ * to anyone who has never had to think about ports. What they need to know
+ * is that it runs here, on their own machine, which is what the label
+ * says. */
 export const EMBEDDED_SERVER: ServerConfig = {
 	id: 'embedded',
-	label: 'This device',
+	label: 'This computer',
 	baseUrl: ''
 };
+
+/** The secondary line shown under a server's name. The embedded server
+ * deliberately does not show its address for the reason `EMBEDDED_SERVER`'s
+ * own doc gives; every other entry is one the user typed in themselves, so
+ * its address is both meaningful to them and the only thing telling two
+ * remote servers apart. */
+export function serverAddressLabel(server: ServerConfig): string {
+	return server.baseUrl === '' ? 'Runs on this computer' : server.baseUrl;
+}
 
 const SERVERS_KEY = 'senken.servers';
 const ACTIVE_SERVER_KEY = 'senken.activeServerId';

@@ -48,6 +48,12 @@ registerSettingsSection({
 	icon: ServerIcon,
 	component: ConnectionSection,
 	searchIndex: connectionSearchIndex,
+	// Choosing which server to talk to is a desktop-app question. A browser
+	// tab was served by exactly one server and cannot move to another
+	// without navigating away from it, so this section would offer a choice
+	// the page cannot honour. The connection's *state* is still visible
+	// there, on the top bar's own indicator.
+	desktopOnly: true,
 	order: 30
 });
 
