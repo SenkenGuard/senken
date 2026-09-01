@@ -179,6 +179,7 @@ impl IdentityStore {
     pub fn db_path(&self) -> Option<std::path::PathBuf> {
         self.lock().path().map(std::path::PathBuf::from)
     }
+    }
 
     /// Creates the built-in `Superadmin` role and the `admin@mail.com`
     /// account with no password, iff the database has no users at all.
@@ -1204,4 +1205,97 @@ fn apply_password(
 /// `users.created_at`, `sessions.created_at/last_seen_at/expires_at` use.
 fn now_unix() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ALL_ACTIONS, ALL_RESOURCES, IdentityStore, SUPERADMIN_ROLE_NAME};
+    use tempfile::TempDir;
+
+    fn grant_count(store: &IdentityStore) -> i64 {
+        let conn = store.lock();
+        conn.query_row(
+            "SELECT COUNT(*) FROM role_grants g
+             JOIN roles r ON r.id = g.role_id
+             WHERE r.builtin = 1 AND r.name = ?1",
+            [SUPERADMIN_ROLE_NAME],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Adding a `Resource` variant used to be a silent, delayed failure: the
+    /// closed enum forces its authorisation to be written and a *new*
+    /// database grants it, but every database that already existed kept the
+    /// grants it was seeded with — so a long-running install was simply told
+    /// it had no permission, with nothing in the code looking wrong.
+    #[test]
+    fn a_grant_missing_from_the_builtin_role_is_restored_on_the_next_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+
+        let expected = {
+            let store = IdentityStore::open(&path).unwrap();
+            let total = grant_count(&store);
+            assert_eq!(
+                total,
+                i64::try_from(ALL_ACTIONS.len() * ALL_RESOURCES.len()).unwrap(),
+                "the built-in role is seeded with every action on every resource"
+            );
+            // Exactly what an older database looks like after a resource is
+            // added to the enum: the row for it was never written.
+            let conn = store.lock();
+            conn.execute(
+                "DELETE FROM role_grants WHERE resource IN ('watchlist', 'note', 'indicator')",
+                [],
+            )
+            .unwrap();
+            total
+        };
+
+        let store = IdentityStore::open(&path).unwrap();
+        assert_eq!(
+            grant_count(&store),
+            expected,
+            "reopening must give the built-in role back every grant its own description promises"
+        );
+    }
+
+    /// The reconciliation is insertions only, and only for the built-in role:
+    /// a role an administrator authored is theirs, and a grant deliberately
+    /// removed from it must stay removed.
+    #[test]
+    fn a_custom_roles_grants_are_never_rewritten() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        {
+            let store = IdentityStore::open(&path).unwrap();
+            let conn = store.lock();
+            conn.execute(
+                "INSERT INTO roles (id, name, description, builtin) VALUES ('role-x', 'Analyst', '', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO role_grants (role_id, action, resource, scope)
+                 VALUES ('role-x', 'view', 'chart_workspace', 'own')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = IdentityStore::open(&path).unwrap();
+        let conn = store.lock();
+        let custom: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM role_grants WHERE role_id = 'role-x'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            custom, 1,
+            "a custom role keeps exactly the grants it was given"
+        );
+    }
 }

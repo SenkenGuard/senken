@@ -1,10 +1,10 @@
+import type { LogicalRange } from 'lightweight-charts';
 import { describe, expect, test } from 'bun:test';
 import {
 	HISTORY_PAGE_BARS,
 	HISTORY_PREFETCH_THRESHOLD_BARS,
 	MAX_HISTORY_BARS,
 	applyHistoryJump,
-	defaultFrame,
 	logicalRangeShift,
 	preserveVisibleRange,
 	historyLoadPriority,
@@ -12,6 +12,11 @@ import {
 	historyWindowAround,
 	previousHistoryPage,
 	resolveJumpWindow,
+	PENDING_FRAME_TTL_MS,
+	defaultFrame,
+	frameIsPending,
+	pendingFrameIsLive,
+	reloadWindow,
 	historyIsFull,
 	shouldPrefetchHistory
 } from './chart-window';
@@ -231,40 +236,211 @@ describe('holding the viewport still across a structural update', () => {
 });
 
 describe('the default frame', () => {
-	// 1000px of plot, 300 bars wanted, 6 bars of margin: every bar gets
-	// 1000/306 px and the newest one sits six bars in from the right edge.
+	// Stated as *which bars to show*, not as a zoom level. The previous shape
+	// divided a measured plot width by a bar count, and both inputs could be
+	// wrong at exactly the moment a pane is framed: a width taken before
+	// layout opened the chart zoomed out over hundreds of bars, and a stale
+	// count left one candle filling the pane. Both were reported. A range has
+	// neither input.
+
 	test('keeps the right margin clear instead of jamming the newest bar against the scale', () => {
-		const frame = defaultFrame(300, 6, 1000);
-		expect(frame?.scrollPosition).toBe(6);
-		expect(frame?.barSpacing).toBeCloseTo(1000 / 306, 10);
+		const frame = defaultFrame(300, 6);
+		// The newest bar is index 299; six bars of margin sit past it.
+		expect(Number(frame?.to)).toBe(305);
+		expect(Number(frame?.from)).toBe(0);
 	});
 
 	test('frames a fixed recent window rather than every bar ever paged in', () => {
-		const shallow = defaultFrame(300, 6, 1000);
-		const deep = defaultFrame(12_000, 6, 1000);
-		// Forty times the history, the same readable bar width — the whole
-		// difference between this and fitting everything loaded.
-		expect(deep?.barSpacing).toBeCloseTo(shallow?.barSpacing ?? 0, 10);
+		const shallow = defaultFrame(300, 6)!;
+		const deep = defaultFrame(12_000, 6)!;
+		// Forty times the history, the same number of bars on screen — the
+		// whole difference between this and fitting everything loaded.
+		expect(deep.to - deep.from).toBe(shallow.to - shallow.from);
 	});
 
 	test('a pane holding fewer bars than the window shows all of them, still with the margin', () => {
-		const frame = defaultFrame(12, 6, 900);
-		expect(frame?.scrollPosition).toBe(6);
-		expect(frame?.barSpacing).toBeCloseTo(900 / 18, 10);
+		const frame = defaultFrame(12, 6);
+		expect({ from: Number(frame?.from), to: Number(frame?.to) }).toEqual({ from: 0, to: 17 });
 	});
 
-	test('there is nothing to frame on an empty pane, or before the chart has a width', () => {
-		expect(defaultFrame(0, 6, 1000)).toBeNull();
-		expect(defaultFrame(300, 6, 0)).toBeNull();
+	test('there is nothing to frame on an empty pane', () => {
+		expect(defaultFrame(0, 6)).toBeNull();
 	});
 
 	test('a zero right margin is honoured rather than replaced by a default', () => {
-		const frame = defaultFrame(300, 0, 1200);
-		expect(frame?.scrollPosition).toBe(0);
-		expect(frame?.barSpacing).toBeCloseTo(1200 / 300, 10);
+		expect(Number(defaultFrame(300, 0)?.to)).toBe(299);
 	});
 
 	test('a negative margin cannot push the newest bar off the right edge', () => {
-		expect(defaultFrame(300, -4, 1200)?.scrollPosition).toBe(0);
+		expect(Number(defaultFrame(300, -4)?.to)).toBe(299);
+	});
+});
+
+describe('defaultFrame', () => {
+	// The frame is stated as *which bars to show*, so it cannot be wrong about
+	// a plot width nobody has measured yet, and it cannot turn a stale bar
+	// count into an absurd zoom. Both failures were reported, in opposite
+	// directions: one candle filling the pane, and hundreds of bars at once.
+
+	test('the newest bars are shown, with the margin kept clear to their right', () => {
+		const frame = defaultFrame(1000, 6, 300);
+		// 300 bars ending at the newest (index 999), plus 6 bars of margin.
+		expect({ from: Number(frame?.from), to: Number(frame?.to) }).toEqual({ from: 700, to: 1005 });
+	});
+
+	test('the span covers exactly the requested number of bars', () => {
+		const frame = defaultFrame(1000, 0, 300)!;
+		expect(frame.to - frame.from + 1).toBe(300);
+	});
+
+	test('a pane holding fewer bars than the window shows all of them, not blank space', () => {
+		const frame = defaultFrame(40, 6, 300);
+		expect({ from: Number(frame?.from), to: Number(frame?.to) }).toEqual({ from: 0, to: 45 });
+	});
+
+	test('no margin means the newest bar sits on the right edge', () => {
+		expect(Number(defaultFrame(1000, 0, 300)?.to)).toBe(999);
+	});
+
+	test('an empty pane is not framed at all', () => {
+		expect(defaultFrame(0, 6, 300)).toBeNull();
+	});
+
+	// The whole reason for the shape: the frame no longer depends on a measured
+	// width, so a pane framed before layout and one framed after ask for the
+	// same bars.
+	test('the frame does not depend on how wide the pane happens to be', () => {
+		expect(defaultFrame(1000, 6, 300)).toEqual(defaultFrame(1000, 6, 300));
+	});
+});
+
+describe('preserveVisibleRange and a frame the chart has not applied yet', () => {
+	const range = (from: number, to: number): LogicalRange =>
+		({ from, to }) as unknown as LogicalRange;
+
+	/** A time scale that behaves like the real one: a requested range is not
+	 * readable until the chart processes it on its own render tick. */
+	function laggingScale(initial: LogicalRange) {
+		let applied = initial;
+		let queued: LogicalRange | null = null;
+		return {
+			getVisibleLogicalRange: () => applied,
+			setVisibleLogicalRange: (next: LogicalRange) => (queued = next),
+			/** The chart's render tick. */
+			tick() {
+				if (queued) applied = queued;
+				queued = null;
+			},
+			get settled() {
+				return applied;
+			}
+		};
+	}
+
+	// Measured in a browser before it was written here: framing a chart and
+	// then updating an indicator collapsed a 306-bar frame back to the 99 bars
+	// that preceded it, and only when a second series existed to do the
+	// reading. A bare chart framed correctly; the same chart with one
+	// indicator did not.
+	test('a series update lands between the frame and its application and discards it', () => {
+		const scale = laggingScale(range(200, 299));
+		const frame = range(0, 305);
+		scale.setVisibleLogicalRange(frame); // frameDefaultView, not applied yet
+
+		preserveVisibleRange(scale, () => {}, 0, null); // an indicator, told nothing
+
+		scale.tick();
+		expect(scale.settled).toEqual(range(200, 299));
+	});
+
+	test('given the pending frame, the same update re-asserts it instead', () => {
+		const scale = laggingScale(range(200, 299));
+		const frame = range(0, 305);
+		scale.setVisibleLogicalRange(frame);
+
+		preserveVisibleRange(scale, () => {}, 0, frame);
+
+		scale.tick();
+		expect(scale.settled).toEqual(frame);
+	});
+
+	test('with nothing pending it still holds what the reader is looking at', () => {
+		const scale = laggingScale(range(200, 299));
+		preserveVisibleRange(scale, () => {}, 0, null);
+		scale.tick();
+		expect(scale.settled).toEqual(range(200, 299));
+	});
+
+	test('a prepended page still shifts, and a pending frame is not shifted', () => {
+		const paging = laggingScale(range(0, 100));
+		preserveVisibleRange(paging, () => {}, 300, null);
+		paging.tick();
+		expect(paging.settled).toEqual(range(300, 400));
+
+		const framing = laggingScale(range(0, 100));
+		const frame = range(10, 20);
+		preserveVisibleRange(framing, () => {}, 300, frame);
+		framing.tick();
+		expect(framing.settled).toEqual(frame);
+	});
+});
+
+describe('a pending frame can never pin the viewport', () => {
+	const r = (from: number, to: number): LogicalRange => ({ from, to }) as unknown as LogicalRange;
+
+	// The failure this exists to prevent, and it was shipped: a frame is only
+	// cleared when the chart reports the range, and the chart does not report
+	// one it never applied. Marked pending anyway, it stayed pending for the
+	// rest of the session and every later series update re-asserted it — the
+	// viewport stopped responding at all, with no indicator involved.
+	test('a frame the chart already shows is not pending at all', () => {
+		expect(frameIsPending(r(0, 305), r(0, 305))).toBe(false);
+	});
+
+	test('a frame that differs is pending', () => {
+		expect(frameIsPending(r(100, 200), r(0, 305))).toBe(true);
+		expect(frameIsPending(null, r(0, 305))).toBe(true);
+	});
+
+	test('a pending frame expires rather than outliving its race', () => {
+		expect(pendingFrameIsLive(1000, 1000)).toBe(true);
+		expect(pendingFrameIsLive(1000, 1000 + PENDING_FRAME_TTL_MS)).toBe(true);
+		expect(pendingFrameIsLive(1000, 1000 + PENDING_FRAME_TTL_MS + 1)).toBe(false);
+	});
+
+	test('the window is long enough for a render tick and short enough to be harmless', () => {
+		expect(PENDING_FRAME_TTL_MS).toBeGreaterThanOrEqual(100);
+		expect(PENDING_FRAME_TTL_MS).toBeLessThanOrEqual(2_000);
+	});
+});
+
+describe('reloading must not undo paged history', () => {
+	const NS = 1_000_000_000;
+	const bar = (ts: number) => ({ ts_open: ts });
+	// 300 bars ending "now", the shape `initialBarWindow` produces.
+	const initial = { from: 700 * NS, to: 1000 * NS };
+
+	// The loop this closes, read straight off a viewport trace: a reload asked
+	// for the opening window, the six hundred bars the reader had scrolled in
+	// collapsed back to three hundred, the viewport moved with them, the left
+	// edge came back into prefetch range, and the same page loaded again —
+	// `shift=+300` and `shift=-300` alternating for as long as bars kept
+	// closing.
+	test('a reload keeps the history already scrolled in', () => {
+		const paged = [bar(400 * NS), bar(999 * NS)];
+		expect(reloadWindow(paged, initial)).toEqual({ from: 400 * NS, to: 1000 * NS });
+	});
+
+	test('a reload still reaches now, so a closed bar arrives', () => {
+		expect(reloadWindow([bar(400 * NS)], initial).to).toBe(initial.to);
+	});
+
+	test('a pane holding nothing asks for the opening window', () => {
+		expect(reloadWindow([], initial)).toEqual(initial);
+	});
+
+	test('a window inside the opening one is widened, never narrowed', () => {
+		const inside = [bar(800 * NS), bar(999 * NS)];
+		expect(reloadWindow(inside, initial)).toEqual(initial);
 	});
 });

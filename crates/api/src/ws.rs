@@ -260,6 +260,21 @@ enum ServerFrame<'a> {
     Unsupported {
         topic: &'a str,
     },
+    /// The request was one this build supports, and it failed anyway.
+    ///
+    /// Distinct from `Unsupported` on purpose: "this venue does not serve
+    /// depth" and "we asked and could not get it" are different facts, and a
+    /// client that cannot tell them apart shows the wrong thing for one of
+    /// them. Sending nothing — which is what a failed snapshot used to do —
+    /// is worse than either: an absence is indistinguishable from a request
+    /// still in flight, so the panel waits for a frame that will never come.
+    ///
+    /// Carries no message. The reason is a transport string (a URL, a query
+    /// string, a status code) and belongs in the log next to it, not on a
+    /// screen; the client already has product copy for "could not load".
+    Failed {
+        topic: &'a str,
+    },
     /// `price`/`price_scale` are exactly `PriceUpdate`'s own fields — a
     /// scaled integer, never `f64` (`AGENTS.md`: no float for a price on the
     /// market-data path). `ts` is the venue's own tick timestamp, in
@@ -649,10 +664,16 @@ fn subscribe_book(
             Ok(Some(hit)) => hit,
             Ok(None) => {
                 tracing::warn!(topic = %forward_topic, "book snapshot requested for an unknown instrument");
+                let _ = forward_tx.send(send_frame(&ServerFrame::Failed {
+                    topic: &forward_topic,
+                }));
                 return;
             }
             Err(error) => {
                 tracing::warn!(%error, topic = %forward_topic, "could not resolve the instrument behind a book snapshot request");
+                let _ = forward_tx.send(send_frame(&ServerFrame::Failed {
+                    topic: &forward_topic,
+                }));
                 return;
             }
         };
@@ -671,6 +692,9 @@ fn subscribe_book(
             }
             Err(error) => {
                 tracing::warn!(%error, topic = %forward_topic, "could not fetch a book snapshot");
+                let _ = forward_tx.send(send_frame(&ServerFrame::Failed {
+                    topic: &forward_topic,
+                }));
             }
         }
     });

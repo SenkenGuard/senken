@@ -90,6 +90,33 @@ than a convention. Follow the same instinct, and do not weaken these:
 - `senken_subscription::Lease` has no `unsubscribe` method, only `Drop` — a
   leaked subscription is not expressible.
 
+### Derive from what you hold, not from what you opened with
+
+An effect that re-runs must recompute from the **current** state, never from
+the value the screen opened with. Where state accumulates — a loaded window, a
+list a user has added to, a cache another pass fills in — asking again for the
+opening value silently discards everything since.
+
+This is the single most expensive bug class this project has produced, and it
+recurs because each instance looks local and harmless:
+
+- A chart's bar effect re-ran on every closed bar and re-requested its
+  *opening* 300-bar window, discarding every page of history the reader had
+  scrolled in. The window snapped back, which dragged the viewport, which put
+  the left edge back in prefetch range, which loaded the same page again — the
+  chart oscillated for as long as bars kept closing. It took six wrong fixes
+  and a live trace to find, because every individual operation was correct.
+- The same shape, in the same file, had the indicator range pinned to the
+  opening window while the bars grew: candles extended back and the plots
+  stopped dead.
+- And again: a frame computed from a cached bar count rather than the bars
+  actually being drawn, where the count is a divisor — a stale handful left one
+  candle filling the pane.
+
+Two symptoms name it. **State that shrinks back after growing**, and **a
+derived value that disagrees with the state it is derived from.** When either
+appears, look for the opening value being asked for a second time.
+
 ### Fixtures are recorded, never hand-written
 
 Every venue adapter's test data comes from a real response. This is not
@@ -231,6 +258,18 @@ best work has consistently done the extra step:
 underlying problem. Change a test only when the task intentionally changes the
 required behaviour, or when you can independently show the test itself is wrong.
 
+### Fix the class, then sweep for the rest of it
+
+Finding one instance is the beginning of the work, not the end. Before moving
+on, search for every other place the same shape occurs — the same helper, the
+same cached value, the same "recompute from the opening input" — and say in
+your report what the sweep covered.
+
+The rule is paid for: the opening-window bug above was found and fixed once for
+indicators, and the bars loader beside it had the identical fault. It was not
+looked for, and it cost five more rounds of the owner's time. One `grep` for
+the helper's other callers would have ended it that day.
+
 ### Classes that silently do nothing
 
 Five have shipped in this repository, and each looked exactly like a design
@@ -242,6 +281,24 @@ modifier chains.
 
 **Verify any visible state in the DOM.** Tailwind reports nothing for a class
 that does not exist.
+
+### Measure where it actually runs
+
+A measurement taken in an environment that does not behave like the real one is
+worse than no measurement: it produces confident, wrong conclusions that then
+direct the next several hours.
+
+Two readings in this project were pure artefacts of the harness, and both were
+believed and acted on: a chart's viewport read as "unchanged" because the
+browser pane was hidden and the library's `requestAnimationFrame` loop never
+ran, and a race that reproduced only when a fetch resolved in the same tick,
+which no real fetch ever does.
+
+Before trusting an observation, confirm the environment does the thing being
+observed — force a paint, use the real timings, check the value moves at all
+when it obviously should. And when a UI bug resists code reading, an opt-in
+trace at every write site, run by the owner on a session that actually fails,
+settles in one round what inspection has already failed at several times.
 
 ### Generated artifacts
 
