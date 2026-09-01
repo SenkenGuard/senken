@@ -365,6 +365,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/notes`. Scoped by `NoteStore::list_notes` itself — a
+         *     superadmin sees every note, an ordinary user sees only their own, and
+         *     the reported `total` already respects that scope too. Never carries a
+         *     note's body — see [`crate::dto::NoteSummaryDto`]'s own docs.
+         */
+        get: operations["list_notes"];
+        put?: never;
+        /** `POST /api/notes`. */
+        post: operations["create_note"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notes/{note_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/notes/{note_id}`: the full note, body included. */
+        get: operations["get_note"];
+        /** `PUT /api/notes/{note_id}`: replaces both title and body. */
+        put: operations["update_note"];
+        post?: never;
+        /** `DELETE /api/notes/{note_id}`. */
+        delete: operations["delete_note"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/roles": {
         parameters: {
             query?: never;
@@ -644,6 +686,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/watchlist-members/{member_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * `DELETE /api/watchlist-members/{member_id}` — a distinct top-level
+         *     resource path (not nested under `/api/watchlists/{group_id}`) because a
+         *     member's own id already uniquely identifies it, the same reasoning
+         *     `/api/layers/{id}`/`/api/drawings/{id}` apply to a pane item.
+         */
+        delete: operations["remove_watchlist_member"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watchlists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/watchlists`. Scoped by `WatchlistStore::list_groups` itself —
+         *     a superadmin sees every group, an ordinary user sees only their own, and
+         *     the reported `total` already respects that scope too.
+         */
+        get: operations["list_watchlist_groups"];
+        put?: never;
+        /** `POST /api/watchlists`. */
+        post: operations["create_watchlist_group"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watchlists/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/watchlists/reorder`. See this module's docs for why this
+         *     literal path does not collide with `/api/watchlists/{group_id}`.
+         */
+        post: operations["reorder_watchlist_groups"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watchlists/{group_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** `DELETE /api/watchlists/{group_id}`. */
+        delete: operations["delete_watchlist_group"];
+        options?: never;
+        head?: never;
+        /** `PATCH /api/watchlists/{group_id}`. */
+        patch: operations["rename_watchlist_group"];
+        trace?: never;
+    };
+    "/api/watchlists/{group_id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/watchlists/{group_id}/members`. */
+        get: operations["list_watchlist_members"];
+        put?: never;
+        /**
+         * `POST /api/watchlists/{group_id}/members`. Adding an instrument the
+         *     group already holds is idempotent — see `WatchlistStore::add_member`'s
+         *     own docs — so this always returns `201` with that member's id, never a
+         *     conflict.
+         */
+        post: operations["add_watchlist_member"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watchlists/{group_id}/members/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** `POST /api/watchlists/{group_id}/members/reorder`. */
+        post: operations["reorder_watchlist_members"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces": {
         parameters: {
             query?: never;
@@ -723,6 +887,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspace_id}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * `PATCH /api/workspaces/{workspace_id}/settings`. `settings` is opaque
+         *     JSON-object text this crate never interprets — see
+         *     [`UpdateWorkspaceSettingsRequest`]'s own docs.
+         */
+        patch: operations["update_workspace_settings"];
+        trace?: never;
+    };
     "/api/ws/ticket": {
         parameters: {
             query?: never;
@@ -749,6 +934,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description `POST /api/watchlists/{group_id}/members` request body. */
+        AddWatchlistMemberRequest: {
+            /** @description The instrument to add, `source:symbol`. */
+            instrument: string;
+        };
         /** @description An alert row ("list, create, delete, and fired-state" — the last three fields plus `enabled` are exactly that state). */
         AlertDto: {
             /**
@@ -1064,6 +1254,13 @@ export interface components {
             /** @description The bar timeframe to evaluate over, e.g. `"1h"`. */
             timeframe: string;
         };
+        /** @description `POST /api/notes` request body. */
+        CreateNoteRequest: {
+            /** @description The new note's body. */
+            body: string;
+            /** @description The new note's title. */
+            title: string;
+        };
         /** @description `POST /api/roles` request body. */
         CreateRoleRequest: {
             /** @description A human-readable description. */
@@ -1088,6 +1285,11 @@ export interface components {
              *     sets their own password on first use.
              */
             initial_password?: string | null;
+        };
+        /** @description `POST /api/watchlists` request body. */
+        CreateWatchlistGroupRequest: {
+            /** @description The new group's display name. */
+            name: string;
         };
         /** @description `POST /api/workspaces` request body. */
         CreateWorkspaceRequest: {
@@ -1131,6 +1333,16 @@ export interface components {
             color: string;
             /** @description The drawing's id. */
             id: string;
+            /**
+             * @description The instrument this drawing was drawn against, `source:symbol`.
+             *
+             *     A drawing's anchors are prices and instants on one particular
+             *     market, so a client shows a pane only the drawings belonging to
+             *     whatever instrument that pane is currently displaying. `null` for a
+             *     drawing stored before this field existed — its instrument is
+             *     genuinely unknown, not a default.
+             */
+            instrument?: string | null;
             /** @description What kind of drawing this is, and its geometry. */
             kind: components["schemas"]["DrawingKindDto"];
             /** @description The drawing's line style. */
@@ -1155,6 +1367,14 @@ export interface components {
         DrawingInputDto: {
             /** @description The drawing's colour, as `#rrggbb`. */
             color: string;
+            /**
+             * @description The instrument this drawing was drawn against, `source:symbol`.
+             *     Omitted means "belongs to no instrument in particular", which is
+             *     what a request from before this field existed carries — the server
+             *     does not invent one from the pane's own instrument, because a
+             *     client that never sent it never made that claim.
+             */
+            instrument?: string | null;
             /** @description What kind of drawing this is, and its geometry. */
             kind: components["schemas"]["DrawingKindDto"];
             /** @description The drawing's line style. */
@@ -1829,6 +2049,50 @@ export interface components {
             /** @description The names of every role this account holds. */
             roles: string[];
         };
+        /** @description A full note row, body included — `GET /api/notes/{note_id}` only. */
+        NoteDto: {
+            /** @description The note's body. */
+            body: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp of creation.
+             */
+            created_at: number;
+            /** @description The note's id. */
+            id: string;
+            /** @description The note's title. */
+            title: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp of the last change to the note's title or body.
+             */
+            updated_at: number;
+        };
+        /**
+         * @description A note row without its body, as returned by a listing — see [`NoteDto`]
+         *     for the full row.
+         */
+        NoteSummaryDto: {
+            /** @description The note's id. */
+            id: string;
+            /** @description The note's title. */
+            title: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp of the last change to the note's title or body.
+             */
+            updated_at: number;
+        };
+        /** @description `GET /api/notes` response body (scope reaches the query, including this `total`; body-free, see [`NoteSummaryDto`]). */
+        NotesPage: {
+            /** @description The rows for this page. */
+            rows: components["schemas"]["NoteSummaryDto"][];
+            /**
+             * Format: int64
+             * @description How many rows exist in total, under the same scope as `rows`.
+             */
+            total: number;
+        };
         /** @description One pane, as read back from a layout. */
         PaneDto: {
             /** @description This pane's drawings, in stacking order. */
@@ -1921,10 +2185,31 @@ export interface components {
              */
             volume: components["schemas"]["VolumeDto"];
         };
+        /** @description `PATCH /api/watchlists/{group_id}` request body. */
+        RenameWatchlistGroupRequest: {
+            /** @description The group's new display name. */
+            name: string;
+        };
         /** @description `PATCH /api/workspaces/{id}` request body. */
         RenameWorkspaceRequest: {
             /** @description The workspace's new display name. */
             name: string;
+        };
+        /**
+         * @description `POST /api/watchlists/reorder` request body: `ids[0]` becomes the first
+         *     group, `ids[1]` the second, and so on.
+         */
+        ReorderWatchlistGroupsRequest: {
+            /** @description Every group id the caller owns, in the new display order. */
+            ids: string[];
+        };
+        /**
+         * @description `POST /api/watchlists/{group_id}/members/reorder` request body, the
+         *     member counterpart of [`ReorderWatchlistGroupsRequest`].
+         */
+        ReorderWatchlistMembersRequest: {
+            /** @description Every member id in this group, in the new display order. */
+            ids: string[];
         };
         /**
          * @description `PUT /api/layouts/{id}` request body: replaces a layout's entire pane/
@@ -2032,6 +2317,26 @@ export interface components {
             to: number;
         };
         /**
+         * @description `PUT /api/notes/{note_id}` request body: replaces both fields, the same
+         *     "full replace" shape `ReplaceLayoutRequest` uses.
+         */
+        UpdateNoteRequest: {
+            /** @description The note's new body. */
+            body: string;
+            /** @description The note's new title. */
+            title: string;
+        };
+        /**
+         * @description `PATCH /api/workspaces/{id}/settings` request body. `settings` is opaque
+         *     JSON-object text, validated only as "is a JSON object" — the same
+         *     contract `senken_chart::ChartWorkspaceStore::update_workspace_settings`
+         *     documents for itself; this crate does not interpret it beyond that.
+         */
+        UpdateWorkspaceSettingsRequest: {
+            /** @description The workspace's new display settings, as JSON-object text. */
+            settings: string;
+        };
+        /**
          * @description A user row as the user/role management endpoints report it — the same fields as [`MeResponse`]'s profile half, without the
          *     roles/grants that are specific to *the caller's own* identity.
          */
@@ -2081,6 +2386,55 @@ export interface components {
             /** @enum {string} */
             kind: "absent";
         };
+        /** @description A watchlist group row (list/create/rename/delete). */
+        WatchlistGroupDto: {
+            /**
+             * Format: int64
+             * @description Unix timestamp of creation.
+             */
+            created_at: number;
+            /** @description The group's id. */
+            id: string;
+            /** @description The group's display name. */
+            name: string;
+            /**
+             * Format: int32
+             * @description This group's display order among its owner's other groups.
+             */
+            position: number;
+            /**
+             * Format: int64
+             * @description Unix timestamp of the last change to the group's own fields.
+             */
+            updated_at: number;
+        };
+        /** @description `GET /api/watchlists` response body (scope reaches the query, including this `total`). */
+        WatchlistGroupsPage: {
+            /** @description The rows for this page. */
+            rows: components["schemas"]["WatchlistGroupDto"][];
+            /**
+             * Format: int64
+             * @description How many rows exist in total, under the same scope as `rows`.
+             */
+            total: number;
+        };
+        /**
+         * @description One instrument's membership in a watchlist group, as read back from a
+         *     listing.
+         */
+        WatchlistMemberDto: {
+            /** @description The group this membership belongs to. */
+            group_id: string;
+            /** @description The member's id. */
+            id: string;
+            /** @description The watched instrument, `source:symbol`. */
+            instrument: string;
+            /**
+             * Format: int32
+             * @description This member's display order within its group.
+             */
+            position: number;
+        };
         /** @description A workspace row (list/create/rename/delete). */
         WorkspaceDto: {
             /**
@@ -2094,6 +2448,12 @@ export interface components {
             name: string;
             /** @description The account that owns this workspace. */
             owner_id: string;
+            /**
+             * @description Display settings for the workspace as a whole, as opaque JSON-object
+             *     text. The server stores and returns it without interpreting it; the
+             *     chart front end owns what these settings mean.
+             */
+            settings: string;
             /**
              * Format: int64
              * @description Unix timestamp of the last change to the workspace's own fields.
@@ -2991,6 +3351,220 @@ export interface operations {
             };
         };
     };
+    list_notes: {
+        parameters: {
+            query?: {
+                /** @description page size, default 50, max 200 */
+                limit?: number;
+                /** @description rows to skip, default 0 */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotesPage"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_note: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateNoteRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_note: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_note: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateNoteRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_note: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_roles: {
         parameters: {
             query?: {
@@ -3540,6 +4114,404 @@ export interface operations {
             };
         };
     };
+    remove_watchlist_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                member_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_watchlist_groups: {
+        parameters: {
+            query?: {
+                /** @description page size, default 50, max 200 */
+                limit?: number;
+                /** @description rows to skip, default 0 */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistGroupsPage"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_watchlist_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWatchlistGroupRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reorder_watchlist_groups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderWatchlistGroupsRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_watchlist_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    rename_watchlist_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameWatchlistGroupRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_watchlist_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistMemberDto"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    add_watchlist_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddWatchlistMemberRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reorder_watchlist_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderWatchlistMembersRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_workspaces: {
         parameters: {
             query?: {
@@ -3756,6 +4728,53 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["LayoutSummaryDto"][];
                 };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_workspace_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWorkspaceSettingsRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             400: {
                 headers: {
