@@ -13,7 +13,8 @@
 	// already follow (`chart-settings.ts`'s `disabledReason`).
 	import { wsClient } from '$lib/api/websocket';
 	import { wsEventsStore } from '$lib/api/ws-events.svelte';
-	import { bookFrameFor, isUnsupportedFor, type WsBookPayload } from '$lib/api/ws-frames';
+	import { bookFrameFor, isFailedFor,
+	isUnsupportedFor, type WsBookPayload } from '$lib/api/ws-frames';
 	import { hasBookFeed } from '$lib/api/sources.svelte';
 	import { bookRowsFromSnapshot } from './order-book';
 	import OrderBookBody from './order-book-body.svelte';
@@ -31,17 +32,23 @@
 	 * `supported === false`, which is the capability response's own,
 	 * pre-subscribe answer to the same question. */
 	let unsupportedTopic = $state(false);
+	/** The server tried and could not — cleared on every fresh subscribe,
+	 * so a retry starts from "not told otherwise" rather than from the
+	 * previous attempt's failure. */
+	let failedTopic = $state(false);
 
 	$effect(() => {
 		const t = topic;
 		if (supported !== true) {
 			snapshot = null;
 			unsupportedTopic = false;
+			failedTopic = false;
 			return;
 		}
 		wsClient.subscribe(t);
 		snapshot = null;
 		unsupportedTopic = false;
+		failedTopic = false;
 		return () => wsClient.unsubscribe(t);
 	});
 
@@ -50,6 +57,10 @@
 		const t = topic;
 		if (isUnsupportedFor(event, t)) {
 			unsupportedTopic = true;
+			return;
+		}
+		if (isFailedFor(event, t)) {
+			failedTopic = true;
 			return;
 		}
 		const frame = bookFrameFor(event, t);
@@ -68,4 +79,4 @@
 	const rows = $derived(snapshot ? bookRowsFromSnapshot(snapshot.bids, snapshot.asks, snapshot.price_scale, snapshot.qty_scale) : null);
 </script>
 
-<OrderBookBody capability={supported} {unsupportedTopic} {rows} onRefresh={refresh} />
+<OrderBookBody capability={supported} {unsupportedTopic} {failedTopic} {rows} onRefresh={refresh} />

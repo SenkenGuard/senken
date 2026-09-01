@@ -50,8 +50,9 @@ tracing = { workspace = true }
 # The fake venue server the required tests dial instead of a real one
 # (the constraint: "everything else must be testable against a
 # fake"). `net` for `TcpListener`, `macros`/`rt-multi-thread` to run async
-# tests.
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }
+# tests, `sync` for the oneshot a reconnect test uses to hold the venue's
+# handshake until the state it is about has actually been reached.
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 # `OkxBookSource`'s own tests mock its plain HTTP call the same way
 # `senken-plugin-okx`'s bar source tests do.
 reqwest = { workspace = true }

@@ -50,6 +50,14 @@ export function isUnsupportedFor(event: WsEvent | null, topic: string): boolean 
 	return event.payload.topic === topic;
 }
 
+/** The server tried and could not. Kept apart from `unsupported`: "this venue
+ * does not serve depth" and "we asked and it failed" are different facts, and
+ * only one of them is worth offering a retry for. */
+export function isFailedFor(event: WsEvent | null, topic: string): boolean {
+	if (!event || event.type !== 'failed' || !isUnsupportedPayload(event.payload)) return false;
+	return event.payload.topic === topic;
+}
+
 /** Converts a quote frame's scaled bid and ask only at the rendering edge.
  * A wrong topic or incomplete wire frame is not a quote for this pane. */
 export function quoteFromEvent(event: WsEvent | null, topic: string): { bid: number; ask: number } | null {

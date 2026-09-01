@@ -92,3 +92,28 @@ export function shouldFramePriceScale(state: {
 }): boolean {
 	return state.hasBars && !state.alreadyFramed && !state.storedAutoScale;
 }
+
+/** The stretch factor each pane should hold, main pane first.
+ *
+ * A weight is a *relative* share the chart re-divides on every resize, so the
+ * numbers only have to be proportional to each other. `stored` wins when it
+ * has an entry; the fallback splits the remainder evenly between the
+ * sub-panes.
+ *
+ * `subPaneCount` of zero is the case that bites: dividing the remainder by it
+ * yields `Infinity`, and a pane given an infinite stretch factor takes the
+ * whole chart. It happens for real — every sub-pane indicator can be dropped
+ * at once when a fetch comes back with no points. */
+export function paneStretchFactors(
+	paneCount: number,
+	subPaneCount: number,
+	stored: number[] | undefined
+): number[] {
+	if (paneCount <= 0) return [];
+	const share = subPaneCount > 0 ? 35 / subPaneCount : 35;
+	return Array.from({ length: paneCount }, (_, index) => {
+		const configured = stored?.[index];
+		const weight = configured ?? (index === 0 ? 65 : share);
+		return Number.isFinite(weight) && weight > 0 ? weight : 1;
+	});
+}

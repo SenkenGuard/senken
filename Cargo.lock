@@ -4034,7 +4034,7 @@ dependencies = [
 
 [[package]]
 name = "senken-acl"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -4042,7 +4042,7 @@ dependencies = [
 
 [[package]]
 name = "senken-alerts"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "rusqlite",
@@ -4064,7 +4064,7 @@ dependencies = [
 
 [[package]]
 name = "senken-api"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -4103,7 +4103,7 @@ dependencies = [
 
 [[package]]
 name = "senken-app"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -4121,7 +4121,7 @@ dependencies = [
 
 [[package]]
 name = "senken-chart"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "rusqlite",
  "senken-acl",
@@ -4139,7 +4139,7 @@ dependencies = [
 
 [[package]]
 name = "senken-cli"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4176,7 +4176,7 @@ dependencies = [
 
 [[package]]
 name = "senken-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -4184,7 +4184,7 @@ dependencies = [
 
 [[package]]
 name = "senken-feed"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "futures",
@@ -4204,7 +4204,7 @@ dependencies = [
 
 [[package]]
 name = "senken-identity"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "argon2",
  "rand 0.10.2",
@@ -4221,7 +4221,7 @@ dependencies = [
 
 [[package]]
 name = "senken-indicators"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-series",
@@ -4232,7 +4232,7 @@ dependencies = [
 
 [[package]]
 name = "senken-loader"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "lru",
@@ -4249,7 +4249,7 @@ dependencies = [
 
 [[package]]
 name = "senken-marketdata"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4267,7 +4267,7 @@ dependencies = [
 
 [[package]]
 name = "senken-notes"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "rusqlite",
  "senken-acl",
@@ -4280,7 +4280,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4296,7 +4296,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-binance"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4314,7 +4314,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-bingx"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "reqwest",
  "senken-marketdata",
@@ -4328,7 +4328,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-bitfinex"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4340,7 +4340,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-bitget"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4354,7 +4354,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-bitmart"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4368,7 +4368,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-bitmex"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4383,7 +4383,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-bitstamp"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4396,7 +4396,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-bybit"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4414,7 +4414,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-coinbase"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4428,7 +4428,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-cryptocom"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4442,7 +4442,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-deribit"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4456,7 +4456,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-gate"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4470,7 +4470,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-gemini"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4484,7 +4484,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-htx"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4498,7 +4498,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-kraken"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4513,7 +4513,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-kucoin"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-core",
  "senken-marketdata",
@@ -4528,7 +4528,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-mexc"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4541,7 +4541,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-okx"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4559,7 +4559,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-phemex"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4572,7 +4572,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-poloniex"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4586,7 +4586,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-upbit"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4599,7 +4599,7 @@ dependencies = [
 
 [[package]]
 name = "senken-plugin-whitebit"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "senken-marketdata",
  "senken-plugin",
@@ -4612,7 +4612,7 @@ dependencies = [
 
 [[package]]
 name = "senken-runtime"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "senken-acl",
@@ -4632,7 +4632,7 @@ dependencies = [
 
 [[package]]
 name = "senken-series"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "senken-core",
@@ -4642,7 +4642,7 @@ dependencies = [
 
 [[package]]
 name = "senken-storage"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "chrono",
  "serde",
@@ -4654,7 +4654,7 @@ dependencies = [
 
 [[package]]
 name = "senken-store"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "arrow",
  "parquet",
@@ -4667,7 +4667,7 @@ dependencies = [
 
 [[package]]
 name = "senken-subscription"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "senken-core",
@@ -4681,7 +4681,7 @@ dependencies = [
 
 [[package]]
 name = "senken-venue"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4696,7 +4696,7 @@ dependencies = [
 
 [[package]]
 name = "senken-watchlist"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "rusqlite",
  "senken-acl",
