@@ -16,9 +16,9 @@
  * "812.0 B" is noise, and three decimals on a gigabyte is false precision
  * about a number that changes as the app runs.
  *
- * Exact zero is rendered as `0 B` rather than being treated as absent —
- * a series directory that exists with nothing in it is a real state, and
- * hiding it would leave something on disk the panel never mentions. */
+ * Exact zero still renders as `0 B` rather than as a dash: zero is a
+ * measurement, not a missing one. Whether a node holding zero is *listed*
+ * at all is a separate question, answered by `hasStoredData` below. */
 export function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes < 0) return '—';
 	if (bytes < 1024) return `${Math.round(bytes)} B`;
@@ -37,6 +37,34 @@ export function formatBytes(bytes: number): string {
  * mistaken for a size. */
 export function formatFiles(files: number): string {
 	return `${files} ${files === 1 ? 'file' : 'files'}`;
+}
+
+/** Anything the panel measures: a source, an instrument, a series. */
+export interface StorageMeasured {
+	bytes: number;
+	files: number;
+}
+
+/** Whether a node is holding anything at all.
+ *
+ * A server can have dozens of registered sources and have fetched from two
+ * of them. Listing the other twenty-odd at `0 B` fills the panel with rows
+ * that answer a question nobody asked and bury the two that matter — the
+ * panel exists to show where the disk went, and a node using none of it is
+ * not part of that answer.
+ *
+ * Both fields are checked, not just one. A directory holding files that are
+ * themselves empty is `0 B` across `n files` and is still a real thing on
+ * disk worth offering to remove; a node with neither is nothing. */
+export function hasStoredData(node: StorageMeasured): boolean {
+	return node.files > 0 || node.bytes > 0;
+}
+
+/** The nodes worth listing, at any level of the tree — sources,
+ * instruments, or series. Generic so one rule serves all three rather than
+ * three filters that could drift apart. */
+export function withStoredData<T extends StorageMeasured>(nodes: readonly T[]): T[] {
+	return nodes.filter(hasStoredData);
 }
 
 /** Which node of the tree a row is. Every level is addressed by the same

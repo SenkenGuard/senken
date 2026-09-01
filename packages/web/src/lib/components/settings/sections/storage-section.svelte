@@ -42,6 +42,7 @@
 		formatFiles,
 		shareOfTotal,
 		storageNodeKey,
+		withStoredData,
 		type StorageNodeId
 	} from '$lib/storage/usage';
 	import type { StorageReportDto } from '$lib/api/types';
@@ -65,6 +66,11 @@
 	let expanded = $state<string[]>([]);
 	let pending = $state<{ id: StorageNodeId; message: string } | null>(null);
 	let deleting = $state(false);
+	/** Whether the source list under the total is open. Closed to begin
+	 * with: the question this panel answers first is "how much", and a list
+	 * of every source pushes that number off the top of a settings pane the
+	 * moment a server has fetched from more than a handful. */
+	let sourcesOpen = $state(false);
 
 	async function load(): Promise<void> {
 		loading = true;
@@ -124,6 +130,10 @@
 	}
 
 	const marketTotal = $derived(report?.market_data.total_bytes ?? 0);
+	/** Only what is actually holding disk. A server registers dozens of
+	 * sources and fetches from two; the rest would be `0 B` rows burying the
+	 * two that matter. */
+	const sources = $derived(withStoredData(report?.market_data.sources ?? []));
 </script>
 
 {#snippet sizeCell(bytes: number, files: number)}
@@ -168,113 +178,136 @@
 		{:else if error}
 			<p data-testid="storage-error" class="py-4 text-[12.5px] text-destructive">{error}</p>
 		{:else if report}
-			<div class="flex items-center justify-between gap-4 border-y border-border py-2.5">
-				<span class="flex items-center gap-2 text-[13px] font-medium text-foreground">
-					<HardDriveIcon class="size-3.5 text-dim2" />
-					All sources
-				</span>
-				{@render sizeCell(report.market_data.total_bytes, report.market_data.total_files)}
-			</div>
-
-			{#if report.market_data.sources.length === 0}
-				<p class="py-6 text-[12.5px] text-dim2">
-					Nothing has been downloaded yet. Opening a chart fetches what it needs, and it will show
-					up here.
-				</p>
-			{/if}
-
-			{#each report.market_data.sources as source (source.source_id)}
-				{@const sourceId = { sourceId: source.source_id }}
-				<div class="border-b border-border">
-					<div class="flex items-center gap-3 py-2.5">
-						<button
-							type="button"
-							class="flex min-w-0 flex-1 items-center gap-2 text-left"
-							onclick={() => toggle(sourceId)}
-							aria-expanded={isOpen(sourceId)}
-						>
-							{#if isOpen(sourceId)}
-								<ChevronDownIcon class="size-3.5 flex-none text-dim2" />
-							{:else}
-								<ChevronRightIcon class="size-3.5 flex-none text-dim2" />
-							{/if}
-							<span class="min-w-0 flex-1">
-								<span class="block truncate text-[13px] font-medium text-foreground">
-									{source.source_id}
-								</span>
-								{@render shareBar(source.bytes)}
-							</span>
-						</button>
-						{@render sizeCell(source.bytes, source.files)}
-						<Button
-							variant="ghost"
-							size="icon-sm"
-							onclick={() => ask(sourceId, source.bytes, source.files)}
-							aria-label={`Delete everything stored for ${source.source_id}`}
-						>
-							<TrashIcon class="size-3.5 text-dim2" />
-						</Button>
-					</div>
-
-					{#if isOpen(sourceId)}
-						{#each source.instruments as instrument (instrument.symbol)}
-							{@const symbolId = { sourceId: source.source_id, symbol: instrument.symbol }}
-							<div class="border-t border-border/60 pl-6">
-								<div class="flex items-center gap-3 py-2">
-									<button
-										type="button"
-										class="flex min-w-0 flex-1 items-center gap-2 text-left"
-										onclick={() => toggle(symbolId)}
-										aria-expanded={isOpen(symbolId)}
-									>
-										{#if isOpen(symbolId)}
-											<ChevronDownIcon class="size-3 flex-none text-dim2" />
-										{:else}
-											<ChevronRightIcon class="size-3 flex-none text-dim2" />
-										{/if}
-										<span class="truncate font-mono text-[12px] text-secondary-foreground">
-											{instrument.symbol}
-										</span>
-									</button>
-									{@render sizeCell(instrument.bytes, instrument.files)}
-									<Button
-										variant="ghost"
-										size="icon-sm"
-										onclick={() => ask(symbolId, instrument.bytes, instrument.files)}
-										aria-label={`Delete every stored series for ${instrument.symbol}`}
-									>
-										<TrashIcon class="size-3.5 text-dim2" />
-									</Button>
-								</div>
-
-								{#if isOpen(symbolId)}
-									{#each instrument.series as series (series.id)}
-										{@const seriesNode = {
-											sourceId: source.source_id,
-											symbol: instrument.symbol,
-											seriesId: series.id
-										}}
-										<div class="flex items-center gap-3 border-t border-border/40 py-1.5 pl-5">
-											<span class="min-w-0 flex-1 truncate font-mono text-[11.5px] text-dim2">
-												{series.label}
-											</span>
-											{@render sizeCell(series.bytes, series.files)}
-											<Button
-												variant="ghost"
-												size="icon-sm"
-												onclick={() => ask(seriesNode, series.bytes, series.files, series.label)}
-												aria-label={`Delete ${series.label} for ${instrument.symbol}`}
-											>
-												<TrashIcon class="size-3.5 text-dim2" />
-											</Button>
-										</div>
-									{/each}
-								{/if}
-							</div>
-						{/each}
-					{/if}
+			<div class="border border-border">
+				<div class="flex items-center justify-between gap-4 px-3 py-2.5">
+					<span class="flex items-center gap-2 text-[13px] font-medium text-foreground">
+						<HardDriveIcon class="size-3.5 text-dim2" />
+						All sources
+					</span>
+					{@render sizeCell(report.market_data.total_bytes, report.market_data.total_files)}
 				</div>
-			{/each}
+
+				{#if sources.length === 0}
+					<p class="border-t border-border px-3 py-4 text-[12.5px] text-dim2">
+						Nothing has been downloaded yet. Opening a chart fetches what it needs, and it will
+						show up here.
+					</p>
+				{:else}
+					<button
+						type="button"
+						data-testid="storage-view-details"
+						class="flex w-full items-center gap-1.5 border-t border-border px-3 py-2 text-left text-dim2 hover:text-foreground"
+						onclick={() => (sourcesOpen = !sourcesOpen)}
+						aria-expanded={sourcesOpen}
+					>
+						<span class="font-mono text-[10px] tracking-[0.14em]">
+							{sourcesOpen ? 'HIDE DETAILS' : 'VIEW DETAILS'}
+						</span>
+						{#if sourcesOpen}
+							<ChevronDownIcon class="size-3" />
+						{:else}
+							<ChevronRightIcon class="size-3" />
+						{/if}
+					</button>
+
+					{#if sourcesOpen}
+						<div class="border-t border-border px-3">
+							{#each sources as source (source.source_id)}
+								{@const sourceId = { sourceId: source.source_id }}
+								<div class="border-b border-border last:border-b-0">
+									<div class="flex items-center gap-3 py-2.5">
+										<button
+											type="button"
+											class="flex min-w-0 flex-1 items-center gap-2 text-left"
+											onclick={() => toggle(sourceId)}
+											aria-expanded={isOpen(sourceId)}
+										>
+											{#if isOpen(sourceId)}
+												<ChevronDownIcon class="size-3.5 flex-none text-dim2" />
+											{:else}
+												<ChevronRightIcon class="size-3.5 flex-none text-dim2" />
+											{/if}
+											<span class="min-w-0 flex-1">
+												<span class="block truncate text-[13px] font-medium text-foreground">
+													{source.source_id}
+												</span>
+												{@render shareBar(source.bytes)}
+											</span>
+										</button>
+										{@render sizeCell(source.bytes, source.files)}
+										<Button
+											variant="ghost"
+											size="icon-sm"
+											onclick={() => ask(sourceId, source.bytes, source.files)}
+											aria-label={`Delete everything stored for ${source.source_id}`}
+										>
+											<TrashIcon class="size-3.5 text-dim2" />
+										</Button>
+									</div>
+
+									{#if isOpen(sourceId)}
+										{#each withStoredData(source.instruments) as instrument (instrument.symbol)}
+											{@const symbolId = { sourceId: source.source_id, symbol: instrument.symbol }}
+											<div class="border-t border-border/60 pl-6">
+												<div class="flex items-center gap-3 py-2">
+													<button
+														type="button"
+														class="flex min-w-0 flex-1 items-center gap-2 text-left"
+														onclick={() => toggle(symbolId)}
+														aria-expanded={isOpen(symbolId)}
+													>
+														{#if isOpen(symbolId)}
+															<ChevronDownIcon class="size-3 flex-none text-dim2" />
+														{:else}
+															<ChevronRightIcon class="size-3 flex-none text-dim2" />
+														{/if}
+														<span class="truncate font-mono text-[12px] text-secondary-foreground">
+															{instrument.symbol}
+														</span>
+													</button>
+													{@render sizeCell(instrument.bytes, instrument.files)}
+													<Button
+														variant="ghost"
+														size="icon-sm"
+														onclick={() => ask(symbolId, instrument.bytes, instrument.files)}
+														aria-label={`Delete every stored series for ${instrument.symbol}`}
+													>
+														<TrashIcon class="size-3.5 text-dim2" />
+													</Button>
+												</div>
+
+												{#if isOpen(symbolId)}
+													{#each withStoredData(instrument.series) as series (series.id)}
+														{@const seriesNode = {
+															sourceId: source.source_id,
+															symbol: instrument.symbol,
+															seriesId: series.id
+														}}
+														<div class="flex items-center gap-3 border-t border-border/40 py-1.5 pl-5">
+															<span class="min-w-0 flex-1 truncate font-mono text-[11.5px] text-dim2">
+																{series.label}
+															</span>
+															{@render sizeCell(series.bytes, series.files)}
+															<Button
+																variant="ghost"
+																size="icon-sm"
+																onclick={() => ask(seriesNode, series.bytes, series.files, series.label)}
+																aria-label={`Delete ${series.label} for ${instrument.symbol}`}
+															>
+																<TrashIcon class="size-3.5 text-dim2" />
+															</Button>
+														</div>
+													{/each}
+												{/if}
+											</div>
+										{/each}
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
+				{/if}
+			</div>
 		{/if}
 	</section>
 
