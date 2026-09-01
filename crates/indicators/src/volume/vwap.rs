@@ -66,11 +66,17 @@ impl Indicator for Vwap {
         self.initialized
     }
 
+    fn snapshot(&self) -> Box<dyn Indicator> {
+        Box::new(self.clone())
+    }
+
     fn handle_bar(&mut self, bar: &Bar) {
         let high = scaled_to_f64(bar.high);
         let low = scaled_to_f64(bar.low);
         let close = scaled_to_f64(bar.close);
-        let volume = scaled_to_f64(bar.volume);
+        let Some(volume) = bar.volume.real().map(scaled_to_f64) else {
+            return;
+        };
         let typical_price = (high + low + close) / 3.0;
 
         self.has_inputs = true;

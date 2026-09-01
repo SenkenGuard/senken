@@ -3,13 +3,10 @@
 // two are read off the same `status` field, never independent booleans a
 // caller could set inconsistently.
 //
-// Every venue registered in this build is crypto and trades continuously —
-// there are no opening hours to show, and writing a schedule would be
-// inventing a venue fact this project forbids (AGENTS.md, "Do not invent
-// venue facts"). `closed` is designed here so a future adapter that *does*
-// carry real session data (an equities/futures venue) slots straight into
-// this union; nothing in this build ever constructs it, and it stays
-// unreachable until such an adapter exists.
+// A catalogued instrument status and a feed capability answer different
+// questions. In particular, a closed instrument is not evidence that its
+// venue lacks a feed. The optional reopen instant is carried only when a
+// source supplied it; omitting it is more honest than inventing a schedule.
 
 /** `#f2f2ef` — the same off-white this app already treats as its neutral
  * default (`chart-pane.svelte`'s `DEFAULT_DRAWING_STYLE.color`, a freshly
@@ -21,7 +18,13 @@ export const NEUTRAL_PRICE_LINE_COLOR = '#f2f2ef';
 export type LiveState =
 	| { status: 'live' }
 	| { status: 'no-feed' }
-	| { status: 'closed'; opensAt: number };
+	| { status: 'closed'; opensAt?: number };
+
+/** A source-supplied market state relevant to the chart's live overlay.
+ * `opensAt` is Unix nanoseconds and is optional because an instrument
+ * catalog can establish that a market is closed without promising a future
+ * session time. */
+export type MarketStatus = { status: 'closed'; opensAt?: number } | { status: 'trading' };
 
 /** Combines `GET /api/sources`' registered-source fact with the WS layer's
  * own per-topic `unsupported` frame: either source alone leaves a gap.
@@ -31,7 +34,12 @@ export type LiveState =
  * subscribe going out and getting an `unsupported` frame back still wins
  * immediately regardless, since that is a definitive per-topic answer, not
  * a guess). */
-export function deriveLiveState(sourceHasLiveFeed: boolean | undefined, unsupported: boolean): LiveState {
+export function deriveLiveState(
+	sourceHasLiveFeed: boolean | undefined,
+	unsupported: boolean,
+	marketStatus?: MarketStatus
+): LiveState {
+	if (marketStatus?.status === 'closed') return marketStatus;
 	if (unsupported) return { status: 'no-feed' };
 	if (sourceHasLiveFeed === false) return { status: 'no-feed' };
 	return { status: 'live' };
@@ -69,7 +77,9 @@ export function overlayMessage(state: LiveState): string | null {
 		case 'no-feed':
 			return 'This venue has no live feed. Showing stored history.';
 		case 'closed':
-			return `Market closed. Reopens ${new Date(state.opensAt / 1_000_000).toLocaleString()}.`;
+			return state.opensAt == null
+				? 'Market closed.'
+				: `Market closed. Reopens ${new Date(state.opensAt / 1_000_000).toLocaleString()}.`;
 		default: {
 			const exhaustive: never = state;
 			return exhaustive;

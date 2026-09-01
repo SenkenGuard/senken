@@ -38,7 +38,7 @@ const ALL_ACTIONS: [Action; 5] = [
 
 /// Every `Resource` this crate knows about, for the same seeding purpose as
 /// [`ALL_ACTIONS`].
-const ALL_RESOURCES: [Resource; 8] = [
+const ALL_RESOURCES: [Resource; 9] = [
     Resource::Workspace,
     Resource::Layout,
     Resource::Alert,
@@ -47,6 +47,7 @@ const ALL_RESOURCES: [Resource; 8] = [
     Resource::Adapter,
     Resource::User,
     Resource::Role,
+    Resource::Indicator,
 ];
 
 /// Idle session lifetime: 30 days, refreshed on every use.

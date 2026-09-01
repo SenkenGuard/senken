@@ -24,31 +24,40 @@
 	// onMount/effects (rather than importing side effects at module init)
 	// is what actually keeps this safe for the static `vite build` step.
 	import { onMount, untrack } from 'svelte';
-	import { createChart, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
+	import { CandlestickSeries, HistogramSeries, LineSeries, createChart, createTextWatermark, type IChartApi, type ISeriesApi, type ITextWatermarkPluginApi, type Time, type UTCTimestamp } from 'lightweight-charts';
 	import {
 		OBJECT_DRAW_TOOLS,
 		TF_DURATION_SECONDS,
 		type Timeframe,
 		type ToolKey,
-		defaultBarWindow,
-		indicatorFieldScale,
 		isIntradaySpec,
 		timeAxisFormatter
 	} from './chart-config';
-	import { loadBars, loadIndicatorSeries, type BarLoadProgress } from '$lib/charts/bars';
+	import { loadBars, loadIndicatorSeries, type BarLoadProgress, type ProvisionalBar } from '$lib/charts/bars';
 	import { GenerationGuard } from '$lib/charts/generation-guard';
-	import { plotsForLayer, LINE_STYLE_MAP } from '$lib/charts/layer-style';
+	import { indicatorFieldScale, plotsForLayer, LINE_STYLE_MAP } from '$lib/charts/layer-style';
 	import type { DrawingRuntime, LayerRuntime } from '$lib/charts/pane-runtime';
 	import { DrawingsPrimitive } from '$lib/charts/drawing-primitive';
+	import { drawingAt } from '$lib/charts/drawing-layer';
+	import {
+		initialBarWindow,
+		historyLoadPriority,
+		HISTORY_PAGE_BARS,
+		previousHistoryPage,
+		preserveVisibleRange,
+		shouldPrefetchHistory
+	} from '$lib/charts/chart-window';
+	import { nativePaneData } from '$lib/charts/native-panes';
 	import { shouldFramePriceScale } from '$lib/charts/pane-settings';
 	import { LastPriceBadgePrimitive, type PriceDirection } from '$lib/charts/price-badge-primitive';
 	import { deriveLiveState, overlayMessage, priceLineColorFor, showCountdown } from '$lib/charts/live-state';
+	import type { MarketStatus } from '$lib/charts/live-state';
 	import { chartPaneThemeColors, isDarkTheme } from './chart-theme';
 	import { defaultChartSettings, type ChartSettings } from '$lib/mock/chart-settings';
 	import { wsClient } from '$lib/api/websocket';
 	import { wsEventsStore, priceFromEvent, qtyFromEvent } from '$lib/api/ws-events.svelte';
-	import { isUnsupportedFor } from '$lib/api/ws-frames';
-	import { ensureSourcesLoaded, hasLiveFeed } from '$lib/api/sources.svelte';
+	import { isUnsupportedFor, quoteFromEvent } from '$lib/api/ws-frames';
+	import { ensureSourcesLoaded, hasLiveFeed, hasQuoteFeed } from '$lib/api/sources.svelte';
 
 	/** A freshly drawn object's starting style — the same default plot colour
 	 * `$lib/charts/layer-style.ts` already uses, so a new drawing and a new
@@ -57,16 +66,16 @@
 
 	let {
 		instrument,
+		marketStatus,
 		spec,
 		tool,
 		replayIdx,
 		clearToken,
 		overlayLayers,
+		subPaneLayers = [],
 		drawings,
 		selectedDrawingId,
 		onCrosshair,
-		onCrosshairTime,
-		crosshairTime,
 		onNarrow,
 		onLastClose,
 		onLiveNotice,
@@ -86,6 +95,8 @@
 		settings
 	}: {
 		instrument: string;
+		/** Catalogued session state, if the source supplied one for this instrument. */
+		marketStatus?: MarketStatus;
 		spec: string;
 		tool: ToolKey;
 		/** Bar count to reveal during replay, or `null` to show the full series
@@ -99,6 +110,8 @@
 		 * Excludes any `indicator_sub_pane` layer; the caller (pane-cell.svelte)
 		 * is the one that splits a pane's layers that way. */
 		overlayLayers: LayerRuntime[];
+		/** Indicator layers rendered in the chart's native secondary panes. */
+		subPaneLayers?: LayerRuntime[];
 		/** This pane's drawing objects — rendered and hit-tested by
 		 * `$lib/charts/drawing-primitive.ts`, not painted as price lines. */
 		drawings: DrawingRuntime[];
@@ -110,11 +123,6 @@
 		/** Fires the crosshair's formatted OHLC/close text for the pane header
 		 * status line (subscribeCrosshairMove, line 1757). */
 		onCrosshair?: (text: string) => void;
-		/** The bar the crosshair sits on, so sibling panes can draw the same
-		 * vertical line. `null` when the pointer leaves this pane. */
-		onCrosshairTime?: (time: UTCTimestamp | null) => void;
-		/** A crosshair time coming *from* a sibling pane. */
-		crosshairTime?: UTCTimestamp | null;
 		/** Fires whenever the container crosses the 330px width the reference
 		 * uses to hide the venue prefix (paneNarrow, line 1794). */
 		onNarrow?: (narrow: boolean) => void;
@@ -123,20 +131,14 @@
 		 * instead of a mock candle series. */
 		onLastClose?: (price: number) => void;
 		onLiveNotice?: (notice: string | null) => void;
-		/** Fires with `price_scale` whenever bars (re)load — sub-pane charts
-		 * for this pane's Atr/Macd layers need it too (see
-		 * `sub-pane-chart.svelte`'s own doc on why a sub-pane still cares
-		 * about price scale). */
+		/** Fires with `price_scale` whenever bars (re)load. */
 		onPriceScale?: (scale: number) => void;
 		/** Fires with the live last-traded price, or `null`
 		 * once this pane's instrument changes and no tick has arrived yet
 		 * for the new one. `pane-header.svelte` shows this next to the
 		 * instrument chip whenever the crosshair isn't overriding it. */
 		onLivePrice?: (price: number | null) => void;
-		/** Fires with the times of the bars this chart is actually showing,
-		 * in its own order, whenever that window changes. A sub-pane
-		 * indicator is drawn on these and only these, so the two charts
-		 * agree on what "bar 0" is — see `$lib/charts/align-to-bars.ts`. */
+		/** Fires with the times of the bars this chart is actually showing. */
 		onBarTimes?: (times: UTCTimestamp[]) => void;
 		/** Fires with this pane's `IChartApi` once created, and with
 		 * `undefined` just before it is torn down — `pane-cell.svelte` uses
@@ -196,6 +198,7 @@
 	let onPointerMove: ((e: MouseEvent) => void) | undefined;
 	let onPointerUp: (() => void) | undefined;
 	let priceBadge: LastPriceBadgePrimitive | undefined;
+	let watermark: ITextWatermarkPluginApi<Time> | undefined;
 	let ro: ResizeObserver | undefined;
 	let mo: MutationObserver | undefined;
 	let lastNarrow: boolean | undefined;
@@ -206,6 +209,7 @@
 	// effect run rather than diffed, since the whole overlay set only ever
 	// changes on an add/remove/edit that already re-renders this component.
 	const overlaySeries = new Map<string, ISeriesApi<'Line'> | ISeriesApi<'Histogram'>>();
+	const subPaneSeries = new Map<string, ISeriesApi<'Line'> | ISeriesApi<'Histogram'>>();
 
 	let bars = $state<{ ts_open: number; open: number; high: number; low: number; close: number }[]>([]);
 	let priceScale = $state(0);
@@ -213,6 +217,9 @@
 	// The live last-traded price, fed by `wsEventsStore` — see
 	// the subscribe/tick effects below.
 	let livePrice = $state<number | null>(null);
+	// Kept independently from last trade: a quote is its own market-data
+	// stream and a new trade must not erase a still-current bid/ask pair.
+	let liveQuote = $state<{ bid: number; ask: number } | null>(null);
 	// `BarRangeResponse.next_bar_open_at` from the most recent bars load
 	// The countdown primitive's deadline. `null` until the first load
 	// resolves, and reset on every new instrument/timeframe so a stale
@@ -245,7 +252,7 @@
 	 * nothing is forming yet. Prices are rounded back to the instrument's own
 	 * scale here — the decimals this component works in are a display
 	 * convenience, and the integer is what the series is actually defined in. */
-	function provisionalForIndicators() {
+	function provisionalForIndicators(): ProvisionalBar | undefined {
 		if (forming == null) return undefined;
 		const priceFactor = 10 ** priceScale;
 		const qtyFactor = 10 ** qtyScale;
@@ -255,7 +262,7 @@
 			high: Math.round(forming.high * priceFactor),
 			low: Math.round(forming.low * priceFactor),
 			close: Math.round(forming.close * priceFactor),
-			volume: Math.round(forming.volume * qtyFactor)
+			volume: { kind: 'real', value: Math.round(forming.volume * qtyFactor) }
 		};
 	}
 	// Set once this pane's subscribed topic gets back an explicit
@@ -264,6 +271,13 @@
 	// cache) is the other, checked before a subscribe even goes out.
 	let unsupported = $state(false);
 	let progress = $state<BarLoadProgress>({ phase: 'checking' });
+	// A left-edge request is deliberately independent from the primary load
+	// generation. Panning into history must not cancel the bars currently on
+	// screen, and its `prefetch` priority leaves visible work ahead of it.
+	let loadingOlder = $state(false);
+	let olderHistoryError = $state<string | null>(null);
+	let earliestAvailable = $state<number | null>(null);
+	let historyEdgeState = $state<'idle' | 'loading' | 'end' | 'error'>('idle');
 	const loadGeneration = new GenerationGuard();
 	// The indicator effect's own generation guard — `loadGeneration`
 	// only covers bars, and the overlay reconciliation below races
@@ -271,6 +285,7 @@
 	// generation here without touching `loadGeneration` at all, so a stale,
 	// still-resolving indicator fetch can be told apart from the current one.
 	const indicatorGeneration = new GenerationGuard();
+	const subPaneGeneration = new GenerationGuard();
 	// Set once this component's `onMount` cleanup runs. Both async effects
 	// below (bars, overlay indicators) resolve well after they start, and
 	// `pane-cell.svelte`'s `{#if split.sub.length === 0}`/`{:else}` branch
@@ -282,6 +297,51 @@
 	// moment lightweight-charts reuses the freed canvas/context. Every
 	// `.then()` below checks this before touching `chart`/`series`.
 	let destroyed = false;
+
+	function requestOlderHistory(): void {
+		if (loadingOlder || destroyed || bars.length === 0) return;
+		const first = bars[0];
+		const second = bars[1];
+		if (!first || !second) return;
+		if (earliestAvailable != null && first.ts_open <= earliestAvailable) {
+			historyEdgeState = 'end';
+			return;
+		}
+		loadingOlder = true;
+		olderHistoryError = null;
+		historyEdgeState = 'loading';
+		const barWidth = second.ts_open - first.ts_open;
+		const page = previousHistoryPage({ from: first.ts_open, to: first.ts_open + barWidth * HISTORY_PAGE_BARS });
+		loadBars(instrument, spec, page.from, page.to, undefined, () => !destroyed, historyLoadPriority())
+			.then((resolved) => {
+				if (destroyed) return;
+				const older = resolved.bars.map((bar) => ({
+					ts_open: bar.ts_open,
+					open: bar.open / 10 ** resolved.priceScale,
+					high: bar.high / 10 ** resolved.priceScale,
+					low: bar.low / 10 ** resolved.priceScale,
+					close: bar.close / 10 ** resolved.priceScale
+				}));
+				const present = new Set(bars.map((bar) => bar.ts_open));
+				const appended = older.filter((bar) => !present.has(bar.ts_open));
+				if (appended.length > 0) bars = [...appended, ...bars];
+				earliestAvailable = resolved.earliestAvailable;
+				if (earliestAvailable != null && (bars[0]?.ts_open ?? Infinity) <= earliestAvailable) {
+					historyEdgeState = 'end';
+				} else {
+					historyEdgeState = 'idle';
+				}
+			})
+			.catch((error) => {
+				if (!destroyed) {
+					olderHistoryError = error instanceof Error ? error.message : 'Could not load earlier history.';
+					historyEdgeState = 'error';
+				}
+			})
+			.finally(() => {
+				loadingOlder = false;
+			});
+	}
 
 	/** `chart.timeScale().coordinateToTime(x)` refuses to extrapolate past the
 	 * last plotted bar (see that method's own doc: "cannot extrapolate time
@@ -326,7 +386,13 @@
 		if (!chart || !series || !container) return;
 		const T = themeColors(isDark());
 		chart.applyOptions({
-			layout: { background: { color: T.bg }, textColor: T.axis, fontFamily: "'IBM Plex Mono', monospace", fontSize: 9 },
+			layout: {
+				background: { color: T.bg },
+				textColor: T.axis,
+				fontFamily: "'IBM Plex Mono', monospace",
+				fontSize: 9,
+				panes: { separatorColor: T.border, separatorHoverColor: T.cross, enableResize: true }
+			},
 			grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
 			rightPriceScale: { borderColor: T.border },
 			timeScale: { borderColor: T.border, rightOffset: 6 },
@@ -355,7 +421,13 @@
 		void ensureSourcesLoaded();
 		const T = themeColors(isDark());
 		chart = createChart(container, {
-			layout: { background: { color: T.bg }, textColor: T.axis, fontFamily: "'IBM Plex Mono', monospace", fontSize: 9 },
+			layout: {
+				background: { color: T.bg },
+				textColor: T.axis,
+				fontFamily: "'IBM Plex Mono', monospace",
+				fontSize: 9,
+				panes: { separatorColor: T.border, separatorHoverColor: T.cross, enableResize: true }
+			},
 			grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
 			rightPriceScale: { borderColor: T.border },
 			timeScale: { borderColor: T.border, rightOffset: 6 },
@@ -369,7 +441,7 @@
 			height: container.clientHeight
 		});
 		onChartApi?.(chart);
-		series = chart.addCandlestickSeries({
+		series = chart.addSeries(CandlestickSeries, {
 			// The last-price badge draws this itself, with the countdown under
 			// it in the same block; leaving this on would draw the price twice.
 			lastValueVisible: false,
@@ -379,6 +451,11 @@
 			borderDownColor: T.down,
 			wickUpColor: T.wickUp,
 			wickDownColor: T.wickDown
+		});
+		watermark = createTextWatermark(chart.panes()[0], {
+			horzAlign: 'center',
+			vertAlign: 'center',
+			lines: []
 		});
 		drawingsPrimitive = new DrawingsPrimitive();
 		series.attachPrimitive(drawingsPrimitive);
@@ -394,7 +471,7 @@
 		onPointerDown = (e: MouseEvent) => {
 			if (e.button !== 0 || tool !== 'cursor' || !drawingsPrimitive) return;
 			const at = localPoint(e);
-			const found = drawingsPrimitive.hitTestDetailed(at.x, at.y);
+			const found = drawingAt(drawingsPrimitive, at.x, at.y);
 			if (!found) {
 				onSelectDrawing?.(null);
 				return;
@@ -440,7 +517,6 @@
 		priceBadge.setColors(badgeColors(T));
 
 		chart.subscribeCrosshairMove((param) => {
-			onCrosshairTime?.((param.time as UTCTimestamp | undefined) ?? null);
 			if (onCrosshair && series) {
 				if (!param.point || !param.seriesData) {
 					onCrosshair('');
@@ -466,6 +542,12 @@
 				if (price != null && time != null) {
 					drawingsPrimitive?.setPending(pendingStart, { time, price });
 				}
+			}
+		});
+
+		chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+			if (shouldPrefetchHistory(range?.from == null ? null : Number(range.from), bars.length)) {
+				requestOlderHistory();
 			}
 		});
 
@@ -552,7 +634,7 @@
 			priceBadge?.detached();
 			priceBadge = undefined;
 			// Fired before `chart.remove()` so a caller unsubscribing from this
-			// chart's time scale (`$lib/charts/axis-sync.ts`) never touches it
+			// native panes share the chart's time scale and never touch it
 			// after it is gone.
 			onChartApi?.(undefined);
 			try {
@@ -576,6 +658,91 @@
 		drawingsPrimitive?.setPending(null, null);
 	});
 
+	// Native panes share the chart's time scale and crosshair. Indicator
+	// warm-up can therefore shorten a plot without changing which candle is
+	// under its last point; there is no second logical index to synchronize.
+	$effect(() => {
+		if (!chart || bars.length === 0) return;
+		const activeChart = chart;
+		const currentInstrument = instrument;
+		const currentSpec = spec;
+		const currentPriceScale = priceScale;
+		const layers = subPaneLayers.filter((layer) => layer.indicatorName);
+		const token = subPaneGeneration.begin();
+		const { from, to } = initialBarWindow(currentSpec);
+
+		Promise.all(
+			layers.map(async (layer, paneIndex) => ({
+				layer,
+				paneIndex: paneIndex + 1,
+				byField: (
+					await loadIndicatorSeries(
+						currentInstrument,
+						currentSpec,
+						from,
+						to,
+						layer.indicatorName as string,
+						layer.params,
+						provisionalForIndicators()
+					)
+				).byField
+			}))
+		)
+			.then((results) => {
+				if (destroyed || !subPaneGeneration.isCurrent(token)) return;
+				const seen = new Set<string>();
+				for (const { layer, paneIndex, byField } of results) {
+					for (const plot of plotsForLayer(layer.id, layer.indicatorName as string)) {
+						const points = byField.get(plot.field) ?? [];
+						if (points.length === 0) continue;
+						const key = `${layer.id}:${plot.field}`;
+						seen.add(key);
+						let handle = subPaneSeries.get(key);
+						if (!handle) {
+							handle =
+								plot.type === 'histogram'
+									? activeChart.addSeries(HistogramSeries, { priceLineVisible: false }, paneIndex)
+									: activeChart.addSeries(LineSeries, { priceLineVisible: false }, paneIndex);
+							subPaneSeries.set(key, handle);
+						} else {
+							handle.moveToPane(paneIndex);
+						}
+						const divisor =
+							indicatorFieldScale(layer.indicatorName as string) === 'price'
+								? 10 ** currentPriceScale
+								: 1;
+						handle.applyOptions(
+							plot.type === 'line'
+								? {
+										color: plot.color,
+										lineWidth: plot.width as 1 | 2 | 3 | 4,
+										lineStyle: LINE_STYLE_MAP[plot.style],
+										visible: layer.visible && plot.visible
+									}
+								: { color: plot.color, visible: layer.visible && plot.visible }
+						);
+						preserveVisibleRange(activeChart.timeScale(), () => {
+							handle.setData(nativePaneData(points, divisor));
+						});
+					}
+				}
+				for (const [key, handle] of subPaneSeries) {
+					if (seen.has(key)) continue;
+					activeChart.removeSeries(handle);
+					subPaneSeries.delete(key);
+				}
+				const panes = activeChart.panes();
+				const configured = settings?.paneSplit;
+				for (const [index, pane] of panes.entries()) {
+					const fraction = configured?.[index] ?? (index === 0 ? 65 : 35 / layers.length);
+					pane.setHeight(Math.max(30, Math.round((container?.clientHeight ?? 300) * fraction / 100)));
+				}
+			})
+			.catch(() => {
+				// A failed indicator fetch leaves candles and other panes usable.
+			});
+	});
+
 	// `timeVisible` defaults to `false` (dates only — every intraday tick
 	// used to repeat the same day-of-month with no time on it at all) and
 	// `secondsVisible` defaults to `true` (which would print `14:15:00` on
@@ -591,23 +758,6 @@
 		if (chart.timeScale().options().timeVisible !== intraday) {
 			chart.applyOptions({ timeScale: { timeVisible: intraday, secondsVisible: false } });
 		}
-	});
-
-	// A sibling pane's crosshair, mirrored here so one pointer draws one
-	// vertical line across every pane — the reading a trader expects when a
-	// sub-pane sits under the price.
-	//
-	// The price is deliberately off-canvas: `setCrosshairPosition` needs one,
-	// but only the *vertical* line belongs on a pane the pointer is not in.
-	$effect(() => {
-		if (!chart || !series) return;
-		if (crosshairTime == null) {
-			chart.clearCrosshairPosition();
-			return;
-		}
-		const offscreen = series.coordinateToPrice(-40);
-		if (offscreen == null) return;
-		chart.setCrosshairPosition(offscreen, crosshairTime, series);
 	});
 
 	// Keeps the primitive's drawing list and selection in sync with this
@@ -653,9 +803,11 @@
 			// than the stale candle this exists to prevent.
 			bars = [];
 			nextBarOpenAt = null;
+			earliestAvailable = null;
+			historyEdgeState = 'idle';
 			forming = null;
 		}
-		const { from, to } = defaultBarWindow(currentSpec);
+		const { from, to } = initialBarWindow(currentSpec);
 		loadBars(
 			currentInstrument,
 			currentSpec,
@@ -678,6 +830,7 @@
 				qtyScale = resolved.qtyScale;
 				onPriceScale?.(resolved.priceScale);
 				nextBarOpenAt = resolved.nextBarOpenAt;
+				earliestAvailable = resolved.earliestAvailable;
 				bars = resolved.bars.map((b) => ({
 					ts_open: b.ts_open,
 					open: b.open / 10 ** resolved.priceScale,
@@ -802,13 +955,13 @@
 		// badge this pane draws, so it is switched there.
 		series.applyOptions({ priceLineVisible: cs.symbolLabel === 'VALUE + LINE' });
 
-		chart.applyOptions({
-			watermark: {
-				visible: cs.watermark === 'VISIBLE',
+		watermark?.applyOptions({
+			visible: cs.watermark === 'VISIBLE',
+			lines: [{
 				text: instrument.toUpperCase(),
 				color: pick(cs.watermarkColor, T.grid),
 				fontSize: 44
-			}
+			}]
 		});
 	});
 
@@ -863,6 +1016,8 @@
 	/** The high/low guides, kept so they can be removed when the setting is
 	 * turned off or the data changes. */
 	let highLowLines: ReturnType<NonNullable<typeof series>['createPriceLine']>[] = [];
+	/** The two independently-owned best-bid-and-offer guides. */
+	let quoteLines: ReturnType<NonNullable<typeof series>['createPriceLine']>[] = [];
 
 	// High and low lines: horizontal guides at the extremes of what is
 	// loaded, which is what makes a range readable at a glance.
@@ -900,6 +1055,21 @@
 				title: 'L'
 			})
 		];
+	});
+
+	// Quote lines are intentionally a separate lease from last-trade ticks.
+	// A venue can offer either capability, and the UI must never infer one
+	// from the other. Waiting for the sources response also avoids asking the
+	// socket for an unsupported stream while capabilities are still unknown.
+	$effect(() => {
+		const quoteTopic = `quote:${instrument}`;
+		if (hasQuoteFeed(instrument) !== true) {
+			liveQuote = null;
+			return;
+		}
+		wsClient.subscribe(quoteTopic);
+		liveQuote = null;
+		return () => wsClient.unsubscribe(quoteTopic);
 	});
 
 	/** The chart library draws its price and time scales inside the same
@@ -1056,6 +1226,8 @@
 		// answer, so once set it is never cleared here — only a fresh
 		// subscribe (a new instrument, above) starts asking again.
 		if (isUnsupportedFor(event, instrument)) unsupported = true;
+		const quote = quoteFromEvent(event, `quote:${instrument}`);
+		if (quote != null) liveQuote = quote;
 		const price = priceFromEvent(event, instrument);
 		if (price == null) return;
 		livePrice = price;
@@ -1126,6 +1298,42 @@
 		});
 	});
 
+	// Best bid and offer are visible only when explicitly enabled and the
+	// current source reports the quote capability. Removing either guard must
+	// make the settings-capability test fail: a quote-shaped decoration on a
+	// venue that cannot report quotes would be false market data.
+	$effect(() => {
+		if (!series) return;
+		for (const line of quoteLines) {
+			try {
+				series.removePriceLine(line);
+			} catch {
+				// The series can be torn down while an effect is queued.
+			}
+		}
+		quoteLines = [];
+		if (!paneSettings.bidAsk || hasQuoteFeed(instrument) !== true || liveQuote == null) return;
+		const T = themeColors(isDark());
+		quoteLines = [
+			series.createPriceLine({
+				price: liveQuote.bid,
+				color: T.gain,
+				lineWidth: 1,
+				lineStyle: 2,
+				axisLabelVisible: true,
+				title: 'BID'
+			}),
+			series.createPriceLine({
+				price: liveQuote.ask,
+				color: T.loss,
+				lineWidth: 1,
+				lineStyle: 2,
+				axisLabelVisible: true,
+				title: 'ASK'
+			})
+		];
+	});
+
 	// Overlay indicators: SMA/EMA/WMA/BollingerBands/Vwap/Atr
 	// draw as extra line series on this same price scale; Volume draws as a
 	// histogram pinned to the chart's own bottom margin via a dedicated
@@ -1175,7 +1383,7 @@
 		const layers = untrack(() =>
 			overlayLayers.filter((l) => l.kind === 'indicator_overlay' && l.indicatorName)
 		);
-		const { from, to } = defaultBarWindow(currentSpec);
+		const { from, to } = initialBarWindow(currentSpec);
 		const cut = replayIdx == null ? Infinity : replayIdx;
 
 		// The forming bar, so an indicator's newest point lands on the same
@@ -1224,13 +1432,13 @@
 						if (points.length === 0) continue;
 						const key = `${layer.id}:${plot.field}`;
 						seen.add(key);
-						const scaleKind = indicatorFieldScale(layer.indicatorName as string, plot.field);
+						const scaleKind = indicatorFieldScale(layer.indicatorName as string);
 						const divisor = scaleKind === 'price' ? 10 ** currentPriceScale : scaleKind === 'qty' ? 10 ** currentQtyScale : 1;
 						let handle = overlaySeries.get(key);
 						if (!handle) {
 							handle =
 								plot.type === 'histogram'
-									? chart!.addHistogramSeries({
+									? chart!.addSeries(HistogramSeries, {
 											priceScaleId: 'senken-volume-overlay',
 											priceFormat: { type: 'volume' },
 											// The volume overlay shares the price axis but is not a
@@ -1239,7 +1447,7 @@
 											lastValueVisible: false,
 											priceLineVisible: false
 										})
-									: chart!.addLineSeries({ priceLineVisible: false, lastValueVisible: false });
+									: chart!.addSeries(LineSeries, { priceLineVisible: false, lastValueVisible: false });
 							overlaySeries.set(key, handle);
 						}
 						if (plot.type === 'histogram') hasVolumeOverlay = true;
@@ -1286,7 +1494,7 @@
 	// has not resolved yet, which `deriveLiveState` treats the same as
 	// "live" — a pane must never show a "no feed" banner on the strength of
 	// an answer it has not actually received.
-	const liveState = $derived(deriveLiveState(hasLiveFeed(instrument), unsupported));
+	const liveState = $derived(deriveLiveState(hasLiveFeed(instrument), unsupported, marketStatus));
 
 	/** Which way the price is going, for the badge and the price line.
 	 *
@@ -1386,11 +1594,21 @@
 		if (bars.length > 0) return null;
 		return progress.phase === 'ready' ? 'NO DATA FOR THIS RANGE' : 'LOADING…';
 	});
+
+	const leftEdgeStatus = $derived.by((): string | null => {
+		if (historyEdgeState === 'loading') return 'LOADING EARLIER HISTORY…';
+		if (historyEdgeState === 'end') return 'START OF AVAILABLE HISTORY';
+		if (historyEdgeState === 'error') return 'EARLIER HISTORY COULD NOT LOAD · PAN LEFT TO RETRY';
+		return null;
+	});
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	bind:this={container}
+	data-chart-pane
+	data-native-pane-count={1 + subPaneLayers.length}
+	data-shared-crosshair="true"
 	class="absolute inset-0"
 	oncontextmenu={(e) => {
 		if (!onContextMenu || !container) return;
@@ -1421,3 +1639,8 @@
 		<span class="border border-ink/14 bg-bg2 px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-secondary-foreground">{paneStatus}</span>
 	{/if}
 </div>
+{#if leftEdgeStatus}
+	<div class="pointer-events-none absolute bottom-7 left-2 z-[9]" data-history-edge-state={historyEdgeState}>
+		<span class="border border-ink/14 bg-bg2 px-2 py-1 font-mono text-[8px] tracking-[0.14em] text-secondary-foreground">{leftEdgeStatus}</span>
+	</div>
+{/if}

@@ -56,19 +56,30 @@ pub(crate) struct Candidates {
 }
 
 impl Candidates {
-    /// Every candidate that genuinely divides `target` (excluding `target`
-    /// itself), coarsest — fewest rows to fold.1 — first.
+    /// Every candidate that genuinely divides `target`, coarsest — fewest
+    /// rows to fold — first. Identity is deliberately included: a stored
+    /// venue series at the requested spec is authoritative and needs no
+    /// aggregation.
     fn ordered_for(&self, target: BarSpec) -> Vec<BarSpec> {
         let mut candidates: Vec<BarSpec> = self
             .finer_specs
             .iter()
             .copied()
             .chain(std::iter::once(self.base_spec))
-            .filter(|candidate| *candidate != target && divides(*candidate, target))
+            .filter(|candidate| divides(*candidate, target))
             .collect();
         candidates.sort_by_key(|c| std::cmp::Reverse(c.duration_nanos()));
         candidates.dedup();
         candidates
+    }
+
+    /// The coarsest venue-supported spec that divides `target`, falling
+    /// back to the canonical base when the venue has no compatible spec.
+    pub(crate) fn fetch_spec_for(&self, target: BarSpec) -> BarSpec {
+        self.ordered_for(target)
+            .into_iter()
+            .next()
+            .unwrap_or(self.base_spec)
     }
 }
 
@@ -170,21 +181,14 @@ pub(crate) fn compute_gap(
                 );
             }
             if !remaining.is_empty() {
-                // The spec a fetch would actually run at is always the
-                // final fallback (step 4), regardless of whether
-                // it passed the `divides` filter `ordered_for` applies —
-                // matching this ladder's pre-M8.5 behaviour exactly for
-                // whatever no candidate above resolved. Redundant (but
-                // harmless: `fold_candidate` on an already-fully-subtracted
-                // `remaining` credits nothing new) when `base_spec` was
-                // already tried above.
-                let base_key = venue_key(key, candidates.base_spec);
-                let base_coverage = coverage_cache.get(store, &base_key, anchor)?;
+                let fetch_spec = candidates.fetch_spec_for(key.spec);
+                let fetch_key = venue_key(key, fetch_spec);
+                let fetch_coverage = coverage_cache.get(store, &fetch_key, anchor)?;
                 remaining = fold_candidate(
                     &mut covered,
                     remaining,
-                    &base_coverage,
-                    candidates.base_spec,
+                    &fetch_coverage,
+                    fetch_spec,
                     key.spec,
                     anchor,
                 );
@@ -220,9 +224,10 @@ fn compute_gap_whole_range_only(
             });
         }
     }
-    let base_key = venue_key(key, candidates.base_spec);
-    let base_covered = coverage_cache.get(store, &base_key, anchor)?;
-    let missing = range.subtract(&base_covered);
+    let fetch_spec = candidates.fetch_spec_for(key.spec);
+    let fetch_key = venue_key(key, fetch_spec);
+    let fetch_covered = coverage_cache.get(store, &fetch_key, anchor)?;
+    let missing = range.subtract(&fetch_covered);
     Ok(GapPlan {
         covered: Vec::new(),
         missing,
@@ -426,7 +431,11 @@ pub(crate) fn materialize(
                     *segment,
                 )?;
                 deps.push((candidate_key.clone(), generations.current(&candidate_key)));
-                bars.extend(aggregate_bars(&source_bars, from_spec, key.spec, anchor)?);
+                if from_spec == key.spec {
+                    bars.extend_from_slice(&source_bars);
+                } else {
+                    bars.extend(aggregate_bars(&source_bars, from_spec, key.spec, anchor)?);
+                }
             }
             bars.sort_by_key(|b| b.ts_open);
             if gap.missing.is_empty() {
@@ -463,7 +472,7 @@ mod tests {
             high: close,
             low: close,
             close,
-            volume,
+            volume: senken_series::Volume::Real(volume),
             quote_volume: None,
             trade_count: None,
             taker_buy_volume: None,
@@ -496,6 +505,105 @@ mod tests {
     ) -> Vec<Bar> {
         let gap = compute_gap(store, coverage_cache, candidates, key, range, Anchor::UTC).unwrap();
         materialize(store, bar_cache, generations, key, Anchor::UTC, range, &gap).unwrap()
+    }
+
+    #[test]
+    fn venue_identity_is_preferred_over_finer_stored_series() {
+        let dir = TempDir::new().unwrap();
+        let store = Store::new(dir.path());
+        store.init().unwrap();
+
+        let m1 = BarSpec::new(1, BarUnit::Minute);
+        let h1 = BarSpec::new(1, BarUnit::Hour);
+        let range = secs_range(0, 3600);
+        let key = derived_key(h1);
+        store
+            .write(
+                &super::venue_key(&key, h1),
+                Anchor::UTC,
+                0,
+                0,
+                range,
+                &[bar(0, 7, 60)],
+            )
+            .unwrap();
+        let minute_bars: Vec<Bar> = (0..60).map(|i| bar(i * 60, 3, 1)).collect();
+        store
+            .write(
+                &super::venue_key(&key, m1),
+                Anchor::UTC,
+                0,
+                0,
+                range,
+                &minute_bars,
+            )
+            .unwrap();
+
+        let candidates = Candidates {
+            base_spec: m1,
+            finer_specs: vec![m1, h1],
+        };
+        let gap = compute_gap(
+            &store,
+            &CoverageCache::default(),
+            &candidates,
+            &key,
+            range,
+            Anchor::UTC,
+        )
+        .unwrap();
+        assert_eq!(gap.covered, vec![(range, Some(h1))]);
+        assert_eq!(gap.missing, Vec::new());
+        let bars = materialize(
+            &store,
+            &BarCache::new(usize::MAX),
+            &GenerationTracker::default(),
+            &key,
+            Anchor::UTC,
+            range,
+            &gap,
+        )
+        .unwrap();
+        assert_eq!(bars, vec![bar(0, 7, 60)]);
+    }
+
+    #[test]
+    fn fetch_spec_is_the_coarsest_supported_spec_that_divides_the_target() {
+        let m1 = BarSpec::new(1, BarUnit::Minute);
+        let h1 = BarSpec::new(1, BarUnit::Hour);
+        let h4 = BarSpec::new(4, BarUnit::Hour);
+        let candidates = Candidates {
+            base_spec: m1,
+            finer_specs: vec![m1, h1],
+        };
+
+        assert_eq!(candidates.fetch_spec_for(h4), h1);
+    }
+
+    #[test]
+    fn fetch_spec_rejects_a_supported_spec_that_does_not_divide_the_target() {
+        let m1 = BarSpec::new(1, BarUnit::Minute);
+        let h3 = BarSpec::new(3, BarUnit::Hour);
+        let h4 = BarSpec::new(4, BarUnit::Hour);
+        let candidates = Candidates {
+            base_spec: m1,
+            finer_specs: vec![h3],
+        };
+
+        assert_eq!(candidates.fetch_spec_for(h4), m1);
+    }
+
+    #[test]
+    fn fetch_spec_preserves_the_base_fallback_when_no_candidate_divides() {
+        let m1 = BarSpec::new(1, BarUnit::Minute);
+        let seconds_7 = BarSpec::new(7, BarUnit::Second);
+        let seconds_11 = BarSpec::new(11, BarUnit::Second);
+        let candidates = Candidates {
+            base_spec: m1,
+            finer_specs: vec![seconds_11],
+        };
+
+        assert_eq!(candidates.fetch_spec_for(seconds_7), m1);
     }
 
     /// Plan M6, required test: "the ladder prefers the coarsest fully

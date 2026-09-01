@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { hasBarSource, hasLiveFeed, sourceIdOf } from './source-capability';
+import { hasBarSource, hasLiveFeed, hasQuoteFeed, sourceIdOf } from './source-capability';
 import type { SourceCapabilityDto } from './types';
 
 function sourcesMap(rows: SourceCapabilityDto[]): Map<string, SourceCapabilityDto> {
@@ -18,24 +18,27 @@ describe('sourceIdOf', () => {
 
 describe('hasLiveFeed / hasBarSource — "never true without bars", read from the client side', () => {
 	const sources = sourcesMap([
-		{ id: 'okx-spot', name: 'OKX Spot', bars: true, live: true },
-		{ id: 'binance-spot', name: 'Binance Spot', bars: true, live: false },
-		{ id: 'whitebit', name: 'WhiteBIT', bars: false, live: false }
+		{ id: 'okx-spot', name: 'OKX Spot', bars: true, live: true, quotes: true },
+		{ id: 'binance-spot', name: 'Binance Spot', bars: true, live: false, quotes: false },
+		{ id: 'whitebit', name: 'WhiteBIT', bars: false, live: false, quotes: false }
 	]);
 
 	test('a source with both a bar source and a live pool reports both', () => {
 		expect(hasBarSource(sources, 'okx-spot:BTCUSDT')).toBe(true);
 		expect(hasLiveFeed(sources, 'okx-spot:BTCUSDT')).toBe(true);
+		expect(hasQuoteFeed(sources, 'okx-spot:BTCUSDT')).toBe(true);
 	});
 
 	test('a source that can chart but cannot stream reports bars without live', () => {
 		expect(hasBarSource(sources, 'binance-spot:BTCUSDT')).toBe(true);
 		expect(hasLiveFeed(sources, 'binance-spot:BTCUSDT')).toBe(false);
+		expect(hasQuoteFeed(sources, 'binance-spot:BTCUSDT')).toBe(false);
 	});
 
 	test('a source with neither reports neither', () => {
 		expect(hasBarSource(sources, 'whitebit:ABTC')).toBe(false);
 		expect(hasLiveFeed(sources, 'whitebit:ABTC')).toBe(false);
+		expect(hasQuoteFeed(sources, 'whitebit:ABTC')).toBe(false);
 	});
 
 	// The defensive case the current doc calls out: an id absent
@@ -46,5 +49,6 @@ describe('hasLiveFeed / hasBarSource — "never true without bars", read from th
 		const empty = sourcesMap([]);
 		expect(hasBarSource(empty, 'okx-spot:BTCUSDT')).toBe(false);
 		expect(hasLiveFeed(empty, 'okx-spot:BTCUSDT')).toBe(false);
-	});
+		expect(hasQuoteFeed(empty, 'okx-spot:BTCUSDT')).toBe(false);
+});
 });

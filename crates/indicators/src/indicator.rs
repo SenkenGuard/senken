@@ -53,6 +53,12 @@ pub trait Indicator {
     /// way data ever enters an indicator.
     fn handle_bar(&mut self, bar: &Bar);
 
+    /// Clones this indicator's current state for a provisional calculation.
+    ///
+    /// The returned indicator is independent: advancing it must never alter
+    /// the confirmed state held by the caller.
+    fn snapshot(&self) -> Box<dyn Indicator>;
+
     /// Returns the indicator to the state it was in immediately after
     /// construction: no inputs, not initialized, every accumulator at its
     /// zero value.

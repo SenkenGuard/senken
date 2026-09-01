@@ -68,6 +68,8 @@
 
 mod average;
 mod convert;
+mod descriptor;
+mod drawable;
 mod indicator;
 mod momentum;
 mod volatility;
@@ -77,6 +79,14 @@ mod volume;
 mod test_support;
 
 pub use crate::average::{Ema, MovingAverage, Sma, Wma};
+pub use crate::descriptor::{
+    DESCRIPTORS, IndicatorDescriptor, ParamDefault, ParamKind, ParamSpec, Placement, PlotShape,
+    PlotSpec, ScaleHint, Smoothing, VolumeRequirement, descriptor,
+};
+pub use crate::drawable::{
+    DisplayList, Drawable, Extend, LabelAnchor, Point, PriceCoord, PriceRole, ScaledPrice,
+    SeriesShape, ToolAnchors, ToolDescriptor,
+};
 pub use crate::indicator::Indicator;
 pub use crate::momentum::{Macd, Rsi, Stochastic};
 pub use crate::volatility::{Atr, BollingerBands};

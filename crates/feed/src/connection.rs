@@ -13,7 +13,7 @@ use senken_venue::LimitGroup;
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use crate::protocol::VenueProtocol;
+use crate::protocol::{LiveUpdate, VenueProtocol};
 
 /// Cost charged against a venue's [`LimitGroup`] for one WebSocket dial.
 /// no venue's real connection weight is verified anywhere in
@@ -198,7 +198,10 @@ impl<P: VenueProtocol> WsVenueConnection<P> {
                         match incoming {
                             Some(Ok(WsMessage::Text(text))) => {
                                 for (instrument, update) in self.protocol.parse_message(&text) {
-                                    self.pool.publish(instrument, update);
+                                    match update {
+                                        LiveUpdate::Price(update) => self.pool.publish(instrument, update),
+                                        LiveUpdate::Quote(update) => self.pool.publish_quote(instrument, update),
+                                    }
                                 }
                             }
                             Some(Ok(WsMessage::Close(_))) => {
@@ -316,9 +319,9 @@ impl<P: VenueProtocol> VenueConnection for WsVenueConnection<P> {
 #[cfg(test)]
 mod tests {
     use super::{DIAL_ATTEMPTS_FOR_TEST, WsVenueConnection, reconnect_backoff};
-    use crate::protocol::VenueProtocol;
+    use crate::protocol::{LiveUpdate, VenueProtocol};
     use senken_marketdata::InstrumentId;
-    use senken_subscription::{ConnectionError, PriceUpdate};
+    use senken_subscription::ConnectionError;
     use senken_venue::LimitGroup;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -347,7 +350,7 @@ mod tests {
             unreachable!("not exercised by this module's tests")
         }
 
-        fn parse_message(&self, _: &str) -> Vec<(InstrumentId, PriceUpdate)> {
+        fn parse_message(&self, _: &str) -> Vec<(InstrumentId, LiveUpdate)> {
             unreachable!("not exercised by this module's tests")
         }
     }

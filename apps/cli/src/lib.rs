@@ -128,8 +128,27 @@ pub enum Command {
 ///
 /// Returns an error if the runtime fails to start (see [`Runtime::builder`]).
 pub fn runtime_with_plugins(data_dir: &Path) -> anyhow::Result<Runtime> {
-    Runtime::builder()
-        .data_dir(data_dir)
+    build_runtime(Runtime::builder().data_dir(data_dir))
+}
+
+/// Builds the full venue runtime and reconciles plugin permissions against
+/// the identity store during activation.
+///
+/// # Errors
+/// Returns an error if runtime startup fails.
+pub fn runtime_with_plugins_and_identity(
+    data_dir: &Path,
+    identity: std::sync::Arc<senken_identity::IdentityStore>,
+) -> anyhow::Result<Runtime> {
+    build_runtime(
+        Runtime::builder()
+            .data_dir(data_dir)
+            .identity_store(identity),
+    )
+}
+
+fn build_runtime(builder: senken_runtime::RuntimeBuilder) -> anyhow::Result<Runtime> {
+    builder
         .plugin(BinancePlugin)
         .plugin(UpbitPlugin)
         .plugin(PhemexPlugin)

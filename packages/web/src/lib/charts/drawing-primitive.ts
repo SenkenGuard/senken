@@ -25,8 +25,8 @@ import type {
 	IChartApi,
 	ISeriesApi,
 	ISeriesPrimitive,
-	ISeriesPrimitivePaneRenderer,
-	ISeriesPrimitivePaneView,
+	IPrimitivePaneRenderer,
+	IPrimitivePaneView,
 	Logical,
 	PrimitiveHoveredItem,
 	SeriesAttachedParameter,
@@ -52,7 +52,7 @@ interface ActiveDrag {
 	lastDomainPoint: Point;
 }
 
-class DrawingsRenderer implements ISeriesPrimitivePaneRenderer {
+class DrawingsRenderer implements IPrimitivePaneRenderer {
 	constructor(private readonly primitive: DrawingsPrimitive) {}
 
 	draw(target: CanvasRenderingTarget2D): void {
@@ -62,10 +62,10 @@ class DrawingsRenderer implements ISeriesPrimitivePaneRenderer {
 	}
 }
 
-class DrawingsPaneView implements ISeriesPrimitivePaneView {
+class DrawingsPaneView implements IPrimitivePaneView {
 	constructor(private readonly primitive: DrawingsPrimitive) {}
 
-	renderer(): ISeriesPrimitivePaneRenderer {
+	renderer(): IPrimitivePaneRenderer {
 		return new DrawingsRenderer(this.primitive);
 	}
 }
@@ -125,7 +125,7 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
 		return null;
 	}
 
-	paneViews(): readonly ISeriesPrimitivePaneView[] {
+	paneViews(): readonly IPrimitivePaneView[] {
 		return [this.view];
 	}
 

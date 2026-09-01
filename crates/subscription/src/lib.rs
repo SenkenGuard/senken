@@ -61,7 +61,11 @@
 mod connection;
 mod pool;
 mod price;
+mod quote;
+mod session;
 
 pub use connection::{ConnectionError, VenueConnection, VenueConnector};
 pub use pool::{Lease, PoolError, SubscriptionPool};
 pub use price::PriceUpdate;
+pub use quote::{QuoteError, QuoteLease, QuoteSource, QuoteUpdate};
+pub use session::TickBarBuilder;

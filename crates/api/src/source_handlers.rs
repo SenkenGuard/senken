@@ -37,6 +37,9 @@ fn capabilities(
         .map(|summary| SourceCapabilityDto {
             bars: chartable.contains(&summary.id.as_str()),
             live: streamable(&summary.id),
+            // The only registered live pool is OKX's combined trades/tickers
+            // protocol, so a pool is also the quote capability declaration.
+            quotes: streamable(&summary.id),
             id: summary.id,
             name: summary.name,
         })
@@ -93,9 +96,11 @@ mod tests {
 
         let find = |id: &str| rows.iter().find(|row| row.id == id).unwrap();
         assert!(find("okx-spot").bars && find("okx-spot").live);
+        assert!(find("okx-spot").quotes);
         // Chartable but not streamable is the common case, and the one a
         // client must be able to distinguish: history renders, no live price.
         assert!(find("binance-spot").bars && !find("binance-spot").live);
+        assert!(!find("binance-spot").quotes);
         assert!(!find("gate").bars && !find("gate").live);
     }
 

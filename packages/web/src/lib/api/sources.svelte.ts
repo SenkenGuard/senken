@@ -9,7 +9,7 @@
 // rune-backed cache around one `fetch`.
 import { apiClient } from './client';
 import { getErrorMessage } from './errors';
-import { hasBarSource as hasBarSourceOf, hasLiveFeed as hasLiveFeedOf } from './source-capability';
+import { hasBarSource as hasBarSourceOf, hasLiveFeed as hasLiveFeedOf, hasQuoteFeed as hasQuoteFeedOf } from './source-capability';
 import type { SourceCapabilityDto } from './types';
 
 class SourcesStore {
@@ -54,6 +54,12 @@ export function ensureSourcesLoaded(): Promise<void> {
  * apart from "known to have none". */
 export function hasLiveFeed(instrument: string): boolean | undefined {
 	return sourcesStore.loaded ? hasLiveFeedOf(sourcesStore.byId, instrument) : undefined;
+}
+
+/** Whether `instrument`'s source reports quotes, or `undefined` while the
+ * capability response has not arrived yet. */
+export function hasQuoteFeed(instrument: string): boolean | undefined {
+	return sourcesStore.loaded ? hasQuoteFeedOf(sourcesStore.byId, instrument) : undefined;
 }
 
 /** Whether `instrument`'s source has a bar source registered at all —

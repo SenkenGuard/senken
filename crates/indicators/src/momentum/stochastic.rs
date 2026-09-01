@@ -80,6 +80,10 @@ impl Indicator for Stochastic {
         self.initialized
     }
 
+    fn snapshot(&self) -> Box<dyn Indicator> {
+        Box::new(self.clone())
+    }
+
     fn handle_bar(&mut self, bar: &Bar) {
         let high = scaled_to_f64(bar.high);
         let low = scaled_to_f64(bar.low);

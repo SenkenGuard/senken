@@ -95,6 +95,10 @@ impl Indicator for Macd {
         self.histogram = self.line - self.signal.value();
     }
 
+    fn snapshot(&self) -> Box<dyn Indicator> {
+        Box::new(self.clone())
+    }
+
     fn reset(&mut self) {
         self.fast.reset();
         self.slow.reset();

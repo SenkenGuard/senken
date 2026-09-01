@@ -184,7 +184,7 @@ mod tests {
             ts: UnixNanos::from_secs(secs).unwrap(),
             price,
             price_scale: 2,
-            qty: 0,
+            qty: senken_series::Volume::Real(0),
             qty_scale: 0,
         }
     }

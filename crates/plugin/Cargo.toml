@@ -47,11 +47,3 @@ wiremock = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true
-
-[[test]]
-name = "limit_group"
-path = "tests/limit_group.rs"
-# Drives `ActivationContext::limit_group`/`venue_client`, both `http`-only;
-# without this cargo would try to build it under
-# `--no-default-features --all-targets` and fail to compile.
-required-features = ["http"]

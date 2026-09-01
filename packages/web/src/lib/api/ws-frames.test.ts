@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { isUnsupportedFor } from './ws-frames';
+import { isUnsupportedFor, quoteFromEvent } from './ws-frames';
 import type { WsEvent } from './ws-events.svelte';
 
 function frame(type: string, payload: unknown): WsEvent {
@@ -31,5 +31,24 @@ describe('isUnsupportedFor — the explicit "no feed for this topic" frame', () 
 	test('a malformed payload (no topic field) is refused rather than throwing', () => {
 		const event = frame('unsupported', { reason: 'no pool' });
 		expect(isUnsupportedFor(event, 'okx-spot:BTCUSDT')).toBe(false);
+	});
+});
+
+describe('quoteFromEvent', () => {
+	test('converts both quote sides from the shared scaled integer precision', () => {
+		const quote = frame('quote', {
+			topic: 'quote:okx-spot:BTCUSDT',
+			bid: 77_995_500,
+			ask: 77_995_600,
+			price_scale: 3
+		});
+
+		expect(quoteFromEvent(quote, 'quote:okx-spot:BTCUSDT')).toEqual({ bid: 77_995.5, ask: 77_995.6 });
+	});
+
+	test('refuses a quote for a different instrument', () => {
+		const quote = frame('quote', { topic: 'quote:okx-spot:ETHUSDT', bid: 1, ask: 2, price_scale: 0 });
+
+		expect(quoteFromEvent(quote, 'quote:okx-spot:BTCUSDT')).toBeNull();
 	});
 });

@@ -1,6 +1,7 @@
 //! [`WorkspaceStore`]: the guarded query API for workspaces, layouts,
 //! panes and layers.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -629,32 +630,233 @@ impl WorkspaceStore {
             "UPDATE layouts SET preset = ?1, updated_at = ?2 WHERE id = ?3",
             params![preset.to_string(), now_unix(), layout_id],
         )?;
-        // Panes are deleted and re-inserted wholesale rather than diffed —
-        // `ON DELETE CASCADE` takes their layers and drawings with them —
-        // which is why this whole block must be one transaction: a caller
-        // observing a half-deleted layout would see fewer panes than either
-        // the old or the new state ever had.
-        tx.execute("DELETE FROM panes WHERE layout_id = ?1", params![layout_id])?;
+        // Keep every row whose grid position survives. Chart panes, layers,
+        // and drawings are keyed by these ids in the client, so replacing a
+        // structural layout must not turn an unrelated parameter edit into a
+        // wholesale remount. The transaction still ensures observers see
+        // either the old complete layout or the new complete layout.
+        let retained_positions = panes
+            .iter()
+            .map(|pane| pane.position)
+            .collect::<HashSet<_>>();
+        let existing_panes = tx
+            .prepare("SELECT id, position FROM panes WHERE layout_id = ?1")?
+            .query_map(params![layout_id], |row| {
+                Ok((row.get::<_, PaneId>(0)?, row.get::<_, u32>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (pane_id, position) in existing_panes {
+            if !retained_positions.contains(&position) {
+                tx.execute("DELETE FROM panes WHERE id = ?1", params![pane_id])?;
+            }
+        }
+        let mut written_positions = HashSet::with_capacity(panes.len());
         for pane in panes {
-            let pane_id = PaneId::new();
-            tx.execute(
-                "INSERT INTO panes (id, layout_id, position, instrument, timeframe, settings)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            if !written_positions.insert(pane.position) {
+                // Keep invalid duplicate positions subject to SQLite's own
+                // constraint so this transaction has the same all-or-nothing
+                // failure semantics as every other structural constraint.
+                tx.execute(
+                    "INSERT INTO panes (id, layout_id, position, instrument, timeframe, settings)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        PaneId::new(),
+                        layout_id,
+                        pane.position,
+                        pane.instrument.as_str(),
+                        pane.timeframe.to_string(),
+                        pane.settings
+                    ],
+                )?;
+            }
+            let pane_id = tx
+                .query_row(
+                    "SELECT id FROM panes WHERE layout_id = ?1 AND position = ?2",
+                    params![layout_id, pane.position],
+                    |row| row.get::<_, PaneId>(0),
+                )
+                .optional()?;
+            let pane_id = if let Some(pane_id) = pane_id {
+                tx.execute(
+                    "UPDATE panes SET instrument = ?1, timeframe = ?2, settings = ?3 WHERE id = ?4",
+                    params![
+                        pane.instrument.as_str(),
+                        pane.timeframe.to_string(),
+                        pane.settings,
+                        pane_id
+                    ],
+                )?;
+                pane_id
+            } else {
+                let pane_id = PaneId::new();
+                tx.execute(
+                    "INSERT INTO panes (id, layout_id, position, instrument, timeframe, settings)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        pane_id,
+                        layout_id,
+                        pane.position,
+                        pane.instrument.as_str(),
+                        pane.timeframe.to_string(),
+                        pane.settings
+                    ],
+                )?;
+                pane_id
+            };
+            replace_layers(&tx, pane_id, &pane.layers)?;
+            replace_drawings(&tx, pane_id, &pane.drawings)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Updates one layer without replacing its pane or its neighbours.
+    ///
+    /// # Errors
+    /// Returns an error when the user lacks permission or the layer is absent.
+    pub fn update_layer(
+        &self,
+        auth: &AuthenticatedUser,
+        layer_id: LayerId,
+        layer: &LayerInput,
+    ) -> Result<(), WorkspaceError> {
+        validate_layer_params(&layer.kind)?;
+        let scope = auth.authorize(Action::Edit, Resource::Layout)?;
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let (kind, instrument, name, params) = encode_layer_kind(&layer.kind);
+        let changed = match scope {
+            Scope::All => tx.execute(
+                "UPDATE layers SET position = ?1, kind = ?2, instrument = ?3, indicator_name = ?4,
+                 indicator_params = ?5, visible = ?6, style = ?7 WHERE id = ?8",
                 params![
-                    pane_id,
-                    layout_id,
-                    pane.position,
-                    pane.instrument.as_str(),
-                    pane.timeframe.to_string(),
-                    pane.settings,
+                    layer.position,
+                    kind,
+                    instrument,
+                    name,
+                    params,
+                    layer.visible,
+                    layer.style,
+                    layer_id
                 ],
-            )?;
-            for layer in &pane.layers {
-                insert_layer(&tx, pane_id, layer)?;
-            }
-            for drawing in &pane.drawings {
-                insert_drawing(&tx, pane_id, drawing)?;
-            }
+            )?,
+            Scope::Own => tx.execute(
+                "UPDATE layers SET position = ?1, kind = ?2, instrument = ?3, indicator_name = ?4,
+                 indicator_params = ?5, visible = ?6, style = ?7 WHERE id = ?8 AND pane_id IN
+                 (SELECT p.id FROM panes p JOIN layouts l ON l.id = p.layout_id
+                  JOIN workspaces w ON w.id = l.workspace_id WHERE w.owner_id = ?9)",
+                params![
+                    layer.position,
+                    kind,
+                    instrument,
+                    name,
+                    params,
+                    layer.visible,
+                    layer.style,
+                    layer_id,
+                    auth.user_id()
+                ],
+            )?,
+            _ => 0,
+        };
+        if changed == 0 {
+            return Err(WorkspaceError::Identity(IdentityError::Forbidden));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Deletes one layer without replacing its pane or its neighbours.
+    ///
+    /// # Errors
+    /// Returns an error when the user lacks permission or the layer is absent.
+    pub fn delete_layer(
+        &self,
+        auth: &AuthenticatedUser,
+        layer_id: LayerId,
+    ) -> Result<(), WorkspaceError> {
+        let scope = auth.authorize(Action::Edit, Resource::Layout)?;
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let changed = match scope {
+            Scope::All => tx.execute("DELETE FROM layers WHERE id = ?1", params![layer_id])?,
+            Scope::Own => tx.execute(
+                "DELETE FROM layers WHERE id = ?1 AND pane_id IN
+                 (SELECT p.id FROM panes p JOIN layouts l ON l.id = p.layout_id
+                  JOIN workspaces w ON w.id = l.workspace_id WHERE w.owner_id = ?2)",
+                params![layer_id, auth.user_id()],
+            )?,
+            _ => 0,
+        };
+        if changed == 0 {
+            return Err(WorkspaceError::Identity(IdentityError::Forbidden));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Updates one drawing without replacing its pane or its neighbours.
+    ///
+    /// # Errors
+    /// Returns an error when the user lacks permission or the drawing is absent.
+    pub fn update_drawing(
+        &self,
+        auth: &AuthenticatedUser,
+        drawing_id: DrawingId,
+        drawing: &DrawingInput,
+    ) -> Result<(), WorkspaceError> {
+        validate_drawing_style(&drawing.style)?;
+        let scope = auth.authorize(Action::Edit, Resource::Layout)?;
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let (kind, price, time1, price1, time2, price2) = encode_drawing_kind(&drawing.kind);
+        let (color, width, line_style) = encode_drawing_style(&drawing.style);
+        let changed = match scope {
+            Scope::All => tx.execute(
+                "UPDATE drawings SET position = ?1, kind = ?2, price = ?3, time1 = ?4, price1 = ?5,
+                 time2 = ?6, price2 = ?7, color = ?8, width = ?9, line_style = ?10 WHERE id = ?11",
+                params![drawing.position, kind, price, time1, price1, time2, price2, color, width, line_style, drawing_id],
+            )?,
+            Scope::Own => tx.execute(
+                "UPDATE drawings SET position = ?1, kind = ?2, price = ?3, time1 = ?4, price1 = ?5,
+                 time2 = ?6, price2 = ?7, color = ?8, width = ?9, line_style = ?10 WHERE id = ?11 AND pane_id IN
+                 (SELECT p.id FROM panes p JOIN layouts l ON l.id = p.layout_id
+                  JOIN workspaces w ON w.id = l.workspace_id WHERE w.owner_id = ?12)",
+                params![drawing.position, kind, price, time1, price1, time2, price2, color, width, line_style, drawing_id, auth.user_id()],
+            )?,
+            _ => 0,
+        };
+        if changed == 0 {
+            return Err(WorkspaceError::Identity(IdentityError::Forbidden));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Deletes one drawing without replacing its pane or its neighbours.
+    ///
+    /// # Errors
+    /// Returns an error when the user lacks permission or the drawing is absent.
+    pub fn delete_drawing(
+        &self,
+        auth: &AuthenticatedUser,
+        drawing_id: DrawingId,
+    ) -> Result<(), WorkspaceError> {
+        let scope = auth.authorize(Action::Edit, Resource::Layout)?;
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let changed = match scope {
+            Scope::All => tx.execute("DELETE FROM drawings WHERE id = ?1", params![drawing_id])?,
+            Scope::Own => tx.execute(
+                "DELETE FROM drawings WHERE id = ?1 AND pane_id IN
+                 (SELECT p.id FROM panes p JOIN layouts l ON l.id = p.layout_id
+                  JOIN workspaces w ON w.id = l.workspace_id WHERE w.owner_id = ?2)",
+                params![drawing_id, auth.user_id()],
+            )?,
+            _ => 0,
+        };
+        if changed == 0 {
+            return Err(WorkspaceError::Identity(IdentityError::Forbidden));
         }
         tx.commit()?;
         Ok(())
@@ -876,6 +1078,100 @@ fn insert_layer(
             layer.style,
         ],
     )?;
+    Ok(())
+}
+
+/// Reconciles a pane's layers by their stable stacking positions.
+fn replace_layers(
+    tx: &Transaction<'_>,
+    pane_id: PaneId,
+    layers: &[LayerInput],
+) -> Result<(), WorkspaceError> {
+    let positions = layers
+        .iter()
+        .map(|layer| layer.position)
+        .collect::<HashSet<_>>();
+    let existing = tx
+        .prepare("SELECT id, position FROM layers WHERE pane_id = ?1")?
+        .query_map(params![pane_id], |row| {
+            Ok((row.get::<_, LayerId>(0)?, row.get::<_, u32>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, position) in existing {
+        if !positions.contains(&position) {
+            tx.execute("DELETE FROM layers WHERE id = ?1", params![id])?;
+        }
+    }
+    for layer in layers {
+        let (kind, instrument, indicator_name, indicator_params) = encode_layer_kind(&layer.kind);
+        let changed = tx.execute(
+            "UPDATE layers SET kind = ?1, instrument = ?2, indicator_name = ?3,
+             indicator_params = ?4, visible = ?5, style = ?6
+             WHERE pane_id = ?7 AND position = ?8",
+            params![
+                kind,
+                instrument,
+                indicator_name,
+                indicator_params,
+                layer.visible,
+                layer.style,
+                pane_id,
+                layer.position
+            ],
+        )?;
+        if changed == 0 {
+            insert_layer(tx, pane_id, layer)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reconciles a pane's drawings by their stable stacking positions.
+fn replace_drawings(
+    tx: &Transaction<'_>,
+    pane_id: PaneId,
+    drawings: &[DrawingInput],
+) -> Result<(), WorkspaceError> {
+    let positions = drawings
+        .iter()
+        .map(|drawing| drawing.position)
+        .collect::<HashSet<_>>();
+    let existing = tx
+        .prepare("SELECT id, position FROM drawings WHERE pane_id = ?1")?
+        .query_map(params![pane_id], |row| {
+            Ok((row.get::<_, DrawingId>(0)?, row.get::<_, u32>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, position) in existing {
+        if !positions.contains(&position) {
+            tx.execute("DELETE FROM drawings WHERE id = ?1", params![id])?;
+        }
+    }
+    for drawing in drawings {
+        let (kind, price, time1, price1, time2, price2) = encode_drawing_kind(&drawing.kind);
+        let (color, width, line_style) = encode_drawing_style(&drawing.style);
+        let changed = tx.execute(
+            "UPDATE drawings SET kind = ?1, price = ?2, time1 = ?3, price1 = ?4,
+             time2 = ?5, price2 = ?6, color = ?7, width = ?8, line_style = ?9
+             WHERE pane_id = ?10 AND position = ?11",
+            params![
+                kind,
+                price,
+                time1,
+                price1,
+                time2,
+                price2,
+                color,
+                width,
+                line_style,
+                pane_id,
+                drawing.position
+            ],
+        )?;
+        if changed == 0 {
+            insert_drawing(tx, pane_id, drawing)?;
+        }
+    }
     Ok(())
 }
 
@@ -1728,5 +2024,187 @@ mod tests {
             .replace_layout(&alice, layout_id, LayoutPreset::One, &panes)
             .unwrap_err();
         assert!(matches!(err, WorkspaceError::InvalidIndicatorParams(_)));
+    }
+
+    #[test]
+    fn replace_layout_keeps_pane_and_child_ids_when_positions_survive() {
+        let (_dir, identity, workspace) = temp_stores();
+        let admin = admin_auth(&identity);
+        let alice = charts_user(&identity, &admin, "stable-ids@example.com");
+        let (_workspace_id, layout_id) = workspace.get_or_create_default_workspace(&alice).unwrap();
+        let panes = vec![PaneInput {
+            position: 0,
+            instrument: InstrumentId::parse("okx-spot:BTCUSDT").unwrap(),
+            timeframe: senken_series::BarSpec::new(1, BarUnit::Hour),
+            layers: vec![LayerInput {
+                position: 0,
+                kind: LayerKind::IndicatorOverlay {
+                    name: "EMA".to_owned(),
+                    params: r#"{"period":20}"#.to_owned(),
+                },
+                visible: true,
+                style: r##"{"color":"#ffffff"}"##.to_owned(),
+            }],
+            drawings: vec![DrawingInput {
+                position: 0,
+                kind: DrawingKind::HorizontalLine { price: 100.0 },
+                style: DrawingStyle {
+                    color: "#ffffff".to_owned(),
+                    width: 1,
+                    line_style: DrawingLineStyle::Solid,
+                },
+            }],
+            settings: "{}".to_owned(),
+        }];
+        workspace
+            .replace_layout(&alice, layout_id, LayoutPreset::One, &panes)
+            .unwrap();
+        let before = workspace.get_layout(&alice, layout_id).unwrap();
+        let pane_id = before.panes[0].id;
+        let layer_id = before.panes[0].layers[0].id;
+        let drawing_id = before.panes[0].drawings[0].id;
+
+        let mut changed = panes;
+        changed[0].layers[0].kind = LayerKind::IndicatorOverlay {
+            name: "EMA".to_owned(),
+            params: r#"{"period":50}"#.to_owned(),
+        };
+        workspace
+            .replace_layout(&alice, layout_id, LayoutPreset::One, &changed)
+            .unwrap();
+        let after = workspace.get_layout(&alice, layout_id).unwrap();
+        assert_eq!(after.panes[0].id, pane_id);
+        assert_eq!(after.panes[0].layers[0].id, layer_id);
+        assert_eq!(after.panes[0].drawings[0].id, drawing_id);
+    }
+
+    #[test]
+    fn replace_layout_keeps_a_panes_id_when_a_sibling_is_added() {
+        let (_dir, identity, workspace) = temp_stores();
+        let admin = admin_auth(&identity);
+        let alice = charts_user(&identity, &admin, "stable-structure@example.com");
+        let (_workspace_id, layout_id) = workspace.get_or_create_default_workspace(&alice).unwrap();
+        let before = workspace.get_layout(&alice, layout_id).unwrap();
+        let original = before.panes[0].id;
+        let panes = vec![
+            PaneInput {
+                position: 0,
+                instrument: before.panes[0].instrument.clone(),
+                timeframe: before.panes[0].timeframe,
+                layers: vec![],
+                drawings: vec![],
+                settings: "{}".to_owned(),
+            },
+            PaneInput {
+                position: 1,
+                instrument: InstrumentId::parse("okx-spot:ETHUSDT").unwrap(),
+                timeframe: senken_series::BarSpec::new(1, BarUnit::Hour),
+                layers: vec![],
+                drawings: vec![],
+                settings: "{}".to_owned(),
+            },
+        ];
+        workspace
+            .replace_layout(&alice, layout_id, LayoutPreset::TwoHorizontal, &panes)
+            .unwrap();
+        assert_eq!(
+            workspace.get_layout(&alice, layout_id).unwrap().panes[0].id,
+            original
+        );
+    }
+
+    #[test]
+    fn updating_one_layer_leaves_its_neighbour_unchanged() {
+        let (_dir, identity, workspace) = temp_stores();
+        let admin = admin_auth(&identity);
+        let alice = charts_user(&identity, &admin, "one-layer@example.com");
+        let (_workspace_id, layout_id) = workspace.get_or_create_default_workspace(&alice).unwrap();
+        let panes = vec![PaneInput {
+            position: 0,
+            instrument: InstrumentId::parse("okx-spot:BTCUSDT").unwrap(),
+            timeframe: senken_series::BarSpec::new(1, BarUnit::Hour),
+            layers: vec![
+                LayerInput {
+                    position: 0,
+                    kind: LayerKind::IndicatorOverlay {
+                        name: "EMA".to_owned(),
+                        params: r#"{"period":20}"#.to_owned(),
+                    },
+                    visible: true,
+                    style: "{}".to_owned(),
+                },
+                LayerInput {
+                    position: 1,
+                    kind: LayerKind::IndicatorOverlay {
+                        name: "SMA".to_owned(),
+                        params: r#"{"period":50}"#.to_owned(),
+                    },
+                    visible: true,
+                    style: "{}".to_owned(),
+                },
+            ],
+            drawings: vec![],
+            settings: "{}".to_owned(),
+        }];
+        workspace
+            .replace_layout(&alice, layout_id, LayoutPreset::One, &panes)
+            .unwrap();
+        let before = workspace.get_layout(&alice, layout_id).unwrap();
+        let target = before.panes[0].layers[0].id;
+        let neighbour = before.panes[0].layers[1].clone();
+        workspace
+            .update_layer(
+                &alice,
+                target,
+                &LayerInput {
+                    position: 0,
+                    kind: LayerKind::IndicatorOverlay {
+                        name: "EMA".to_owned(),
+                        params: r#"{"period":10}"#.to_owned(),
+                    },
+                    visible: false,
+                    style: r##"{"color":"#abcdef"}"##.to_owned(),
+                },
+            )
+            .unwrap();
+        let after = workspace.get_layout(&alice, layout_id).unwrap();
+        assert_eq!(after.panes[0].layers[1], neighbour);
+        assert!(!after.panes[0].layers[0].visible);
+    }
+
+    #[test]
+    fn a_user_cannot_update_another_users_layer() {
+        let (_dir, identity, workspace) = temp_stores();
+        let admin = admin_auth(&identity);
+        let alice = charts_user(&identity, &admin, "layer-alice@example.com");
+        let bob = charts_user(&identity, &admin, "layer-bob@example.com");
+        let (_workspace_id, layout_id) = workspace.get_or_create_default_workspace(&alice).unwrap();
+        let panes = vec![PaneInput {
+            position: 0,
+            instrument: InstrumentId::parse("okx-spot:BTCUSDT").unwrap(),
+            timeframe: senken_series::BarSpec::new(1, BarUnit::Hour),
+            layers: vec![LayerInput {
+                position: 0,
+                kind: LayerKind::IndicatorOverlay {
+                    name: "EMA".to_owned(),
+                    params: r#"{"period":20}"#.to_owned(),
+                },
+                visible: true,
+                style: "{}".to_owned(),
+            }],
+            drawings: vec![],
+            settings: "{}".to_owned(),
+        }];
+        workspace
+            .replace_layout(&alice, layout_id, LayoutPreset::One, &panes)
+            .unwrap();
+        let layer_id = workspace.get_layout(&alice, layout_id).unwrap().panes[0].layers[0].id;
+        let error = workspace
+            .update_layer(&bob, layer_id, &panes[0].layers[0])
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            WorkspaceError::Identity(IdentityError::Forbidden)
+        ));
     }
 }

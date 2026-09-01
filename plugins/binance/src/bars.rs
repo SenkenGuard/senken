@@ -30,7 +30,7 @@ use senken_core::{TimeRange, UnixNanos, parse_scaled};
 use senken_marketdata::SourceSymbol;
 use senken_marketdata::source::SourceError;
 use senken_plugin::BarSource;
-use senken_series::{Bar, BarSpec, BarUnit, Clock};
+use senken_series::{Bar, BarSpec, BarUnit, Clock, Volume};
 use senken_venue::{VenueClient, common_scale};
 use serde::de::IgnoredAny;
 
@@ -235,7 +235,7 @@ impl BarSource for BinanceBarSource {
                 high: scaled(&high, price_scale)?,
                 low: scaled(&low, price_scale)?,
                 close: scaled(&close, price_scale)?,
-                volume: scaled(&volume, qty_scale)?,
+                volume: Volume::Real(scaled(&volume, qty_scale)?),
                 quote_volume: Some(scaled(&quote_volume, qty_scale)?),
                 trade_count: Some(trades),
                 taker_buy_volume: Some(scaled(&taker, qty_scale)?),

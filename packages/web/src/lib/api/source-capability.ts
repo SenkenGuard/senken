@@ -21,6 +21,13 @@ export function hasLiveFeed(sources: ReadonlyMap<string, SourceCapabilityDto>, i
 	return sources.get(sourceIdOf(instrument))?.live ?? false;
 }
 
+/** Whether `instrument`'s source explicitly reports best-bid-and-offer
+ * updates. A live last-trade feed is not enough: quote lines must only be
+ * offered when this separate capability is present. */
+export function hasQuoteFeed(sources: ReadonlyMap<string, SourceCapabilityDto>, instrument: string): boolean {
+	return sources.get(sourceIdOf(instrument))?.quotes ?? false;
+}
+
 /** Whether `instrument`'s source has a bar source registered at all — a
  * source can chart without streaming (`bars: true, live: false`), but never
  * the reverse (`SourceCapabilityDto`'s own doc: "never true without

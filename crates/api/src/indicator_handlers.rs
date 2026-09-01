@@ -15,6 +15,10 @@ use axum::extract::State;
 use axum::{Extension, Json};
 
 use senken_alerts::{ConcreteIndicator, IndicatorField, IndicatorSpec};
+use senken_indicators::{
+    DESCRIPTORS, DisplayList, Drawable, IndicatorDescriptor, ParamDefault, ParamKind, Placement,
+    PlotShape, Point, ScaleHint, SeriesShape, VolumeRequirement, descriptor,
+};
 use senken_series::Origin;
 
 use crate::AppState;
@@ -22,18 +26,60 @@ use crate::HandlerError;
 use crate::auth::Authed;
 use crate::dto::{
     BarRangeQuery, ComputeIndicatorRequest, ComputeIndicatorResponse, IndicatorCatalogEntry,
-    IndicatorFieldValue, IndicatorPointDto,
+    IndicatorDrawableDto, IndicatorDrawablePointDto, IndicatorParamDefaultDto, IndicatorParamDto,
+    IndicatorPlacementDto, IndicatorPlotDto, IndicatorScaleDto,
 };
 
-/// One catalogue entry. `name` matches exactly what
-/// `senken_alerts::IndicatorSpec::build`/`ConcreteIndicator::build` accepts
-/// (case-insensitively) — see [`the_catalogues_names_are_exactly_what_the_indicator_factory_accepts`]
-/// for the test that keeps the two from drifting apart.
-fn entry(name: &str, params: &[&str], fields: &[&str]) -> IndicatorCatalogEntry {
+fn entry(descriptor: &IndicatorDescriptor) -> IndicatorCatalogEntry {
     IndicatorCatalogEntry {
-        name: name.to_owned(),
-        params: params.iter().map(|s| (*s).to_owned()).collect(),
-        fields: fields.iter().map(|s| (*s).to_owned()).collect(),
+        name: descriptor.id.to_owned(),
+        title: descriptor.title.to_owned(),
+        short_title: descriptor.short_title.to_owned(),
+        legend: descriptor.legend.to_owned(),
+        params: descriptor
+            .params
+            .iter()
+            .map(|param| IndicatorParamDto {
+                name: param.name.to_owned(),
+                kind: match param.kind {
+                    ParamKind::Integer => "integer",
+                    ParamKind::Number => "number",
+                }
+                .to_owned(),
+                default: match param.default {
+                    ParamDefault::Integer(value) => IndicatorParamDefaultDto::Integer(value),
+                    ParamDefault::Number(value) => IndicatorParamDefaultDto::Number(value),
+                },
+                min: param.min,
+            })
+            .collect(),
+        plots: descriptor
+            .plots
+            .iter()
+            .map(|plot| IndicatorPlotDto {
+                field: plot.field.to_owned(),
+                label: plot.label.to_owned(),
+                shape: match plot.shape {
+                    PlotShape::Line => "line",
+                    PlotShape::Histogram => "histogram",
+                }
+                .to_owned(),
+                color: plot.color.to_owned(),
+            })
+            .collect(),
+        scale: match descriptor.scale {
+            ScaleHint::Price => IndicatorScaleDto::Price,
+            ScaleHint::Ratio { min, max } => IndicatorScaleDto::Ratio { min, max },
+            ScaleHint::Volume => IndicatorScaleDto::Volume,
+            ScaleHint::Own => IndicatorScaleDto::Own,
+        },
+        requires_real_volume: matches!(descriptor.requires, VolumeRequirement::Real),
+        placement: match descriptor.placement {
+            Placement::Overlay => IndicatorPlacementDto::Overlay,
+            Placement::SubPane => IndicatorPlacementDto::SubPane,
+            Placement::Either => IndicatorPlacementDto::Either,
+        },
+        warmup_bars: descriptor.warmup_bars(|_| None),
     }
 }
 
@@ -76,6 +122,86 @@ fn reported_fields(indicator: &ConcreteIndicator) -> &'static [IndicatorField] {
     }
 }
 
+fn display_for_indicator(
+    indicator: &mut ConcreteIndicator,
+    descriptor: &IndicatorDescriptor,
+    bars: &[senken_series::Bar],
+    provisional: Option<senken_series::Bar>,
+    start: senken_core::UnixNanos,
+) -> (Vec<IndicatorDrawableDto>, usize) {
+    let mut fields: Vec<(IndicatorField, Vec<IndicatorDrawablePointDto>)> =
+        reported_fields(indicator)
+            .iter()
+            .copied()
+            .map(|field| (field, Vec::new()))
+            .collect();
+    for bar in bars.iter().chain(provisional.iter()) {
+        indicator.handle_bar(bar);
+        if bar.ts_open < start || !indicator.initialized() {
+            continue;
+        }
+        for (field, points) in &mut fields {
+            if let Ok(value) = indicator.read(*field) {
+                points.push(IndicatorDrawablePointDto {
+                    ts_open: bar.ts_open.as_nanos(),
+                    value,
+                });
+            }
+        }
+    }
+
+    let mut display = DisplayList::new(0);
+    for (field, points) in fields {
+        let shape = descriptor
+            .plots
+            .iter()
+            .find(|plot| plot.field == field_key(field))
+            .map_or(PlotShape::Line, |plot| plot.shape);
+        display.push(Drawable::Series {
+            field: field_key(field).to_owned(),
+            shape: match shape {
+                PlotShape::Line => SeriesShape::Line,
+                PlotShape::Histogram => SeriesShape::Histogram,
+            },
+            points: points
+                .into_iter()
+                .map(|point| Point {
+                    time: point.ts_open,
+                    value: point.value,
+                })
+                .collect(),
+        });
+    }
+    let discarded_objects = display.discarded_objects();
+    let display = display
+        .drawables()
+        .filter_map(|drawable| match drawable {
+            Drawable::Series {
+                field,
+                shape,
+                points,
+            } => Some(IndicatorDrawableDto::Series {
+                field: field.clone(),
+                shape: match shape {
+                    SeriesShape::Line => "line",
+                    SeriesShape::Histogram => "histogram",
+                    SeriesShape::Area => "area",
+                }
+                .to_owned(),
+                points: points
+                    .iter()
+                    .map(|point| IndicatorDrawablePointDto {
+                        ts_open: point.time,
+                        value: point.value,
+                    })
+                    .collect(),
+            }),
+            _ => None,
+        })
+        .collect();
+    (display, discarded_objects)
+}
+
 /// `GET /api/indicators`: the catalogue of
 /// `senken-indicators`' ten built-ins.
 #[utoipa::path(
@@ -87,30 +213,7 @@ fn reported_fields(indicator: &ConcreteIndicator) -> &'static [IndicatorField] {
     )
 )]
 pub(crate) async fn list_indicators(Extension(_ctx): Authed) -> Json<Vec<IndicatorCatalogEntry>> {
-    Json(vec![
-        entry("Sma", &["period"], &["value"]),
-        entry("Ema", &["period"], &["value"]),
-        entry("Wma", &["period"], &["value"]),
-        entry("Rsi", &["period"], &["value"]),
-        entry("Atr", &["period"], &["value"]),
-        entry("Vwap", &[], &["value"]),
-        entry("Volume", &[], &["value"]),
-        entry(
-            "Macd",
-            &["fast_period", "slow_period", "signal_period"],
-            &["macd_line", "macd_signal", "macd_histogram"],
-        ),
-        entry(
-            "Stochastic",
-            &["k_period", "d_period"],
-            &["stochastic_k", "stochastic_d"],
-        ),
-        entry(
-            "BollingerBands",
-            &["period", "k"],
-            &["bollinger_upper", "bollinger_middle", "bollinger_lower"],
-        ),
-    ])
+    Json(DESCRIPTORS.iter().map(entry).collect())
 }
 
 /// `POST /api/indicators/compute`: replays
@@ -144,9 +247,34 @@ pub(crate) async fn compute_indicator(
         crate::bars_handlers::resolve_bar_target(&state, &query.instrument, &query.spec).await?;
     let loader = crate::bars_handlers::loader_for(&state, &id)?;
     let range = crate::bars_handlers::parse_range(query.from, query.to)?;
+    let descriptor = descriptor(&body.indicator.name)
+        .ok_or_else(|| HandlerError::BadRequest("unknown indicator".to_owned()))?;
+    let parameter_values: serde_json::Value = serde_json::from_str(&body.indicator.params)
+        .map_err(|error| HandlerError::BadRequest(error.to_string()))?;
+    let warmup_bars = descriptor.warmup_bars(|name| {
+        parameter_values
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+    });
+    let prefix_start = spec
+        .duration_nanos()
+        .and_then(|duration| {
+            i64::try_from(warmup_bars)
+                .ok()
+                .and_then(|bars| bars.checked_mul(duration))
+                .and_then(|prefix| range.start().as_nanos().checked_sub(prefix))
+        })
+        .unwrap_or(range.start().as_nanos());
+    let resolve_range = senken_core::TimeRange::new(
+        senken_core::UnixNanos::from_nanos(prefix_start),
+        range.end(),
+    )
+    .ok_or(HandlerError::BadRequest(
+        "invalid indicator range".to_owned(),
+    ))?;
     let key = senken_series::SeriesKey::new(id.source(), id.symbol(), Origin::Derived, spec);
     let resolved = loader
-        .resolve(&key, range, senken_series::Anchor::UTC)
+        .resolve(&key, resolve_range, senken_series::Anchor::UTC)
         .await
         .map_err(|source| {
             tracing::error!(%source, "bars resolve failed while computing an indicator");
@@ -157,7 +285,6 @@ pub(crate) async fn compute_indicator(
     let mut indicator = indicator_spec
         .build()
         .map_err(|source| HandlerError::BadRequest(source.to_string()))?;
-    let fields = reported_fields(&indicator);
 
     // The forming bar the client is drawing, folded in last so the newest
     // indicator point lands on the same bar as the newest candle. It is not
@@ -169,39 +296,30 @@ pub(crate) async fn compute_indicator(
         high: dto.high,
         low: dto.low,
         close: dto.close,
-        volume: dto.volume,
+        volume: dto.volume.into(),
         quote_volume: None,
         trade_count: None,
         taker_buy_volume: None,
     });
 
-    let mut points = Vec::new();
-    for bar in resolved.bars.iter().chain(provisional.iter()) {
-        indicator.handle_bar(bar);
-        if !indicator.initialized() {
-            continue;
-        }
-        let values = fields
+    let warmup_truncated = prefix_start != range.start().as_nanos()
+        && resolved
+            .missing
             .iter()
-            .filter_map(|field| {
-                indicator
-                    .read(*field)
-                    .ok()
-                    .map(|value| IndicatorFieldValue {
-                        field: field_key(*field).to_owned(),
-                        value,
-                    })
-            })
-            .collect();
-        points.push(IndicatorPointDto {
-            ts_open: bar.ts_open.as_nanos(),
-            values,
-        });
-    }
+            .any(|missing| missing.start() < range.start());
+    let (display, discarded_objects) = display_for_indicator(
+        &mut indicator,
+        descriptor,
+        &resolved.bars,
+        provisional,
+        range.start(),
+    );
 
     Ok(Json(ComputeIndicatorResponse {
-        points,
+        display,
+        discarded_objects,
         missing: resolved.missing.into_iter().map(Into::into).collect(),
+        warmup_truncated,
     }))
 }
 
@@ -251,7 +369,7 @@ mod tests {
             let json = serde_json::Value::Object(
                 params
                     .iter()
-                    .map(|p| (p.as_str().unwrap().to_owned(), serde_json::json!(5)))
+                    .map(|p| (p["name"].as_str().unwrap().to_owned(), serde_json::json!(5)))
                     .collect(),
             );
             senken_alerts::ConcreteIndicator::build(name, &json.to_string())
@@ -310,7 +428,9 @@ mod tests {
         .await;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let body = body_json(response).await;
-        let points = body["points"].as_array().unwrap();
+        let display = body["display"].as_array().unwrap();
+        assert_eq!(display.len(), 1, "SMA has one drawable series");
+        let points = display[0]["points"].as_array().unwrap();
         // The fake venue's bars all close at 100 (see
         // `bars_handlers::test_support::m1_bars_for`), so a fully warmed-up
         // SMA reports exactly 100 — and only from the 5th bar onward.
@@ -319,11 +439,10 @@ mod tests {
             20 - 4,
             "the first period-1 bars report no value yet"
         );
+        assert_eq!(display[0]["kind"], "series");
+        assert_eq!(display[0]["field"], "value");
         for point in points {
-            let values = point["values"].as_array().unwrap();
-            assert_eq!(values.len(), 1);
-            assert_eq!(values[0]["field"], "value");
-            assert!((values[0]["value"].as_f64().unwrap() - 100.0).abs() < f64::EPSILON);
+            assert!((point["value"].as_f64().unwrap() - 100.0).abs() < f64::EPSILON);
         }
 
         handle.shutdown().await.unwrap();
@@ -399,12 +518,12 @@ mod tests {
             "high": 140,
             "low": 100,
             "close": 140,
-            "volume": 7,
+            "volume": { "kind": "real", "value": 7 },
         })))
         .await;
 
-        let plain = without["points"].as_array().unwrap();
-        let extended = with["points"].as_array().unwrap();
+        let plain = without["display"][0]["points"].as_array().unwrap();
+        let extended = with["display"][0]["points"].as_array().unwrap();
         assert_eq!(
             extended.len(),
             plain.len() + 1,
@@ -418,9 +537,7 @@ mod tests {
         // The fake venue's bars all close at 100; a 5-period SMA whose newest
         // input is 140 must have moved off 100, or the provisional bar was
         // accepted and then ignored.
-        let last_value = extended.last().unwrap()["values"][0]["value"]
-            .as_f64()
-            .unwrap();
+        let last_value = extended.last().unwrap()["value"].as_f64().unwrap();
         assert!(
             (last_value - 100.0).abs() > f64::EPSILON,
             "the provisional close must actually feed the indicator, got {last_value}"

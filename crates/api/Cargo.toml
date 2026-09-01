@@ -41,6 +41,7 @@ senken-alerts = { workspace = true }
 senken-feed = { workspace = true }
 # The accounts store this crate exposes over HTTP.
 senken-identity = { workspace = true }
+senken-indicators = { workspace = true }
 # `SeriesKey`/`BarSpec`/`Anchor`/`Origin` — the bars endpoints' request/
 # response shapes are built from these directly, not a re-declared copy.
 senken-series = { workspace = true }

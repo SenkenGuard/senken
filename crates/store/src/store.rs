@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use senken_core::TimeRange;
+use senken_core::{TimeRange, UnixNanos};
 use senken_series::{Anchor, SeriesKey};
 
 use crate::error::StoreError;
@@ -86,6 +86,56 @@ impl Store {
             .collect())
     }
 
+    /// The earliest bar a source has conclusively returned for this exact
+    /// series, if a boundary probe has observed one. This is deliberately
+    /// separate from coverage: filenames say what was requested, while this
+    /// value says that asking before a point has already produced a complete
+    /// short response. The key includes spec and anchor, so an M1 boundary
+    /// can never be inherited by H1.
+    ///
+    /// A malformed sidecar is ignored rather than converted into a false
+    /// boundary; wasting one later request is safer than hiding history.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Storage`] when the sidecar cannot be read.
+    pub fn earliest_available(
+        &self,
+        key: &SeriesKey,
+        anchor: Anchor,
+    ) -> Result<Option<UnixNanos>, StoreError> {
+        let rel = earliest_available_path(key, anchor);
+        let Some(bytes) = self.storage.read_bytes(rel)? else {
+            return Ok(None);
+        };
+        let Ok(raw) = std::str::from_utf8(&bytes) else {
+            return Ok(None);
+        };
+        Ok(raw.trim().parse::<i64>().ok().map(UnixNanos::from_nanos))
+    }
+
+    /// Persists or clears a previously observed series boundary atomically.
+    /// `None` is used when a later successful earlier fetch disproves the
+    /// heuristic that recorded it.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Storage`] when the sidecar cannot be written
+    /// or removed atomically.
+    pub fn record_earliest_available(
+        &self,
+        key: &SeriesKey,
+        anchor: Anchor,
+        earliest: Option<UnixNanos>,
+    ) -> Result<(), StoreError> {
+        let rel = earliest_available_path(key, anchor);
+        match earliest {
+            Some(value) => self
+                .storage
+                .write_bytes(rel, value.as_nanos().to_string().as_bytes())?,
+            None => self.storage.remove(rel)?,
+        }
+        Ok(())
+    }
+
     /// The exclusive lock a compactor must hold before touching this
     /// series' files ("Compaction: interface placeholder
     /// only, taking an exclusive per-series lock. Never on the read
@@ -112,6 +162,10 @@ impl Store {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(locks.entry(dir).or_insert_with(|| Arc::new(Mutex::new(()))))
     }
+}
+
+fn earliest_available_path(key: &SeriesKey, anchor: Anchor) -> String {
+    format!("{}/earliest_available", bars_dir(key, anchor))
 }
 
 /// Lists `dir` and decodes every `.parquet` entry's filename as a

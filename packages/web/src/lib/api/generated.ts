@@ -133,6 +133,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/drawings/{drawing_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** `DELETE /api/drawings/{drawing_id}`. */
+        delete: operations["delete_drawing"];
+        options?: never;
+        head?: never;
+        /** `PATCH /api/drawings/{drawing_id}`. */
+        patch: operations["update_drawing"];
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -211,6 +229,24 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/layers/{layer_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** `DELETE /api/layers/{layer_id}`. */
+        delete: operations["delete_layer"];
+        options?: never;
+        head?: never;
+        /** `PATCH /api/layers/{layer_id}`. */
+        patch: operations["update_layer"];
         trace?: never;
     };
     "/api/layouts/{layout_id}": {
@@ -801,11 +837,10 @@ export interface components {
              */
             ts_open: number;
             /**
-             * Format: int64
              * @description Base-asset volume traded in the interval, at the series' quantity
              *     scale.
              */
-            volume: number;
+            volume: components["schemas"]["VolumeDto"];
         };
         /** @description `GET /api/bars/jobs/{job_id}` response body. */
         BarJobDto: {
@@ -861,6 +896,14 @@ export interface components {
         BarRangeResponse: {
             /** @description Bars already available, ascending by `ts_open`. */
             bars: components["schemas"]["BarDto"][];
+            /**
+             * Format: int64
+             * @description The earliest observed bar the venue made available for this exact
+             *     source/symbol/spec, if a complete short response established one.
+             *     `None` means the server has not observed the edge yet — it does not
+             *     mean history is unbounded.
+             */
+            earliest_available?: number | null;
             /** @description Ranges not yet resolvable. */
             missing: components["schemas"]["TimeRangeDto"][];
             /**
@@ -938,20 +981,27 @@ export interface components {
         };
         /** @description `POST /api/indicators/compute` response body. */
         ComputeIndicatorResponse: {
+            /** @description Number of oldest bounded objects discarded before this response. */
+            discarded_objects: number;
+            /** @description The complete display list for this indicator item. */
+            display: components["schemas"]["IndicatorDrawableDto"][];
             /**
-             * @description Ranges `points` could not cover because the underlying bars are not
+             * @description Ranges `display` could not cover because the underlying bars are not
              *     resolvable yet — the same contract `BarRangeResponse::missing` makes.
              */
             missing: components["schemas"]["TimeRangeDto"][];
-            /** @description One entry per bar the indicator has initialized for. */
-            points: components["schemas"]["IndicatorPointDto"][];
+            /**
+             * @description `true` when the requested start had insufficient earlier bars to
+             *     prepare a fully warmed calculation.
+             */
+            warmup_truncated: boolean;
         };
         /**
          * @description `(field, comparator, threshold)`, on the wire — mirrors
          *     `senken_alerts::Condition` field-for-field. `field`/`comparator` reuse
          *     that crate's own enums directly (already `Serialize`/`Deserialize`) but
          *     are documented to `utoipa` as plain strings via
-         *     `#[schema(value_type = String)]`, the same technique [`GrantDto`] uses
+         *     `#[schema(value_type = String)]`, the same technique [`super::GrantDto`] uses
          *     for `senken_acl`'s enums and for the same reason: the orphan rule
          *     forbids implementing `ToSchema` for a foreign type from here.
          */
@@ -998,7 +1048,7 @@ export interface components {
             email: string;
             /**
              * @description An initial password. Omitted (or `null`) leaves the account behind
-             *     the same B4 fence the default admin is seeded with, so the new user
+             *     the same password fence the default admin is seeded with, so the new user
              *     sets their own password on first use.
              */
             initial_password?: string | null;
@@ -1107,7 +1157,7 @@ export interface components {
             /**
              * Format: int64
              * @description Unix nanoseconds, matching every other time value this crate puts on
-             *     the wire (`BarDto`'s `ts_open`, `TimeRangeDto`'s own fields).
+             *     the wire (`super::BarDto`'s `ts_open`, `TimeRangeDto`'s own fields).
              */
             time: number;
         };
@@ -1219,11 +1269,8 @@ export interface components {
          *     the browser's own indicator maths is replaced to avoid).
          */
         IndicatorCatalogEntry: {
-            /**
-             * @description The value keys `POST /api/indicators/compute`'s response reports for
-             *     this indicator — see [`IndicatorFieldValue`].
-             */
-            fields: string[];
+            /** @description Legend template using parameter keys in braces. */
+            legend: string;
             /**
              * @description The name to pass as `indicator.name` on `POST /api/indicators/compute`
              *     (and, unchanged, as a stored alert's or workspace layer's indicator
@@ -1231,34 +1278,129 @@ export interface components {
              */
             name: string;
             /** @description The JSON object keys `indicator.params` must supply. */
-            params: string[];
-        };
-        /**
-         * @description One `(field, value)` pair an indicator reports for one bar — see
-         *     [`IndicatorCatalogEntry::fields`] for which keys a given indicator ever
-         *     produces (a single-valued indicator reports exactly one, `"value"`).
-         */
-        IndicatorFieldValue: {
-            /** @description The field's name. */
-            field: string;
+            params: components["schemas"]["IndicatorParamDto"][];
+            /** @description Allowed display locations. */
+            placement: components["schemas"]["IndicatorPlacementDto"];
             /**
-             * Format: double
-             * @description The field's value at this bar.
+             * @description The value keys `POST /api/indicators/compute`'s response reports for
+             *     this indicator's display-list fields.
              */
-            value: number;
+            plots: components["schemas"]["IndicatorPlotDto"][];
+            /** @description Required bar-volume unit. */
+            requires_real_volume: boolean;
+            /** @description Scale semantics reported by the indicator itself. */
+            scale: components["schemas"]["IndicatorScaleDto"];
+            /** @description Compact chart label. */
+            short_title: string;
+            /** @description Full human-readable indicator name. */
+            title: string;
+            /**
+             * Format: int64
+             * @description Number of earlier bars used before the requested range.
+             */
+            warmup_bars: number;
         };
         /**
-         * @description One bar's worth of indicator output, emitted only once the indicator
-         *     reports `initialized()` ("an EMA's first values are not an EMA" — a warm-up value is never emitted, the same discipline the deleted browser copy honoured).
+         * @description One chart display primitive emitted by an indicator.
+         *
+         *     The built-ins currently emit `series`; the other variants deliberately
+         *     share the response shape so an indicator that emits a zone or label does
+         *     not require a second rendering endpoint.
          */
-        IndicatorPointDto: {
+        IndicatorDrawableDto: {
+            /** @description Field key from the indicator descriptor. */
+            field: string;
+            /** @enum {string} */
+            kind: "series";
+            /** @description Values in chronological order. */
+            points: components["schemas"]["IndicatorDrawablePointDto"][];
+            /** @description Rendering shape, e.g. `line` or `histogram`. */
+            shape: string;
+        };
+        /** @description One point in an indicator series. */
+        IndicatorDrawablePointDto: {
             /**
              * Format: int64
              * @description The bar this point was computed from, Unix nanoseconds.
              */
             ts_open: number;
-            /** @description The indicator's reported value(s) at this bar. */
-            values: components["schemas"]["IndicatorFieldValue"][];
+            /**
+             * Format: double
+             * @description The indicator value at this bar.
+             */
+            value: number;
+        };
+        /** @description A parameter default without converting integral values to floating point. */
+        IndicatorParamDefaultDto: {
+            /** @enum {string} */
+            kind: "integer";
+            /**
+             * Format: int64
+             * @description Integral default.
+             */
+            value: number;
+        } | {
+            /** @enum {string} */
+            kind: "number";
+            /**
+             * Format: double
+             * @description Fractional indicator-parameter default.
+             */
+            value: number;
+        };
+        /** @description One parameter exposed by an indicator descriptor. */
+        IndicatorParamDto: {
+            /** @description Default value. */
+            default: components["schemas"]["IndicatorParamDefaultDto"];
+            /** @description Either `integer` or `number`. */
+            kind: string;
+            /**
+             * Format: double
+             * @description Inclusive lower bound when the parameter has one.
+             */
+            min?: number | null;
+            /** @description Wire parameter key. */
+            name: string;
+        };
+        /**
+         * @description A chart location an indicator instance may occupy.
+         * @enum {string}
+         */
+        IndicatorPlacementDto: "overlay" | "sub_pane" | "either";
+        /** @description One plot an indicator emits. */
+        IndicatorPlotDto: {
+            /** @description Default CSS colour. */
+            color: string;
+            /** @description Wire field key. */
+            field: string;
+            /** @description Display label. */
+            label: string;
+            /** @description Either `line` or `histogram`. */
+            shape: string;
+        };
+        /** @description Scaling metadata for indicator output. */
+        IndicatorScaleDto: {
+            /** @enum {string} */
+            kind: "price";
+        } | {
+            /** @enum {string} */
+            kind: "ratio";
+            /**
+             * Format: double
+             * @description Inclusive upper bound.
+             */
+            max: number;
+            /**
+             * Format: double
+             * @description Inclusive lower bound.
+             */
+            min: number;
+        } | {
+            /** @enum {string} */
+            kind: "volume";
+        } | {
+            /** @enum {string} */
+            kind: "own";
         };
         /**
          * @description A stored `(name, params)` pair, on the wire — mirrors
@@ -1299,6 +1441,15 @@ export interface components {
             source_id: string;
             /** @description The source's display name. */
             source_name: string;
+            /**
+             * @description The venue's most recently catalogued state for this instrument.
+             *
+             *     This is deliberately distinct from a live-feed capability. A venue
+             *     can have no websocket in this build and still report that an
+             *     instrument is closed; clients use that fact to avoid describing a
+             *     closed market as a broken feed.
+             */
+            status: string;
             /** @description Normalised symbol (`id`'s suffix). */
             symbol: string;
         };
@@ -1361,8 +1512,8 @@ export interface components {
          * @description One layer's kind, on the wire — mirrors `senken_workspace::LayerKind`
          *     field-for-field. `params` stays an opaque JSON-text string rather than a
          *     parsed value, the same way `senken_alerts::IndicatorSpec::params` already
-         *     does on the wire below: this crate does not interpret it either (plan
-         *     005 its own scope note — that is the indicator engine's job).
+         *     does on the wire below: this crate does not interpret it either — that is
+         *     the indicator engine's job.
          */
         LayerKindDto: {
             /** @description The overlaid instrument, `source:symbol`. */
@@ -1446,7 +1597,7 @@ export interface components {
          *     whether it is really still authenticated, instead of `GET /api/health`:
          *     `health` needs no credential at all, so a successful poll of it reads as
          *     "authenticated" whether or not a session exists, which is exactly the
-         *     bug Q3 flagged and Q6 hit live. `me` requires
+         *     authentication bug this avoids. `me` requires
          *     [`crate::auth::EndpointPermission::Authenticated`], so a `200` here
          *     really does mean a live, unfenced session, and a `401` really does mean
          *     the credential is gone.
@@ -1536,7 +1687,7 @@ export interface components {
         };
         /**
          * @description The forming bar a client is drawing, as scaled integers at the
-         *     instrument's own price scale — the same wire form [`BarDto`] uses.
+         *     instrument's own price scale — the same wire form [`super::BarDto`] uses.
          */
         ProvisionalBarDto: {
             /**
@@ -1565,11 +1716,10 @@ export interface components {
              */
             ts_open: number;
             /**
-             * Format: int64
              * @description Base-asset volume accumulated from the ticks seen in this interval,
              *     at the instrument's own quantity scale.
              */
-            volume: number;
+            volume: components["schemas"]["VolumeDto"];
         };
         /** @description `PATCH /api/workspaces/{id}` request body. */
         RenameWorkspaceRequest: {
@@ -1649,6 +1799,8 @@ export interface components {
             live: boolean;
             /** @description The venue's own display name. */
             name: string;
+            /** @description It reports best bid and offer updates. */
+            quotes: boolean;
         };
         /** @description `GET /api/sources` response body. */
         SourcesResponse: {
@@ -1699,6 +1851,27 @@ export interface components {
              * @description How many rows exist in total, under the same scope as `rows`.
              */
             total: number;
+        };
+        /** @description A bar volume and its unit on the wire. */
+        VolumeDto: {
+            /** @enum {string} */
+            kind: "real";
+            /**
+             * Format: int64
+             * @description Base-asset quantity actually traded.
+             */
+            value: number;
+        } | {
+            /** @enum {string} */
+            kind: "tick";
+            /**
+             * Format: int32
+             * @description Number of price changes, not an asset quantity.
+             */
+            value: number;
+        } | {
+            /** @enum {string} */
+            kind: "absent";
         };
         /** @description A workspace row (list/create/rename/delete). */
         WorkspaceDto: {
@@ -2082,6 +2255,96 @@ export interface operations {
             };
         };
     };
+    delete_drawing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                drawing_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_drawing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                drawing_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DrawingInputDto"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     health: {
         parameters: {
             query?: never;
@@ -2192,6 +2455,96 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_layer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                layer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_layer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                layer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LayerInputDto"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

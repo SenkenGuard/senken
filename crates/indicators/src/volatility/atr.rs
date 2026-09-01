@@ -94,6 +94,10 @@ impl Indicator for Atr {
         self.prev_close = Some(close);
     }
 
+    fn snapshot(&self) -> Box<dyn Indicator> {
+        Box::new(self.clone())
+    }
+
     fn reset(&mut self) {
         self.prev_close = None;
         self.value = 0.0;

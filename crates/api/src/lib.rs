@@ -568,11 +568,39 @@ fn mount_workspace_routes(mut api: Router<AppState>, state: &AppState) -> Router
         get(workspace_handlers::get_layout),
         EndpointPermission::Authenticated,
     );
-    mount(
+    api = mount(
         api,
         state,
         "/layouts/{layout_id}",
         put(workspace_handlers::replace_layout),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/layers/{layer_id}",
+        patch(workspace_handlers::update_layer),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/layers/{layer_id}",
+        delete(workspace_handlers::delete_layer),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/drawings/{drawing_id}",
+        patch(workspace_handlers::update_drawing),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/drawings/{drawing_id}",
+        delete(workspace_handlers::delete_drawing),
         EndpointPermission::Authenticated,
     )
 }
@@ -605,6 +633,13 @@ fn mount_bars_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppS
         state,
         "/bars/ensure",
         post(bars_handlers::ensure_bars),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/bars/m1-download",
+        post(bars_handlers::download_m1),
         EndpointPermission::Authenticated,
     );
     mount(

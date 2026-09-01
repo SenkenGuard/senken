@@ -37,6 +37,6 @@ mod spec;
 pub use crate::aggregate::{
     AggregateError, Aggregator, Anchor, bucket_start, divides, next_bucket_start,
 };
-pub use crate::bar::{Bar, SeriesKey, Side, Trade};
+pub use crate::bar::{Bar, BarPriceBasis, SeriesKey, Side, Trade, Volume};
 pub use crate::clock::Clock;
 pub use crate::spec::{BarSpec, BarUnit, Origin, ParseBarSpecError, ParseOriginError};

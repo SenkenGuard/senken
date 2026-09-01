@@ -441,7 +441,7 @@ struct OpenBucket {
     high: i64,
     low: i64,
     close: i64,
-    volume: i128,
+    volume: AccumulatedVolume,
     quote_volume: Option<i128>,
     trade_count: Option<u64>,
     taker_buy_volume: Option<i128>,
@@ -465,7 +465,7 @@ impl OpenBucket {
             high: bar.high,
             low: bar.low,
             close: bar.close,
-            volume: i128::from(bar.volume),
+            volume: AccumulatedVolume::from(bar.volume),
             quote_volume: bar.quote_volume.map(i128::from),
             trade_count: bar.trade_count.map(u64::from),
             taker_buy_volume: bar.taker_buy_volume.map(i128::from),
@@ -488,7 +488,10 @@ impl OpenBucket {
         self.high = self.high.max(bar.high);
         self.low = self.low.min(bar.low);
         self.close = bar.close;
-        self.volume += i128::from(bar.volume);
+        if !self.volume.add(bar.volume) {
+            self.poisoned = true;
+            return;
+        }
         self.quote_volume = match (self.quote_volume, bar.quote_volume) {
             (Some(acc), Some(v)) => Some(acc + i128::from(v)),
             _ => None,
@@ -515,7 +518,7 @@ impl OpenBucket {
             high: self.high,
             low: self.low,
             close: self.close,
-            volume: i64::try_from(self.volume).ok()?,
+            volume: self.volume.finish()?,
             quote_volume: match self.quote_volume {
                 Some(v) => Some(i64::try_from(v).ok()?),
                 None => None,
@@ -529,9 +532,52 @@ impl OpenBucket {
     }
 }
 
+#[derive(Debug)]
+enum AccumulatedVolume {
+    Real(i128),
+    Tick(u64),
+    Absent,
+}
+
+impl From<crate::Volume> for AccumulatedVolume {
+    fn from(volume: crate::Volume) -> Self {
+        match volume {
+            crate::Volume::Real(value) => Self::Real(i128::from(value)),
+            crate::Volume::Tick(value) => Self::Tick(u64::from(value)),
+            crate::Volume::Absent => Self::Absent,
+        }
+    }
+}
+
+impl AccumulatedVolume {
+    fn add(&mut self, volume: crate::Volume) -> bool {
+        match (self, volume) {
+            (Self::Real(total), crate::Volume::Real(value)) => {
+                *total += i128::from(value);
+                true
+            }
+            (Self::Tick(total), crate::Volume::Tick(value)) => {
+                *total += u64::from(value);
+                true
+            }
+            (Self::Absent, crate::Volume::Absent) => true,
+            _ => false,
+        }
+    }
+
+    fn finish(&self) -> Option<crate::Volume> {
+        match self {
+            Self::Real(value) => i64::try_from(*value).ok().map(crate::Volume::Real),
+            Self::Tick(value) => u32::try_from(*value).ok().map(crate::Volume::Tick),
+            Self::Absent => Some(crate::Volume::Absent),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Aggregator, Anchor, divides, next_bucket_start};
+    use crate::Volume;
     use crate::bar::Bar;
     use crate::spec::{BarSpec, BarUnit};
     use senken_core::UnixNanos;
@@ -547,7 +593,7 @@ mod tests {
             high,
             low,
             close,
-            volume,
+            volume: Volume::Real(volume),
             quote_volume: Some(volume * 10),
             trade_count: Some(1),
             taker_buy_volume: Some(volume / 2),
@@ -691,7 +737,7 @@ mod tests {
         assert_eq!(bar.low, 80, "low is the extreme of every input's low");
         assert_eq!(
             bar.volume,
-            10 + 20 + 30 + 40 + 50,
+            Volume::Real(10 + 20 + 30 + 40 + 50),
             "volume is the sum of every input"
         );
         assert_eq!(
@@ -708,14 +754,14 @@ mod tests {
     fn volume_overflow_rejects_the_bar_instead_of_wrapping() {
         let inputs = [
             Bar {
-                volume: i64::MAX,
+                volume: Volume::Real(i64::MAX),
                 quote_volume: None,
                 trade_count: None,
                 taker_buy_volume: None,
                 ..m1_at(0, 1, 1, 1, 1, 0)
             },
             Bar {
-                volume: i64::MAX,
+                volume: Volume::Real(i64::MAX),
                 quote_volume: None,
                 trade_count: None,
                 taker_buy_volume: None,

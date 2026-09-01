@@ -16,8 +16,8 @@ use axum::{Extension, Json};
 use senken_core::UnixNanos;
 use senken_marketdata::InstrumentId;
 use senken_workspace::{
-    DrawingInput, DrawingKind, DrawingLineStyle, DrawingPoint, DrawingStyle, LayerInput, LayerKind,
-    LayoutId, LayoutPreset, PaneInput, WorkspaceId,
+    DrawingId, DrawingInput, DrawingKind, DrawingLineStyle, DrawingPoint, DrawingStyle, LayerId,
+    LayerInput, LayerKind, LayoutId, LayoutPreset, PaneInput, WorkspaceId,
 };
 
 use crate::AppState;
@@ -42,6 +42,16 @@ fn parse_workspace_id(raw: &str) -> Result<WorkspaceId, HandlerError> {
 fn parse_layout_id(raw: &str) -> Result<LayoutId, HandlerError> {
     raw.parse()
         .map_err(|_| HandlerError::BadRequest("not a valid layout id".to_owned()))
+}
+
+fn parse_layer_id(raw: &str) -> Result<LayerId, HandlerError> {
+    raw.parse()
+        .map_err(|_| HandlerError::BadRequest("not a valid layer id".to_owned()))
+}
+
+fn parse_drawing_id(raw: &str) -> Result<DrawingId, HandlerError> {
+    raw.parse()
+        .map_err(|_| HandlerError::BadRequest("not a valid drawing id".to_owned()))
 }
 
 /// Converts one wire [`LayerKindDto`] into the domain [`LayerKind`] it
@@ -342,6 +352,86 @@ pub(crate) async fn replace_layout(
     state
         .workspace
         .replace_layout(&ctx.user, layout_id, preset, &panes)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /api/layers/{layer_id}`.
+#[utoipa::path(
+    patch,
+    path = "/api/layers/{layer_id}",
+    request_body = LayerInputDto,
+    params(("layer_id" = String, Path)),
+    responses((status = 204), (status = 400, body = crate::dto::ErrorBody), (status = 401, body = crate::dto::ErrorBody), (status = 403, body = crate::dto::ErrorBody))
+)]
+pub(crate) async fn update_layer(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(layer_id): Path<String>,
+    Json(body): Json<LayerInputDto>,
+) -> Result<StatusCode, HandlerError> {
+    state.workspace.update_layer(
+        &ctx.user,
+        parse_layer_id(&layer_id)?,
+        &layer_input_from_dto(body)?,
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/layers/{layer_id}`.
+#[utoipa::path(
+    delete,
+    path = "/api/layers/{layer_id}",
+    params(("layer_id" = String, Path)),
+    responses((status = 204), (status = 400, body = crate::dto::ErrorBody), (status = 401, body = crate::dto::ErrorBody), (status = 403, body = crate::dto::ErrorBody))
+)]
+pub(crate) async fn delete_layer(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(layer_id): Path<String>,
+) -> Result<StatusCode, HandlerError> {
+    state
+        .workspace
+        .delete_layer(&ctx.user, parse_layer_id(&layer_id)?)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /api/drawings/{drawing_id}`.
+#[utoipa::path(
+    patch,
+    path = "/api/drawings/{drawing_id}",
+    request_body = DrawingInputDto,
+    params(("drawing_id" = String, Path)),
+    responses((status = 204), (status = 400, body = crate::dto::ErrorBody), (status = 401, body = crate::dto::ErrorBody), (status = 403, body = crate::dto::ErrorBody))
+)]
+pub(crate) async fn update_drawing(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(drawing_id): Path<String>,
+    Json(body): Json<DrawingInputDto>,
+) -> Result<StatusCode, HandlerError> {
+    state.workspace.update_drawing(
+        &ctx.user,
+        parse_drawing_id(&drawing_id)?,
+        &drawing_input_from_dto(body),
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/drawings/{drawing_id}`.
+#[utoipa::path(
+    delete,
+    path = "/api/drawings/{drawing_id}",
+    params(("drawing_id" = String, Path)),
+    responses((status = 204), (status = 400, body = crate::dto::ErrorBody), (status = 401, body = crate::dto::ErrorBody), (status = 403, body = crate::dto::ErrorBody))
+)]
+pub(crate) async fn delete_drawing(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(drawing_id): Path<String>,
+) -> Result<StatusCode, HandlerError> {
+    state
+        .workspace
+        .delete_drawing(&ctx.user, parse_drawing_id(&drawing_id)?)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

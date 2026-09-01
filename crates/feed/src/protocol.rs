@@ -3,7 +3,16 @@
 //! same for every venue.
 
 use senken_marketdata::InstrumentId;
-use senken_subscription::{ConnectionError, PriceUpdate};
+use senken_subscription::{ConnectionError, PriceUpdate, QuoteUpdate};
+
+/// A decoded live market-data message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveUpdate {
+    /// A last-trade update.
+    Price(PriceUpdate),
+    /// A best bid and offer update.
+    Quote(QuoteUpdate),
+}
 
 /// What one venue's WebSocket protocol looks like.
 ///
@@ -42,5 +51,5 @@ pub trait VenueProtocol: Send + Sync + 'static {
     /// acknowledgement, a heartbeat, an error event — rather than an `Err`:
     /// a frame this protocol does not recognise is not this connection's
     /// failure, only a message it has nothing to publish from.
-    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, PriceUpdate)>;
+    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, LiveUpdate)>;
 }

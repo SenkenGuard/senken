@@ -20,8 +20,8 @@
 import type {
 	ISeriesApi,
 	ISeriesPrimitive,
-	ISeriesPrimitivePaneRenderer,
-	ISeriesPrimitivePaneView,
+	IPrimitivePaneRenderer,
+	IPrimitivePaneView,
 	SeriesAttachedParameter,
 	Time
 } from 'lightweight-charts';
@@ -52,7 +52,7 @@ const PADDING_X = 6;
 const PADDING_Y = 3;
 const LINE_GAP = 2;
 
-class BadgeRenderer implements ISeriesPrimitivePaneRenderer {
+class BadgeRenderer implements IPrimitivePaneRenderer {
 	constructor(private readonly primitive: LastPriceBadgePrimitive) {}
 
 	draw(target: CanvasRenderingTarget2D): void {
@@ -62,10 +62,10 @@ class BadgeRenderer implements ISeriesPrimitivePaneRenderer {
 	}
 }
 
-class BadgeView implements ISeriesPrimitivePaneView {
+class BadgeView implements IPrimitivePaneView {
 	constructor(private readonly primitive: LastPriceBadgePrimitive) {}
 
-	renderer(): ISeriesPrimitivePaneRenderer {
+	renderer(): IPrimitivePaneRenderer {
 		return new BadgeRenderer(this.primitive);
 	}
 }
@@ -108,7 +108,7 @@ export class LastPriceBadgePrimitive implements ISeriesPrimitive<Time> {
 		this.requestUpdate = undefined;
 	}
 
-	priceAxisPaneViews(): readonly ISeriesPrimitivePaneView[] {
+	priceAxisPaneViews(): readonly IPrimitivePaneView[] {
 		return [this.view];
 	}
 

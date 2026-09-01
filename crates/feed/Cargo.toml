@@ -27,6 +27,7 @@ senken-core = { workspace = true }
 # the opposite direction (parsing an inbound message back into an
 # `InstrumentId`).
 senken-marketdata = { workspace = true }
+senken-series = { workspace = true }
 # The ports this crate implements (`VenueConnection`/`VenueConnector`), the
 # pool this crate publishes decoded prices into, and `PriceUpdate` itself.
 senken-subscription = { workspace = true }

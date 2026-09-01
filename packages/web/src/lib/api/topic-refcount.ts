@@ -1,6 +1,6 @@
 // Reference counting for `WsClient`'s subscribed topics,
 // pulled out of `websocket.ts` as its own pure, framework- and
-// network-independent unit — the same reason `$lib/charts/axis-sync.ts`
+// network-independent unit so reference-count behavior is testable without a socket
 // isolates its own tricky bit (the leader/follower guard) instead of
 // leaving it inline where only a real chart library could exercise it.
 //

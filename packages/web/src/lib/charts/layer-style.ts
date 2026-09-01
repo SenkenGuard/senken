@@ -37,7 +37,32 @@ export const LINE_STYLE_MAP: Record<LineStyleName, number> = { SOLID: 0, DOTTED:
  * the field keys here are exactly its wire spelling) plus the conventional
  * default color each one drew as an overlay/sub-pane series before this
  * milestone (`$lib/indicators/browser-compute.ts`, now deleted). */
+export interface IndicatorDescriptorClient {
+	name: string;
+	title: string;
+	short_title: string;
+	legend: string;
+	params: { name: string; default: { value: number } }[];
+	plots: { field: string; label: string; shape: 'line' | 'histogram'; color: string }[];
+	scale: { kind: 'price' | 'ratio' | 'volume' | 'own' };
+	placement: 'overlay' | 'sub_pane' | 'either';
+}
+
+const descriptors = new Map<string, IndicatorDescriptorClient>();
+
+export function setIndicatorDescriptors(items: IndicatorDescriptorClient[]): void {
+	descriptors.clear();
+	for (const item of items) descriptors.set(item.name, item);
+}
+
+export function indicatorFieldScale(name: string): 'price' | 'qty' | 'none' {
+	const kind = descriptors.get(name)?.scale.kind;
+	return kind === 'volume' ? 'qty' : kind === 'price' ? 'price' : 'none';
+}
+
 function defaultPlotsForIndicator(name: string): PlotStyle[] {
+	const descriptor = descriptors.get(name);
+	if (descriptor) return descriptor.plots.map((plot) => ({ field: plot.field, label: plot.label, type: plot.shape, color: plot.color, width: 1, style: 'SOLID', visible: true }));
 	switch (name) {
 		case 'Macd':
 			return [

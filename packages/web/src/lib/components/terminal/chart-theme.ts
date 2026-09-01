@@ -1,6 +1,6 @@
 // Shared dark/light palette for every lightweight-charts instance on the
 // charts page (`chartTheme()`, line 1917). Extracted out
-// of chart-pane.svelte so sub-pane-chart.svelte
+// of chart-pane.svelte so every native pane
 // can use the exact same colors instead of a second copy drifting from it.
 
 export interface ChartPaneTheme {

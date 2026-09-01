@@ -33,7 +33,8 @@
 		scopeLabel,
 		onClose,
 		onChange,
-		initialSection = 'symbol'
+		initialSection = 'symbol',
+		quotesSupported
 	}: {
 		open: boolean;
 		settings: ChartSettings;
@@ -45,6 +46,9 @@
 		 * opens straight into scales, which is what the reader asking for it
 		 * was already looking at. */
 		initialSection?: CsSectionKey;
+		/** `GET /api/sources` is authoritative: a live trade feed does not
+		 * imply that this source can report both sides of a quote. */
+		quotesSupported?: boolean;
 	} = $props();
 
 	// Seeded on each open rather than at construction: this dialog is never
@@ -56,7 +60,7 @@
 	});
 
 	const theme = $derived(chartThemeDefaults(mode.current === 'light'));
-	const built = $derived(buildSettingsRows(section, settings, onChange, theme));
+	const built = $derived(buildSettingsRows(section, settings, onChange, theme, { quotes: quotesSupported }));
 </script>
 
 <Dialog.Root
@@ -75,7 +79,7 @@
 				<XIcon class="size-[14px]" />
 			</Dialog.Close>
 		</Dialog.Header>
-		<Dialog.Description class="sr-only">Chart display, scale and trading settings</Dialog.Description>
+		<Dialog.Description class="sr-only">Chart display and scale settings</Dialog.Description>
 
 		<div class="flex min-h-0 flex-1">
 			<div class="w-[178px] flex-none border-r border-ink/9 py-2">
@@ -107,19 +111,27 @@
 								{#if row.hasCheck}
 									<button
 										type="button"
-										class={cn(
-											'flex size-[15px] flex-none cursor-pointer items-center justify-center border',
+									class={cn(
+											'flex size-[15px] flex-none items-center justify-center border',
+											row.disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer',
 											row.checked ? 'border-foreground bg-foreground' : 'border-ink/24'
 										)}
-										onclick={row.onToggle}
-										aria-label={row.checked ? `Disable ${row.label}` : `Enable ${row.label}`}
-									>
+									onclick={row.onToggle}
+									disabled={row.disabled}
+									title={row.disabledReason}
+									aria-label={row.checked ? `Disable ${row.label}` : `Enable ${row.label}`}
+								>
 										{#if row.checked}<CheckIcon class="size-2.5 text-inv" />{/if}
 									</button>
 								{/if}
 								<span class="min-w-0 flex-1 truncate font-mono text-[10px] tracking-[0.1em] text-secondary-foreground">
 									{row.label}
 								</span>
+								{#if row.disabledReason}
+									<span class="max-w-[132px] text-right font-mono text-[8px] leading-tight tracking-[0.06em] text-dim" data-capability-reason={row.label}>
+										{row.disabledReason}
+									</span>
+								{/if}
 								{#if row.hasColor && row.colorValue !== undefined && row.onColorChange}
 									<ColorPicker value={row.colorValue} fallback={row.colorFallback ?? '#f2f2ef'} onChange={row.onColorChange} />
 								{/if}

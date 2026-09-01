@@ -29,15 +29,17 @@
 		PANEL_TABS,
 		type ChartPanelKey,
 		CHART_MENUS,
-		INDICATOR_CATALOG,
 		parseInstrumentId,
 		fmtDecimal,
 		tfLabel
 	} from '$lib/components/terminal/chart-config';
 	import { apiClient } from '$lib/api/client';
 	import type { InstrumentSummaryDto } from '$lib/api/types';
+	import type { MarketStatus } from '$lib/charts/live-state';
+	import { setIndicatorDescriptors, type IndicatorDescriptorClient } from '$lib/charts/layer-style';
 	import { wsClient } from '$lib/api/websocket';
 	import { wsEventsStore, priceFromEvent } from '$lib/api/ws-events.svelte';
+	import { hasQuoteFeed } from '$lib/api/sources.svelte';
 	import { objectTree } from '$lib/charts/pane-runtime';
 	import {
 		chartWorkspaceStore,
@@ -63,6 +65,7 @@
 		updateDrawingGeometry,
 		updatePaneSettings
 	} from '$lib/charts/workspace-store.svelte';
+	import type { IndicatorCatalogItem } from '$lib/charts/workspace-store.svelte';
 	import type { DrawingRuntime } from '$lib/charts/pane-runtime';
 	import { defaultChartSettings, type ChartSettings, type CsSectionKey } from '$lib/mock/chart-settings';
 	import ChartContextMenu, { type MenuItem } from '$lib/components/terminal/chart-context-menu.svelte';
@@ -106,8 +109,14 @@
 	import SigmaIcon from '@lucide/svelte/icons/sigma';
 	import { toast } from 'svelte-sonner';
 
+	let indicatorCatalog = $state<IndicatorDescriptorClient[]>([]);
+
 	onMount(() => {
 		void initChartWorkspaces();
+		void apiClient.listIndicators().then((items) => {
+			indicatorCatalog = items as unknown as IndicatorDescriptorClient[];
+			setIndicatorDescriptors(indicatorCatalog);
+		});
 	});
 
 	const layout = $derived(chartWorkspaceStore.layout);
@@ -130,6 +139,11 @@
 	let activeIndex = $state(0);
 	const activePaneIndex = $derived(panes.length === 0 ? 0 : Math.min(activeIndex, panes.length - 1));
 	const activePane = $derived(panes[activePaneIndex]);
+	// Search results are the catalog status source. The server supplies this
+	// field from its cached venue catalog; keep the short-lived browser cache
+	// separate from persisted pane settings because a venue's state is market
+	// data, never a user preference.
+	let marketStatuses = $state<Record<string, MarketStatus>>({});
 
 	let tool = $state<ToolKey>('cursor');
 	let clearToken = $state(0);
@@ -155,6 +169,7 @@
 	// this reads that pane's own settings rather than one page-level object
 	// every pane used to share (and none of them actually kept).
 	const chartSettings = $derived(activePane?.settings ?? defaultChartSettings());
+	const activePaneQuotesSupported = $derived(hasQuoteFeed(activePane?.instrument ?? ''));
 	let csOpen = $state(false);
 	/** Which settings section the dialog should open on. The price-scale
 	 * menu's "More settings" points straight at scales. */
@@ -254,8 +269,15 @@
 		void setAllPanesTimeframe(t);
 	}
 
-	function pickSymbol(instrumentId: string) {
-		void setPaneInstrument(activePaneIndex, instrumentId);
+	function pickSymbol(instrument: InstrumentSummaryDto) {
+		const status = (instrument as InstrumentSummaryDto & { status?: string }).status;
+		if (status === 'closed') {
+			marketStatuses = { ...marketStatuses, [instrument.id]: { status: 'closed' } };
+		} else {
+			const { [instrument.id]: _removed, ...remaining } = marketStatuses;
+			marketStatuses = remaining;
+		}
+		void setPaneInstrument(activePaneIndex, instrument.id);
 	}
 
 	function onLastCloseFromPane(paneIndex: number, price: number) {
@@ -375,7 +397,7 @@
 			rows: () =>
 				instrumentResults.map((x) =>
 					instrumentRow(x, x.kind.toUpperCase(), () => {
-						pickSymbol(x.id);
+						pickSymbol(x);
 						closeCommand();
 					})
 				)
@@ -386,7 +408,7 @@
 	// opens the command palette in `'layer'` mode. the
 	// INSTRUMENT tab adds an overlay instrument (`addInstrumentOverlay`),
 	// the INDICATOR tab adds a real indicator layer, placed overlay or
-	// sub-pane per `INDICATOR_CATALOG`'s own `subPane` flag. There is no
+	// The API descriptor selects an allowed placement. There is no
 	// STRATEGY tab any more — `senken_workspace::LayerKind` has no such
 	// variant.
 	function openLayerPicker() {
@@ -410,14 +432,19 @@
 					);
 				}
 				const q = query.trim().toLowerCase();
-				return INDICATOR_CATALOG.filter((def) => !q || `${def.label} ${def.paramsLabel}`.toLowerCase().includes(q)).map((def) => ({
+				return indicatorCatalog.filter((def) => !q || `${def.title} ${def.legend}`.toLowerCase().includes(q)).map((def) => ({
 					icon: SigmaIcon,
-					title: def.label,
-					sub: def.paramsLabel,
-					meta: def.subPane ? 'SUB-PANE' : 'OVERLAY',
+					title: def.short_title,
+					sub: def.legend,
+					meta: def.placement === 'sub_pane' ? 'SUB-PANE' : 'OVERLAY',
 					metaTone: 'dim' as const,
 					onPick: () => {
-						void addIndicatorLayer(paneTarget, def);
+						const item: IndicatorCatalogItem = {
+							name: def.name,
+							defaultParams: Object.fromEntries(def.params.map((param) => [param.name, param.default.value])),
+							placement: def.placement
+						};
+						void addIndicatorLayer(paneTarget, item);
 						closeCommand();
 					}
 				}));
@@ -859,6 +886,7 @@
 				{selectedDrawing}
 				{reloadToken}
 				{resetTokens}
+				{marketStatuses}
 				onContextMenu={(pane, e) => (ctxMenu = { ...e, pane })}
 				onMoveDrawing={(pane, id, patch) => void updateDrawingGeometry(pane, id, patch)}
 				onPatchSettings={(pane, patch) => patchPane(pane, patch)}
@@ -946,7 +974,7 @@
 									<button
 										type="button"
 										class="flex w-full cursor-pointer items-center justify-between gap-2 border-b border-ink/5 px-3 py-2.5"
-										onclick={() => pickSymbol(r.id)}
+									onclick={() => pickSymbol(r)}
 									>
 										<div class="flex min-w-0 items-center gap-2.5">
 											<div class="flex size-[18px] flex-none items-center justify-center border border-ink/14 font-mono text-[8.5px] text-secondary-foreground">{r.symbol.slice(0, 1)}</div>
@@ -1025,6 +1053,7 @@
 		open={csOpen}
 		initialSection={csSection}
 		settings={chartSettings}
+		quotesSupported={activePaneQuotesSupported}
 		scopeLabel={settingsScopeLabel}
 		onClose={() => (csOpen = false)}
 		onChange={(patch) => void updatePaneSettings(activePaneIndex, patch)}
@@ -1034,7 +1063,7 @@
 		layer={dialogLayer}
 		onClose={() => (layerDlg = null)}
 		onEditParams={(patch) => dialogLayer && layerDlg && void editLayerParams(layerDlg.pane, dialogLayer.id, patch)}
-		onStyleChanged={() => void persistLayerStyle()}
+		onStyleChanged={() => dialogLayer && void persistLayerStyle(dialogLayer.id)}
 	/>
 
 {:else}

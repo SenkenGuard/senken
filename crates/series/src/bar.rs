@@ -5,6 +5,49 @@ use serde::{Deserialize, Serialize};
 
 use crate::spec::{BarSpec, Origin};
 
+/// What market value supplied a bar's OHLC prices.
+///
+/// This is part of series identity: trade-built and bid-built bars can have
+/// different prices even when every other key field is equal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BarPriceBasis {
+    /// Prices came from executed trades.
+    Trade,
+    /// Prices came from the best bid.
+    Bid,
+}
+
+/// The volume carried by a bar, with its unit made explicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Volume {
+    /// Base-asset quantity actually traded, at the series' quantity scale.
+    Real(i64),
+    /// Number of price changes in the interval, not an asset quantity.
+    Tick(u32),
+    /// The source did not report volume.
+    Absent,
+}
+
+impl Volume {
+    /// Returns real traded quantity, rejecting other volume units.
+    #[must_use]
+    pub const fn real(self) -> Option<i64> {
+        match self {
+            Self::Real(value) => Some(value),
+            Self::Tick(_) | Self::Absent => None,
+        }
+    }
+
+    /// Returns the tick count, rejecting other volume units.
+    #[must_use]
+    pub const fn ticks(self) -> Option<u32> {
+        match self {
+            Self::Tick(value) => Some(value),
+            Self::Real(_) | Self::Absent => None,
+        }
+    }
+}
+
 /// Identifies one series: the same symbol at the same spec from the same
 /// source can still be two different series depending on [`Origin`]
 ///   — see that type's docs for why merging them would be wrong.
@@ -18,6 +61,8 @@ pub struct SeriesKey {
     pub symbol: Box<str>,
     /// Venue-supplied or locally aggregated.
     pub origin: Origin,
+    /// The market value used to build OHLC prices.
+    pub price_basis: BarPriceBasis,
     /// The timeframe.
     pub spec: BarSpec,
 }
@@ -35,6 +80,7 @@ impl SeriesKey {
             source_id: source_id.into(),
             symbol: symbol.into(),
             origin,
+            price_basis: BarPriceBasis::Trade,
             spec,
         }
     }
@@ -67,7 +113,7 @@ pub struct Bar {
     pub close: i64,
     /// Base-asset volume traded in the interval, at the series' quantity
     /// scale.
-    pub volume: i64,
+    pub volume: Volume,
     /// Quote-asset volume, when the venue reports it.
     pub quote_volume: Option<i64>,
     /// Number of trades in the interval, when the venue reports it.

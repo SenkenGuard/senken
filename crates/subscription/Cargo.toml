@@ -23,6 +23,7 @@ senken-core = { workspace = true }
 # symbol)`, which is exactly what `InstrumentId` already is, so it is reused
 # rather than re-declared here.
 senken-marketdata = { workspace = true }
+senken-series = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 # `sync` for the actor's mpsc/oneshot channels, `rt` because the actor task

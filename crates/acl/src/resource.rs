@@ -32,6 +32,8 @@ pub enum Resource {
     User,
     /// A role definition — creating, editing or assigning roles.
     Role,
+    /// An indicator definition or instance.
+    Indicator,
 }
 
 #[cfg(test)]

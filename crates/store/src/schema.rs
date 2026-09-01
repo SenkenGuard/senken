@@ -12,12 +12,13 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use senken_core::{TimeRange, UnixNanos};
-use senken_series::{BarSpec, Origin};
+use senken_series::{BarPriceBasis, BarSpec, Origin};
 
 /// The current on-disk schema version. Bump this, and reset
 /// coverage rather than migrate, on any incompatible column change — the
 /// same discipline `senken-storage`'s `Snapshot` uses for JSON.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
+const LEGACY_SCHEMA_VERSION: u32 = 1;
 
 /// File-level key-value metadata keys. Every field here is
 /// required on write — the file must be fully self-describing, because
@@ -33,6 +34,7 @@ mod meta_key {
     pub(super) const SPEC: &str = "senken.spec";
     pub(super) const PRICE_SCALE: &str = "senken.price_scale";
     pub(super) const QTY_SCALE: &str = "senken.qty_scale";
+    pub(super) const PRICE_BASIS: &str = "senken.price_basis";
     pub(super) const RANGE_START: &str = "senken.range_start";
     pub(super) const RANGE_END: &str = "senken.range_end";
 }
@@ -47,12 +49,15 @@ mod meta_key {
 /// apart without opening a file — see `spec_token`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesMetadata {
+    pub(crate) schema_version: u32,
     /// The plugin's unit of registration, e.g. `binance-usdm`.
     pub source_id: String,
     /// The normalised symbol, e.g. `BTCUSDT`.
     pub symbol: String,
     /// Venue-supplied or locally aggregated.
     pub origin: Origin,
+    /// The market value used to build OHLC prices.
+    pub price_basis: BarPriceBasis,
     /// The timeframe.
     pub spec: BarSpec,
     /// Decimal places `open`/`high`/`low`/`close` are scaled by.
@@ -75,11 +80,19 @@ impl SeriesMetadata {
         HashMap::from([
             (
                 meta_key::SCHEMA_VERSION.to_owned(),
-                SCHEMA_VERSION.to_string(),
+                self.schema_version.to_string(),
             ),
             (meta_key::SOURCE_ID.to_owned(), self.source_id.clone()),
             (meta_key::SYMBOL.to_owned(), self.symbol.clone()),
             (meta_key::ORIGIN.to_owned(), self.origin.to_string()),
+            (
+                meta_key::PRICE_BASIS.to_owned(),
+                match self.price_basis {
+                    BarPriceBasis::Trade => "trade",
+                    BarPriceBasis::Bid => "bid",
+                }
+                .to_owned(),
+            ),
             (meta_key::SPEC.to_owned(), self.spec.to_string()),
             (
                 meta_key::PRICE_SCALE.to_owned(),
@@ -172,9 +185,9 @@ impl SeriesMetadata {
         }
 
         let schema_version: u32 = parse(kv, meta_key::SCHEMA_VERSION)?;
-        if schema_version != SCHEMA_VERSION {
+        if !matches!(schema_version, LEGACY_SCHEMA_VERSION | SCHEMA_VERSION) {
             return Err(arrow::error::ArrowError::SchemaError(format!(
-                "unsupported senken.schema_version {schema_version} (expected {SCHEMA_VERSION})"
+                "unsupported senken.schema_version {schema_version} (expected 1 or {SCHEMA_VERSION})"
             )));
         }
         let range_start: i64 = parse(kv, meta_key::RANGE_START)?;
@@ -186,9 +199,19 @@ impl SeriesMetadata {
         .ok_or_else(|| arrow::error::ArrowError::SchemaError("range end before start".into()))?;
 
         Ok(Self {
+            schema_version,
             source_id: get(kv, meta_key::SOURCE_ID)?.to_owned(),
             symbol: get(kv, meta_key::SYMBOL)?.to_owned(),
             origin: parse(kv, meta_key::ORIGIN)?,
+            price_basis: match kv.get(meta_key::PRICE_BASIS).map(String::as_str) {
+                None | Some("trade") => BarPriceBasis::Trade,
+                Some("bid") => BarPriceBasis::Bid,
+                Some(_) => {
+                    return Err(arrow::error::ArrowError::SchemaError(
+                        "invalid senken.price_basis".to_owned(),
+                    ));
+                }
+            },
             spec: parse(kv, meta_key::SPEC)?,
             price_scale: parse(kv, meta_key::PRICE_SCALE)?,
             qty_scale: parse(kv, meta_key::QTY_SCALE)?,
@@ -200,18 +223,22 @@ impl SeriesMetadata {
 /// The nine bar columns, in a fixed order. Shared by
 /// [`arrow_schema`] (write side) and `reader.rs` (which reattaches file
 /// metadata to a schema built from these same fields on read).
-fn bar_fields() -> Vec<Field> {
-    vec![
+fn bar_fields(schema_version: u32) -> Vec<Field> {
+    let mut fields = vec![
         Field::new("ts_open", DataType::Int64, false),
         Field::new("open", DataType::Int64, false),
         Field::new("high", DataType::Int64, false),
         Field::new("low", DataType::Int64, false),
         Field::new("close", DataType::Int64, false),
-        Field::new("volume", DataType::Int64, false),
+        Field::new("volume", DataType::Int64, schema_version >= SCHEMA_VERSION),
         Field::new("quote_volume", DataType::Int64, true),
         Field::new("trade_count", DataType::UInt32, true),
         Field::new("taker_buy_volume", DataType::Int64, true),
-    ]
+    ];
+    if schema_version >= SCHEMA_VERSION {
+        fields.push(Field::new("volume_kind", DataType::UInt8, false));
+    }
+    fields
 }
 
 /// The Arrow schema for a bar file: eight columns, in a fixed
@@ -223,7 +250,7 @@ fn bar_fields() -> Vec<Field> {
 /// [`schema_with_metadata`] for the read-side counterpart.
 #[must_use]
 pub(crate) fn arrow_schema(metadata: &SeriesMetadata) -> SchemaRef {
-    let fields = bar_fields();
+    let fields = bar_fields(SCHEMA_VERSION);
     Arc::new(Schema::new_with_metadata(fields, metadata.to_kv_metadata()))
 }
 
@@ -235,6 +262,9 @@ pub(crate) fn arrow_schema(metadata: &SeriesMetadata) -> SchemaRef {
 /// same metadata a writer declared, regardless of how Arrow's own schema
 /// plumbing round-trips it.
 #[must_use]
-pub(crate) fn schema_with_metadata(kv: HashMap<String, String>) -> SchemaRef {
-    Arc::new(Schema::new_with_metadata(bar_fields(), kv))
+pub(crate) fn schema_with_metadata(metadata: &SeriesMetadata) -> SchemaRef {
+    Arc::new(Schema::new_with_metadata(
+        bar_fields(metadata.schema_version),
+        metadata.to_kv_metadata(),
+    ))
 }

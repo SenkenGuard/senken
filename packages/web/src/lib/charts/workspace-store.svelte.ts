@@ -16,11 +16,13 @@ import { apiClient } from '$lib/api/client';
 import { getErrorMessage } from '$lib/api/errors';
 import { layoutMutationErrorMessage } from './workspace-error';
 import type { WorkspaceDto } from '$lib/api/types';
-import { LAYOUTS, type IndicatorCatalogItem, type LayoutId } from '$lib/components/terminal/chart-config';
+import { LAYOUTS, type LayoutId } from '$lib/components/terminal/chart-config';
 import { clearLayerStyle } from './layer-style';
 import { defaultChartSettings, type ChartSettings } from '$lib/mock/chart-settings';
 import {
 	paneFromDto,
+	drawingToInput,
+	layerToInput,
 	toReplaceLayoutRequest,
 	type DrawingRuntime,
 	type LayerRuntime,
@@ -38,6 +40,12 @@ import {
 // against being unavailable, never treated as a source of truth for
 // anything the server itself owns.
 const ACTIVE_WORKSPACE_KEY = 'senken.charts.activeWorkspaceId';
+
+export interface IndicatorCatalogItem {
+	name: string;
+	defaultParams: Record<string, number>;
+	placement: 'overlay' | 'sub_pane' | 'either';
+}
 
 function loadRememberedWorkspaceId(): string | null {
 	try {
@@ -79,6 +87,8 @@ class ChartWorkspaceStore {
 }
 
 export const chartWorkspaceStore = new ChartWorkspaceStore();
+
+const parameterTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function presetOf(raw: string): LayoutId {
 	return (raw in LAYOUTS ? raw : '1') as LayoutId;
@@ -269,6 +279,22 @@ async function persistAndReload(): Promise<void> {
 	}
 }
 
+async function persistLayer(layer: LayerRuntime): Promise<void> {
+	try {
+		await apiClient.updateLayer(layer.id, layerToInput(layer));
+	} catch (error) {
+		chartWorkspaceStore.error = layoutMutationErrorMessage(error);
+	}
+}
+
+async function persistDrawing(drawing: DrawingRuntime): Promise<void> {
+	try {
+		await apiClient.updateDrawing(drawing.id, drawingToInput(drawing));
+	} catch (error) {
+		chartWorkspaceStore.error = layoutMutationErrorMessage(error);
+	}
+}
+
 /** Clears a save failure once the user has seen it — the charts route's
  * dismissible inline error banner calls this. */
 export function dismissWorkspaceError(): void {
@@ -339,7 +365,8 @@ export async function toggleLayerVisible(paneIndex: number, layerId: string): Pr
 		i !== paneIndex ? p : { ...p, layers: p.layers.map((l) => (l.id === layerId ? { ...l, visible: !l.visible } : l)) }
 	);
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistAndReload();
+	const layer = panes[paneIndex]?.layers.find((candidate) => candidate.id === layerId);
+	if (layer) void persistLayer(layer);
 }
 
 /** Patches an indicator layer's construction parameters (period, fast/
@@ -353,21 +380,25 @@ export async function editLayerParams(paneIndex: number, layerId: string, patch:
 		i !== paneIndex ? p : { ...p, layers: p.layers.map((l) => (l.id === layerId ? { ...l, params: { ...l.params, ...patch } } : l)) }
 	);
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistOnly();
+	const layer = panes[paneIndex]?.layers.find((candidate) => candidate.id === layerId);
+	if (!layer) return;
+	const pending = parameterTimers.get(layer.id);
+	if (pending) clearTimeout(pending);
+	parameterTimers.set(layer.id, setTimeout(() => {
+		parameterTimers.delete(layer.id);
+		void persistLayer(layer);
+	}, 200));
 }
 
 /** Writes the layout back so a layer's plot styling — which lives in
  * `layer-style.ts`'s session map and is serialised out by `layerToInput` —
  * is stored. The styling itself is already applied to the chart by the time
  * this runs; this only makes it outlive the page. */
-export async function persistLayerStyle(): Promise<void> {
+export async function persistLayerStyle(layerId: string): Promise<void> {
 	const layout = chartWorkspaceStore.layout;
 	if (!layout) return;
-	// Re-assigning the same panes is what marks the layout dirty: the style
-	// lives beside the runtime objects rather than inside them, so nothing
-	// here changes shape.
-	chartWorkspaceStore.layout = { ...layout, panes: [...layout.panes] };
-	await persistOnly();
+	const layer = layout.panes.flatMap((pane) => pane.layers).find((candidate) => candidate.id === layerId);
+	if (layer) await persistLayer(layer);
 }
 
 /** Patches `paneIndex`'s chart settings. The settings dialog used to hold
@@ -402,7 +433,7 @@ export async function addIndicatorLayer(paneIndex: number, item: IndicatorCatalo
 	const layer: LayerRuntime = {
 		id: `pending-${pane.layers.length}`,
 		position: pane.layers.length,
-		kind: item.subPane ? 'indicator_sub_pane' : 'indicator_overlay',
+		kind: item.placement === 'sub_pane' ? 'indicator_sub_pane' : 'indicator_overlay',
 		visible: true,
 		indicatorName: item.name,
 		params: { ...item.defaultParams }
@@ -424,7 +455,11 @@ export async function removeLayer(paneIndex: number, layerId: string): Promise<v
 		i !== paneIndex ? p : { ...p, layers: p.layers.filter((l) => l.id !== layerId).map((l, idx) => ({ ...l, position: idx })) }
 	);
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistAndReload();
+	try {
+		await apiClient.deleteLayer(layerId);
+	} catch (error) {
+		chartWorkspaceStore.error = layoutMutationErrorMessage(error);
+	}
 }
 
 /** Adds a drawing object — a horizontal line, trend line or rectangle — to
@@ -455,7 +490,8 @@ export async function updateDrawingStyle(
 		i !== paneIndex ? p : { ...p, drawings: p.drawings.map((d) => (d.id === drawingId ? { ...d, ...patch } : d)) }
 	);
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistOnly();
+	const drawing = panes[paneIndex]?.drawings.find((candidate) => candidate.id === drawingId);
+	if (drawing) await persistDrawing(drawing);
 }
 
 /** Moves a drawing: a new anchor price for a horizontal line, or new
@@ -476,7 +512,8 @@ export async function updateDrawingGeometry(
 			: { ...p, drawings: p.drawings.map((d) => (d.id === drawingId ? { ...d, ...patch } : d)) }
 	);
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistOnly();
+	const drawing = panes[paneIndex]?.drawings.find((candidate) => candidate.id === drawingId);
+	if (drawing) await persistDrawing(drawing);
 }
 
 /** Deletes one drawing. */
@@ -489,7 +526,11 @@ export async function removeDrawing(paneIndex: number, drawingId: string): Promi
 			: { ...p, drawings: p.drawings.filter((d) => d.id !== drawingId).map((d, idx) => ({ ...d, position: idx })) }
 	);
 	chartWorkspaceStore.layout = { ...layout, panes };
-	await persistAndReload();
+	try {
+		await apiClient.deleteDrawing(drawingId);
+	} catch (error) {
+		chartWorkspaceStore.error = layoutMutationErrorMessage(error);
+	}
 }
 
 /** Clears every drawing in every pane of the active layout — the draw

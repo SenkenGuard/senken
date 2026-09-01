@@ -26,14 +26,14 @@ use axum::{Extension, Json};
 use senken_core::{TimeRange, UnixNanos};
 use senken_loader::{JobId, Priority, SeriesLoader};
 use senken_marketdata::{InstrumentId, InstrumentMatch};
-use senken_series::{Anchor, BarSpec, Clock, Origin, SeriesKey};
+use senken_series::{Anchor, BarSpec, BarUnit, Clock, Origin, SeriesKey};
 
 use crate::AppState;
 use crate::HandlerError;
 use crate::auth::Authed;
 use crate::dto::{
-    BarJobDto, BarRangeQuery, BarRangeResponse, BarsRequirementDto, EnsureBarsRequest,
-    EnsureBarsResponse,
+    BarJobDto, BarRangeQuery, BarRangeResponse, BarsRequirementDto, DownloadM1Request,
+    EnsureBarsRequest, EnsureBarsResponse,
 };
 
 /// Resolves `instrument`/`spec` into a parsed [`InstrumentId`], [`BarSpec`]
@@ -197,11 +197,18 @@ pub(crate) async fn range_bars(
             tracing::error!(%source, "bars resolve failed");
             HandlerError::Internal
         })?;
+    let earliest_available = loader
+        .earliest_available(&key, Anchor::UTC)
+        .map_err(|source| {
+            tracing::error!(%source, "bars earliest boundary lookup failed");
+            HandlerError::Internal
+        })?;
     let next_bar_open_at =
         senken_series::next_bucket_start(senken_loader::SystemClock.now(), spec, Anchor::UTC);
     Ok(Json(BarRangeResponse {
         bars: resolved.bars.iter().map(Into::into).collect(),
         missing: resolved.missing.into_iter().map(Into::into).collect(),
+        earliest_available: earliest_available.map(UnixNanos::as_nanos),
         price_scale: hit.instrument.price_scale,
         qty_scale: hit.instrument.qty_scale,
         next_bar_open_at: next_bar_open_at.as_nanos(),
@@ -245,6 +252,49 @@ pub(crate) async fn ensure_bars(
     // `handle.wait()` would turn this endpoint back into the very
     // multi-minute-backfill-in-one-request shape `plan()`/`ensure()` being
     // separate calls exists to avoid.
+    drop(handle);
+    Ok((StatusCode::ACCEPTED, Json(EnsureBarsResponse { job_id })))
+}
+
+/// `POST /api/bars/m1-download`: explicitly backfills the canonical minute
+/// series for replay or simulation. It is intentionally separate from chart
+/// loading and is always scheduled behind visible and prefetch work.
+#[utoipa::path(
+    post,
+    path = "/api/bars/m1-download",
+    request_body = DownloadM1Request,
+    responses(
+        (status = 202, body = EnsureBarsResponse),
+        (status = 400, body = crate::dto::ErrorBody),
+        (status = 401, body = crate::dto::ErrorBody),
+    )
+)]
+pub(crate) async fn download_m1(
+    State(state): State<AppState>,
+    Extension(_ctx): Authed,
+    Json(body): Json<DownloadM1Request>,
+) -> Result<(StatusCode, Json<EnsureBarsResponse>), HandlerError> {
+    let m1 = BarSpec::new(1, BarUnit::Minute);
+    let (id, _requested_spec, hit) =
+        resolve_bar_target(&state, &body.instrument, &m1.to_string()).await?;
+    let loader = loader_for(&state, &id)?;
+    if !loader.supports_venue_spec(m1) {
+        return Err(HandlerError::BadRequest(format!(
+            "source `{}` does not support 1m bars",
+            id.source()
+        )));
+    }
+    let range = parse_range(body.from, body.to)?;
+    let key = SeriesKey::new(id.source(), id.symbol(), Origin::Venue, m1);
+    let handle = loader.ensure(
+        &key,
+        range,
+        Anchor::UTC,
+        hit.instrument.price_scale,
+        hit.instrument.qty_scale,
+        Priority::Background,
+    );
+    let job_id = encode_job_ref(id.source(), handle.id());
     drop(handle);
     Ok((StatusCode::ACCEPTED, Json(EnsureBarsResponse { job_id })))
 }
@@ -342,7 +392,7 @@ pub(crate) mod test_support {
                 high: 101,
                 low: 99,
                 close: 100,
-                volume: 10,
+                volume: senken_series::Volume::Real(10),
                 quote_volume: None,
                 trade_count: None,
                 taker_buy_volume: None,
@@ -597,6 +647,88 @@ mod tests {
             1,
             "opening the same range twice must issue zero venue requests the second time"
         );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_explicit_m1_download_is_a_background_job() {
+        let runtime_dir = tempfile::TempDir::new().unwrap();
+        let (runtime, bar_source) = runtime_with_fake_venue(runtime_dir.path());
+        let (handle, _store, _dir) = serve_unfenced_test_server_with(runtime).await;
+        let addr = handle.local_addr();
+        let admin_token = admin_token(addr).await;
+        let instrument = test_instrument();
+        let from = 0_i64;
+        let to = 60 * 60 * 1_000_000_000_i64;
+
+        let response = post_json_auth(
+            format!("http://{addr}/api/bars/m1-download"),
+            &admin_token,
+            serde_json::json!({ "instrument": instrument, "from": from, "to": to }),
+        )
+        .await;
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        let job_id = body_json(response).await["job_id"]
+            .as_str()
+            .expect("job reference")
+            .to_owned();
+
+        wait_for_job_done(addr, &admin_token, &job_id).await;
+        let job = body_json(
+            get_auth(format!("http://{addr}/api/bars/jobs/{job_id}"), &admin_token).await,
+        )
+        .await;
+        assert_eq!(job["priority"], "background");
+        assert_eq!(
+            bar_source.calls(),
+            1,
+            "the explicit request must fetch the canonical minute series once"
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_short_complete_fetch_exposes_the_observed_left_edge() {
+        let runtime_dir = tempfile::TempDir::new().unwrap();
+        let (runtime, _bar_source) = runtime_with_fake_venue(runtime_dir.path());
+        let (handle, _store, _dir) = serve_unfenced_test_server_with(runtime).await;
+        let addr = handle.local_addr();
+        let admin_token = admin_token(addr).await;
+        let instrument = test_instrument();
+        let from = 60 * 1_000_000_000_i64;
+        let to = from + 60 * 1_000_000_000_i64;
+
+        let ensure = post_json_auth(
+            format!("http://{addr}/api/bars/ensure"),
+            &admin_token,
+            serde_json::json!({
+                "instrument": instrument,
+                "spec": "1m",
+                "from": from,
+                "to": to,
+                "priority": "prefetch",
+            }),
+        )
+        .await;
+        let job_id = body_json(ensure).await["job_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        wait_for_job_done(addr, &admin_token, &job_id).await;
+
+        let body = body_json(
+            get_auth(
+                format!(
+                    "http://{addr}/api/bars/range?instrument={instrument}&spec=1m&from={from}&to={to}"
+                ),
+                &admin_token,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(body["earliest_available"], from);
 
         handle.shutdown().await.unwrap();
     }

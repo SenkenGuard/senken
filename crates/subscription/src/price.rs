@@ -1,6 +1,7 @@
 //! [`PriceUpdate`] — the one thing a [`crate::Lease`] ever receives.
 
 use senken_core::UnixNanos;
+use senken_series::Volume;
 
 /// One last-price update for a leased instrument, delivered to every
 /// current leaseholder of it ("anything holding a lease receives updates; that is the whole contract").
@@ -42,7 +43,7 @@ pub struct PriceUpdate {
     /// VWAP, a volume histogram — is fed from the same stream as one reading
     /// price, and a tick that dropped its size would force every such
     /// indicator to stop at the last stored bar.
-    pub qty: i64,
+    pub qty: Volume,
     /// How many of `qty`'s digits are fractional.
     pub qty_scale: u8,
 }

@@ -63,12 +63,12 @@
 
 use senken_core::decimal_places;
 use senken_marketdata::InstrumentId;
-use senken_subscription::{ConnectionError, PriceUpdate};
+use senken_subscription::{ConnectionError, PriceUpdate, QuoteUpdate};
 use senken_venue::normalise_symbol;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::protocol::VenueProtocol;
+use crate::protocol::{LiveUpdate, VenueProtocol};
 use crate::symbol_map::SymbolMap;
 
 /// OKX joins base and quote with `-` in every native symbol this capture
@@ -109,13 +109,16 @@ impl OkxTradesProtocol {
 
     fn frame(op: &str, inst_id: &str) -> String {
         // Hand-built rather than a `#[derive(Serialize)]` struct: this is
-        // the one fixed shape the live capture confirmed OKX accepts
-        // (`{"op":...,"args":[{"channel":"trades","instId":...}]}`), and
+        // The recorded trades and tickers frames use the same subscription
+        // envelope. Asking for both keeps quote delivery alongside trade
+        // delivery on one leased venue stream.
         // `inst_id` is already a plain venue symbol (no characters `serde_json`
         // would need to escape beyond what `format!` already produces
         // safely via Rust's own string formatting — OKX symbols are
         // `[A-Z0-9-]` only, verified in every capture in this project).
-        format!(r#"{{"op":"{op}","args":[{{"channel":"trades","instId":"{inst_id}"}}]}}"#)
+        format!(
+            r#"{{"op":"{op}","args":[{{"channel":"trades","instId":"{inst_id}"}},{{"channel":"tickers","instId":"{inst_id}"}}]}}"#
+        )
     }
 }
 
@@ -136,7 +139,7 @@ impl VenueProtocol for OkxTradesProtocol {
         Ok(Self::frame("unsubscribe", &self.native_symbol(instrument)?))
     }
 
-    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, PriceUpdate)> {
+    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, LiveUpdate)> {
         let Ok(frame) = serde_json::from_str::<OkxFrame>(text) else {
             // Not a shape this protocol recognises at all (a heartbeat, an
             // error event never seen live, malformed JSON) — see the module
@@ -145,16 +148,24 @@ impl VenueProtocol for OkxTradesProtocol {
             return Vec::new();
         };
 
-        frame
-            .data
-            .into_iter()
-            .filter_map(|trade| self.decode(&trade))
-            .collect()
+        match frame.arg.as_ref().map(|arg| arg.channel.as_str()) {
+            Some("trades") => frame
+                .data
+                .into_iter()
+                .filter_map(|entry| self.decode_trade(&entry))
+                .collect(),
+            Some("tickers") => frame
+                .data
+                .into_iter()
+                .filter_map(|entry| self.decode_quote(&entry))
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 }
 
 impl OkxTradesProtocol {
-    fn decode(&self, trade: &OkxTrade) -> Option<(InstrumentId, PriceUpdate)> {
+    fn decode_trade(&self, trade: &OkxEntry) -> Option<(InstrumentId, LiveUpdate)> {
         let symbol = normalise_symbol(&trade.inst_id, &[OKX_SEPARATOR]);
         let instrument = InstrumentId::new(&self.source_id, &symbol).ok()?;
 
@@ -169,14 +180,42 @@ impl OkxTradesProtocol {
 
         Some((
             instrument,
-            PriceUpdate {
+            LiveUpdate::Price(PriceUpdate {
                 ts,
                 price,
                 price_scale,
-                qty,
+                qty: senken_series::Volume::Real(qty),
                 qty_scale,
-            },
+            }),
         ))
+    }
+
+    fn decode_quote(&self, quote: &OkxEntry) -> Option<(InstrumentId, LiveUpdate)> {
+        let instrument = InstrumentId::new(
+            &self.source_id,
+            &normalise_symbol(&quote.inst_id, &[OKX_SEPARATOR]),
+        )
+        .ok()?;
+        let bid = quote.bid_px.as_deref()?;
+        let ask = quote.ask_px.as_deref()?;
+        let bid_size = quote.bid_sz.as_deref()?;
+        let ask_size = quote.ask_sz.as_deref()?;
+        let ts_ms: i64 = quote.ts.trim().parse().ok()?;
+        let scaled = |value: &str| {
+            Some((
+                senken_core::parse_scaled(value, decimal_places(value))?,
+                decimal_places(value),
+            ))
+        };
+        let update = QuoteUpdate::new(
+            senken_core::UnixNanos::from_millis(ts_ms)?,
+            scaled(bid)?,
+            scaled(ask)?,
+            scaled(bid_size)?,
+            scaled(ask_size)?,
+        )
+        .ok()?;
+        Some((instrument, LiveUpdate::Quote(update)))
     }
 }
 
@@ -188,7 +227,14 @@ impl OkxTradesProtocol {
 #[derive(Debug, Deserialize)]
 struct OkxFrame {
     #[serde(default)]
-    data: Vec<OkxTrade>,
+    arg: Option<OkxArg>,
+    #[serde(default)]
+    data: Vec<OkxEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OkxArg {
+    channel: String,
 }
 
 /// One entry of a `trades` channel's `data` array. Only the fields this
@@ -196,19 +242,29 @@ struct OkxFrame {
 /// (`tradeId`, `side`, `count`, `source`, `seqId`) is ignored rather than
 /// rejected, so a field OKX adds later cannot break decoding.
 #[derive(Debug, Deserialize)]
-struct OkxTrade {
+struct OkxEntry {
     #[serde(rename = "instId")]
     inst_id: String,
+    #[serde(default)]
     px: String,
     /// Base-asset size of this trade — the volume half of a bar.
+    #[serde(default)]
     sz: String,
     ts: String,
+    #[serde(rename = "bidPx")]
+    bid_px: Option<String>,
+    #[serde(rename = "askPx")]
+    ask_px: Option<String>,
+    #[serde(rename = "bidSz")]
+    bid_sz: Option<String>,
+    #[serde(rename = "askSz")]
+    ask_sz: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{OKX_PUBLIC_WS_URL, OkxTradesProtocol};
-    use crate::protocol::VenueProtocol;
+    use crate::protocol::{LiveUpdate, VenueProtocol};
     use crate::symbol_map::IdentitySymbolMap;
     use senken_marketdata::InstrumentId;
     use std::sync::Arc;
@@ -256,11 +312,13 @@ mod tests {
         let updates = protocol.parse_message(frame);
 
         assert_eq!(updates.len(), 1);
-        let (_, update) = &updates[0];
+        let (_, LiveUpdate::Price(update)) = &updates[0] else {
+            panic!("a trades frame must decode to a price update");
+        };
         // "0.00504905" is eight fractional digits, so the integer is the
         // string with its point removed — no rounding, no float anywhere.
         assert_eq!(update.qty_scale, 8);
-        assert_eq!(update.qty, 504_905);
+        assert_eq!(update.qty, senken_series::Volume::Real(504_905));
     }
 
     #[test]
@@ -277,7 +335,9 @@ mod tests {
 
         let updates = protocol().parse_message(frame);
         assert_eq!(updates.len(), 1);
-        let (instrument, update) = &updates[0];
+        let (instrument, LiveUpdate::Price(update)) = &updates[0] else {
+            panic!("a trades frame must decode to a price update");
+        };
         assert_eq!(
             instrument,
             &InstrumentId::new("okx-spot", "BTCUSDT").unwrap()

@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use senken_marketdata::InstrumentId;
-use senken_subscription::SubscriptionPool;
+use senken_subscription::{QuoteSource, SubscriptionPool};
 
 use crate::AppState;
 use crate::auth::Authed;
@@ -249,7 +249,20 @@ enum ServerFrame<'a> {
         /// V of OHLCV. A client building the forming bar from these ticks
         /// needs it, or every volume-reading indicator stops at the last
         /// stored bar.
-        qty: i64,
+        qty: crate::dto::VolumeDto,
+        qty_scale: u8,
+        ts: i64,
+    },
+    /// A best bid and offer from a source that explicitly reports quotes.
+    /// `topic` is namespaced as `quote:<source>:<symbol>` so it cannot be
+    /// confused with the last-trade stream for the same instrument.
+    Quote {
+        topic: &'a str,
+        bid: i64,
+        ask: i64,
+        price_scale: u8,
+        bid_size: i64,
+        ask_size: i64,
         qty_scale: u8,
         ts: i64,
     },
@@ -343,9 +356,23 @@ async fn handle_socket(
     }
 }
 
+/// A valid market-data topic. Last-trade topics predate namespacing and keep
+/// their instrument wire form for compatibility; quote topics are explicitly
+/// namespaced so a client can lease both streams for one instrument.
+enum StreamTopic {
+    Price(InstrumentId),
+    Quote(InstrumentId),
+}
+
+fn parse_topic(topic: &str) -> Result<StreamTopic, senken_marketdata::InstrumentIdError> {
+    if let Some(instrument) = topic.strip_prefix("quote:") {
+        return InstrumentId::parse(instrument).map(StreamTopic::Quote);
+    }
+    InstrumentId::parse(topic).map(StreamTopic::Price)
+}
+
 /// Leases `topic` (idempotently — a repeated `Subscribe` for a topic already
-/// held just re-acks) and spawns the task that forwards its ticks as
-/// [`ServerFrame::Price`] until aborted.
+/// held just re-acks) and spawns a forwarder for its stream until aborted.
 ///
 /// A topic that is not a parseable [`InstrumentId`] is silently not
 /// subscribed — the "acknowledge, do not error" shape this endpoint has
@@ -364,8 +391,11 @@ fn subscribe(
         let _ = out_tx.send(send_frame(&ServerFrame::Subscribed { topic }));
         return;
     }
-    let Ok(instrument) = InstrumentId::parse(topic) else {
+    let Ok(stream) = parse_topic(topic) else {
         return;
+    };
+    let instrument = match &stream {
+        StreamTopic::Price(instrument) | StreamTopic::Quote(instrument) => instrument,
     };
     let Some(pool) = feed_pools.get(instrument.source()).cloned() else {
         let _ = out_tx.send(send_frame(&ServerFrame::Unsupported { topic }));
@@ -375,31 +405,66 @@ fn subscribe(
     let forward_tx = out_tx.clone();
     let forward_topic = topic.to_owned();
     let task = tokio::spawn(async move {
-        let lease = match pool.lease(instrument).await {
-            Ok(lease) => lease,
-            Err(error) => {
-                tracing::warn!(%error, topic = %forward_topic, "could not lease a live price subscription");
-                return;
+        match stream {
+            StreamTopic::Price(instrument) => {
+                let lease = match pool.lease(instrument).await {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        tracing::warn!(%error, topic = %forward_topic, "could not lease a live price subscription");
+                        return;
+                    }
+                };
+                let mut updates = lease.updates();
+                loop {
+                    if updates.changed().await.is_err() {
+                        return;
+                    }
+                    let Some(update) = *updates.borrow() else {
+                        continue;
+                    };
+                    let frame = ServerFrame::Price {
+                        topic: &forward_topic,
+                        price: update.price,
+                        price_scale: update.price_scale,
+                        qty: update.qty.into(),
+                        qty_scale: update.qty_scale,
+                        ts: update.ts.as_millis(),
+                    };
+                    if forward_tx.send(send_frame(&frame)).is_err() {
+                        return;
+                    }
+                }
             }
-        };
-        let mut updates = lease.updates();
-        loop {
-            if updates.changed().await.is_err() {
-                return; // the pool's actor task is gone; nothing left to forward
-            }
-            let Some(update) = *updates.borrow() else {
-                continue; // the channel's pre-first-tick initial value
-            };
-            let frame = ServerFrame::Price {
-                topic: &forward_topic,
-                price: update.price,
-                price_scale: update.price_scale,
-                qty: update.qty,
-                qty_scale: update.qty_scale,
-                ts: update.ts.as_millis(),
-            };
-            if forward_tx.send(send_frame(&frame)).is_err() {
-                return; // the connection loop has already ended
+            StreamTopic::Quote(instrument) => {
+                let lease = match pool.lease_quote(instrument).await {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        tracing::warn!(%error, topic = %forward_topic, "could not lease a live quote subscription");
+                        return;
+                    }
+                };
+                let mut updates = lease.updates();
+                loop {
+                    if updates.changed().await.is_err() {
+                        return;
+                    }
+                    let Some(update) = *updates.borrow() else {
+                        continue;
+                    };
+                    let frame = ServerFrame::Quote {
+                        topic: &forward_topic,
+                        bid: update.bid,
+                        ask: update.ask,
+                        price_scale: update.price_scale,
+                        bid_size: update.bid_size,
+                        ask_size: update.ask_size,
+                        qty_scale: update.qty_scale,
+                        ts: update.ts.as_millis(),
+                    };
+                    if forward_tx.send(send_frame(&frame)).is_err() {
+                        return;
+                    }
+                }
             }
         }
     });

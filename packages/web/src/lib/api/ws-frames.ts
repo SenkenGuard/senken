@@ -19,6 +19,24 @@ interface WsUnsupportedPayload {
 	topic: string;
 }
 
+interface WsQuotePayload {
+	topic: string;
+	bid: number;
+	ask: number;
+	price_scale: number;
+}
+
+function isQuotePayload(payload: unknown): payload is WsQuotePayload {
+	if (typeof payload !== 'object' || payload === null) return false;
+	const p = payload as Record<string, unknown>;
+	return (
+		typeof p.topic === 'string' &&
+		typeof p.bid === 'number' &&
+		typeof p.ask === 'number' &&
+		typeof p.price_scale === 'number'
+	);
+}
+
 function isUnsupportedPayload(payload: unknown): payload is WsUnsupportedPayload {
 	if (typeof payload !== 'object' || payload === null) return false;
 	return typeof (payload as Record<string, unknown>).topic === 'string';
@@ -30,4 +48,13 @@ function isUnsupportedPayload(payload: unknown): payload is WsUnsupportedPayload
 export function isUnsupportedFor(event: WsEvent | null, topic: string): boolean {
 	if (!event || event.type !== 'unsupported' || !isUnsupportedPayload(event.payload)) return false;
 	return event.payload.topic === topic;
+}
+
+/** Converts a quote frame's scaled bid and ask only at the rendering edge.
+ * A wrong topic or incomplete wire frame is not a quote for this pane. */
+export function quoteFromEvent(event: WsEvent | null, topic: string): { bid: number; ask: number } | null {
+	if (!event || event.type !== 'quote' || !isQuotePayload(event.payload)) return null;
+	if (event.payload.topic !== topic) return null;
+	const scale = 10 ** event.payload.price_scale;
+	return { bid: event.payload.bid / scale, ask: event.payload.ask / scale };
 }

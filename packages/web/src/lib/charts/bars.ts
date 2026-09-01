@@ -18,6 +18,9 @@ export interface ResolvedBars {
 	missing: { from: number; to: number }[];
 	priceScale: number;
 	qtyScale: number;
+	/** The observed venue boundary for this exact series, or `null` until the
+	 * server has enough evidence to state one. */
+	earliestAvailable: number | null;
 	/** `BarRangeResponse.next_bar_open_at`: Unix nanoseconds for the
 	 * instant the currently-forming bar closes, computed server-side by
 	 * `senken-series` — the one crate that knows this series' anchor. The
@@ -69,14 +72,15 @@ export async function loadBars(
 	from: number,
 	to: number,
 	onProgress?: (progress: BarLoadProgress) => void,
-	shouldContinue: () => boolean = () => true
+	shouldContinue: () => boolean = () => true,
+	priority: 'visible' | 'prefetch' = 'visible'
 ): Promise<ResolvedBars> {
 	onProgress?.({ phase: 'checking' });
 	try {
 		const requirement = await apiClient.planBars(instrument, spec, from, to);
 		if (requirement.missing.length > 0 && shouldContinue()) {
 			onProgress?.({ phase: 'fetching', requirement, job: null });
-			const { job_id } = await apiClient.ensureBars({ instrument, spec, from, to });
+			const { job_id } = await apiClient.ensureBars({ instrument, spec, from, to, priority });
 			await pollJob(job_id, (job) => onProgress?.({ phase: 'fetching', requirement, job }), shouldContinue);
 		}
 		const range = await apiClient.rangeBars(instrument, spec, from, to);
@@ -85,7 +89,8 @@ export async function loadBars(
 			bars: range.bars,
 			missing: range.missing.map((r) => ({ from: r.from, to: r.to })),
 			priceScale: range.price_scale,
-			qtyScale: range.qty_scale,
+			qtyScale: range.qty_scale ?? 0,
+			earliestAvailable: range.earliest_available ?? null,
 			nextBarOpenAt: range.next_bar_open_at
 		};
 	} catch (error) {
@@ -97,7 +102,7 @@ export async function loadBars(
 
 /** One bar's indicator output already keyed by field, and converted to a
  * `time`/`value` point per field — the shape `chart-pane.svelte`/
- * `sub-pane-chart.svelte` feed straight into a lightweight-charts series.
+ * native pane renderers feed straight into a lightweight-charts series.
  * `senken-indicators` never reports a warm-up value, so every
  * point returned here is already real. */
 export interface IndicatorSeriesPoint {
@@ -123,7 +128,7 @@ export interface ProvisionalBar {
 	close: number;
 	/** Volume accumulated from the ticks seen in this interval, at the
 	 * instrument's quantity scale. */
-	volume: number;
+	volume: { kind: 'real'; value: number };
 }
 
 export async function loadIndicatorSeries(
@@ -144,12 +149,15 @@ export async function loadIndicatorSeries(
 		...(provisional ? { provisional } : {})
 	});
 	const byField = new Map<string, IndicatorSeriesPoint[]>();
-	for (const point of response.points) {
-		for (const fieldValue of point.values) {
-			const series = byField.get(fieldValue.field) ?? [];
-			series.push({ time: Math.floor(point.ts_open / 1_000_000_000), value: fieldValue.value });
-			byField.set(fieldValue.field, series);
-		}
+	for (const drawable of response.display) {
+		if (drawable.kind !== 'series') continue;
+		byField.set(
+			drawable.field,
+			drawable.points.map((point) => ({
+				time: Math.floor(point.ts_open / 1_000_000_000),
+				value: point.value
+			}))
+		);
 	}
 	return { byField, missing: response.missing.map((r) => ({ from: r.from, to: r.to })) };
 }

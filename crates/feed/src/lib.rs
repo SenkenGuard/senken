@@ -39,9 +39,9 @@ mod symbol_map;
 
 pub use connection::WsVenueConnection;
 pub use connector::WsVenueConnector;
-pub use protocol::VenueProtocol;
+pub use protocol::{LiveUpdate, VenueProtocol};
 pub use symbol_map::{IdentitySymbolMap, SymbolMap};
 
 // Re-exported so a caller building a `VenueProtocol` or wiring a connector
 // needs no direct dependency on `senken-subscription` just to name these.
-pub use senken_subscription::{ConnectionError, PriceUpdate};
+pub use senken_subscription::{ConnectionError, PriceUpdate, QuoteUpdate};

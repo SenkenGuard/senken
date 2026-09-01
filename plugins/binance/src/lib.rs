@@ -16,7 +16,7 @@ use senken_marketdata::instrument::{
     Contract, Instrument, InstrumentKind, InstrumentStatus, Settlement,
 };
 use senken_marketdata::source::SourceError;
-use senken_plugin::{ActivationContext, Plugin, PluginError, PluginManifest};
+use senken_plugin::{HttpActivationContext, Plugin, PluginError, PluginManifest};
 use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 
 use crate::api::{ExchangeInfo, RawSymbol};
@@ -240,7 +240,14 @@ impl Plugin for BinancePlugin {
         }
     }
 
-    fn activate(&self, context: &mut ActivationContext) -> Result<(), PluginError> {
+    fn requires_http(&self) -> bool {
+        true
+    }
+
+    fn activate_with_http(
+        &self,
+        context: &mut HttpActivationContext<'_>,
+    ) -> Result<(), PluginError> {
         // One shared client, three markets: which markets a venue exposes
         // is the plugin's decision, not the registry's. Bar traffic shares
         // this same group, so instrument and kline
