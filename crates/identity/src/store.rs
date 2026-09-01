@@ -179,7 +179,6 @@ impl IdentityStore {
     pub fn db_path(&self) -> Option<std::path::PathBuf> {
         self.lock().path().map(std::path::PathBuf::from)
     }
-    }
 
     /// Creates the built-in `Superadmin` role and the `admin@mail.com`
     /// account with no password, iff the database has no users at all.
