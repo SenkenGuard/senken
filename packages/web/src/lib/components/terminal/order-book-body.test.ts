@@ -13,7 +13,7 @@ const noop = () => {};
 
 describe('order book states (real DOM output) — capability honesty, not a guessed empty list', () => {
 	test('a source that does not report book.supported shows a disabled control with its reason, not an empty list', () => {
-		const { body } = render(OrderBookBody, { props: { capability: false, unsupportedTopic: false, rows: null, onRefresh: noop } });
+		const { body } = render(OrderBookBody, { props: { capability: false, unsupportedTopic: false, failedTopic: false, rows: null, onRefresh: noop } });
 		expect(body).toContain('data-book-state="unsupported"');
 		expect(body).toContain('THIS SOURCE DOES NOT REPORT ORDER-BOOK DEPTH');
 		// Never a genuinely-empty-book marker for a capability-denied source —
@@ -23,25 +23,25 @@ describe('order book states (real DOM output) — capability honesty, not a gues
 	});
 
 	test('the WS layer\'s own unsupported answer for this exact topic reads the same as the capability response saying so', () => {
-		const { body } = render(OrderBookBody, { props: { capability: true, unsupportedTopic: true, rows: null, onRefresh: noop } });
+		const { body } = render(OrderBookBody, { props: { capability: true, unsupportedTopic: true, failedTopic: false, rows: null, onRefresh: noop } });
 		expect(body).toContain('data-book-state="unsupported"');
 		expect(body).toContain('THIS SOURCE DOES NOT REPORT ORDER-BOOK DEPTH');
 	});
 
 	test('capability not yet loaded is a distinct "checking" state, not read as supported or unsupported', () => {
-		const { body } = render(OrderBookBody, { props: { capability: undefined, unsupportedTopic: false, rows: null, onRefresh: noop } });
+		const { body } = render(OrderBookBody, { props: { capability: undefined, unsupportedTopic: false, failedTopic: false, rows: null, onRefresh: noop } });
 		expect(body).toContain('data-book-state="checking"');
 		expect(body).toContain('CHECKING ORDER-BOOK SUPPORT');
 	});
 
 	test('a supported source with no snapshot yet is "waiting", distinct from a genuinely empty book', () => {
-		const { body } = render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, rows: null, onRefresh: noop } });
+		const { body } = render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, failedTopic: false, rows: null, onRefresh: noop } });
 		expect(body).toContain('data-book-state="waiting"');
 		expect(body).toContain('WAITING FOR DEPTH SNAPSHOT');
 	});
 
 	test('a snapshot that arrived and is genuinely empty renders its own stated marker, not silence and not the waiting message', () => {
-		const { body } = render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, rows: [], onRefresh: noop } });
+		const { body } = render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, failedTopic: false, rows: [], onRefresh: noop } });
 		expect(body).toContain('data-book-state="empty"');
 		expect(body).toContain('ORDER BOOK IS EMPTY');
 		expect(body).not.toContain('WAITING FOR DEPTH SNAPSHOT');
@@ -52,7 +52,7 @@ describe('order book states (real DOM output) — capability honesty, not a gues
 			{ price: '77,927.50', size: '1.5360', side: 'ask', depthPct: 100 },
 			{ price: '77,927.40', size: '0.3977', side: 'bid', depthPct: 26 }
 		];
-		const { body } = render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, rows, onRefresh: noop } });
+		const { body } = render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, failedTopic: false, rows, onRefresh: noop } });
 		expect(body).toContain('data-book-state="ready"');
 		expect(body).toContain('77,927.50');
 		expect(body).toContain('77,927.40');
@@ -70,10 +70,46 @@ describe('order book states (real DOM output) — capability honesty, not a gues
 	// attribute values.
 	test('unsupported, checking, waiting and empty are four distinct labels', () => {
 		const strip = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-		const unsupported = strip(render(OrderBookBody, { props: { capability: false, unsupportedTopic: false, rows: null, onRefresh: noop } }).body);
-		const checking = strip(render(OrderBookBody, { props: { capability: undefined, unsupportedTopic: false, rows: null, onRefresh: noop } }).body);
-		const waiting = strip(render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, rows: null, onRefresh: noop } }).body);
-		const empty = strip(render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, rows: [], onRefresh: noop } }).body);
+		const unsupported = strip(render(OrderBookBody, { props: { capability: false, unsupportedTopic: false, failedTopic: false, rows: null, onRefresh: noop } }).body);
+		const checking = strip(render(OrderBookBody, { props: { capability: undefined, unsupportedTopic: false, failedTopic: false, rows: null, onRefresh: noop } }).body);
+		const waiting = strip(render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, failedTopic: false, rows: null, onRefresh: noop } }).body);
+		const empty = strip(render(OrderBookBody, { props: { capability: true, unsupportedTopic: false, failedTopic: false, rows: [], onRefresh: noop } }).body);
 		expect(new Set([unsupported, checking, waiting, empty]).size).toBe(4);
+	});
+});
+
+describe('order book depth that failed to load', () => {
+	// A snapshot that failed used to be indistinguishable from one still in
+	// flight: the server sent nothing, so the panel waited forever. It is a
+	// third fact — the venue supports depth, this attempt did not arrive —
+	// and the only one of the three worth offering a retry for.
+	test('a failed snapshot is stated, not left waiting', () => {
+		const { body } = render(OrderBookBody, {
+			props: {
+				capability: true,
+				unsupportedTopic: false,
+				failedTopic: true,
+				rows: null,
+				onRefresh: () => {}
+			}
+		});
+		expect(body).toContain('data-book-state="failed"');
+		expect(body).toContain('COULD NOT LOAD ORDER-BOOK DEPTH');
+		expect(body).toContain('aria-label="Retry order book"');
+		expect(body).not.toContain('WAITING FOR DEPTH SNAPSHOT');
+	});
+
+	test('a venue that does not serve depth is not called a failure', () => {
+		const { body } = render(OrderBookBody, {
+			props: {
+				capability: false,
+				unsupportedTopic: false,
+				failedTopic: true,
+				rows: null,
+				onRefresh: () => {}
+			}
+		});
+		expect(body).toContain('data-book-state="unsupported"');
+		expect(body).not.toContain('COULD NOT LOAD');
 	});
 });

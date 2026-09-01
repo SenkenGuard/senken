@@ -141,6 +141,7 @@ impl IdentityStore {
             conn: Arc::new(Mutex::new(conn)),
         };
         store.seed_default_admin()?;
+        store.ensure_builtin_role_grants()?;
         Ok(store)
     }
 
@@ -165,6 +166,51 @@ impl IdentityStore {
     #[must_use]
     pub fn shared_connection(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.conn)
+    }
+
+    /// Gives the built-in `Superadmin` role every grant its own description
+    /// promises, on every open.
+    ///
+    /// [`seed_default_admin`](Self::seed_default_admin) writes these once, on
+    /// a database with no users, and never again. That made adding a
+    /// [`Resource`] variant a silent, delayed failure: the enum forces its
+    /// authorisation to be written, and `ALL_RESOURCES` forces a *new*
+    /// database to grant it, but every database that already existed kept the
+    /// grants it was seeded with. A user who had been running Senken since
+    /// before the variant existed was simply told they had no permission,
+    /// with nothing in the code looking wrong.
+    ///
+    /// Closing that by hand — one backfill per migration — puts the same
+    /// trap back for the next variant. Reconciling here instead means the
+    /// role means what it says for as long as it exists, and a resource added
+    /// tomorrow needs no migration at all.
+    ///
+    /// Only the built-in role, and only insertions: a role an administrator
+    /// authored is theirs, and a grant deliberately removed from a custom
+    /// role must stay removed.
+    fn ensure_builtin_role_grants(&self) -> Result<(), IdentityError> {
+        let conn = self.lock();
+        let role_id: Option<RoleId> = conn
+            .query_row(
+                "SELECT id FROM roles WHERE builtin = 1 AND name = ?1",
+                params![SUPERADMIN_ROLE_NAME],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(role_id) = role_id else {
+            return Ok(());
+        };
+        for action in ALL_ACTIONS {
+            for resource in ALL_RESOURCES {
+                let (a, r, s) = encode_grant(Grant::new(action, resource, Scope::All))?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO role_grants (role_id, action, resource, scope)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![role_id, a, r, s],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Creates the built-in `Superadmin` role and the `admin@mail.com`
@@ -1135,4 +1181,97 @@ fn apply_password(
 /// `users.created_at`, `sessions.created_at/last_seen_at/expires_at` use.
 fn now_unix() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ALL_ACTIONS, ALL_RESOURCES, IdentityStore, SUPERADMIN_ROLE_NAME};
+    use tempfile::TempDir;
+
+    fn grant_count(store: &IdentityStore) -> i64 {
+        let conn = store.lock();
+        conn.query_row(
+            "SELECT COUNT(*) FROM role_grants g
+             JOIN roles r ON r.id = g.role_id
+             WHERE r.builtin = 1 AND r.name = ?1",
+            [SUPERADMIN_ROLE_NAME],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Adding a `Resource` variant used to be a silent, delayed failure: the
+    /// closed enum forces its authorisation to be written and a *new*
+    /// database grants it, but every database that already existed kept the
+    /// grants it was seeded with — so a long-running install was simply told
+    /// it had no permission, with nothing in the code looking wrong.
+    #[test]
+    fn a_grant_missing_from_the_builtin_role_is_restored_on_the_next_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+
+        let expected = {
+            let store = IdentityStore::open(&path).unwrap();
+            let total = grant_count(&store);
+            assert_eq!(
+                total,
+                i64::try_from(ALL_ACTIONS.len() * ALL_RESOURCES.len()).unwrap(),
+                "the built-in role is seeded with every action on every resource"
+            );
+            // Exactly what an older database looks like after a resource is
+            // added to the enum: the row for it was never written.
+            let conn = store.lock();
+            conn.execute(
+                "DELETE FROM role_grants WHERE resource IN ('watchlist', 'note', 'indicator')",
+                [],
+            )
+            .unwrap();
+            total
+        };
+
+        let store = IdentityStore::open(&path).unwrap();
+        assert_eq!(
+            grant_count(&store),
+            expected,
+            "reopening must give the built-in role back every grant its own description promises"
+        );
+    }
+
+    /// The reconciliation is insertions only, and only for the built-in role:
+    /// a role an administrator authored is theirs, and a grant deliberately
+    /// removed from it must stay removed.
+    #[test]
+    fn a_custom_roles_grants_are_never_rewritten() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        {
+            let store = IdentityStore::open(&path).unwrap();
+            let conn = store.lock();
+            conn.execute(
+                "INSERT INTO roles (id, name, description, builtin) VALUES ('role-x', 'Analyst', '', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO role_grants (role_id, action, resource, scope)
+                 VALUES ('role-x', 'view', 'chart_workspace', 'own')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = IdentityStore::open(&path).unwrap();
+        let conn = store.lock();
+        let custom: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM role_grants WHERE role_id = 'role-x'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            custom, 1,
+            "a custom role keeps exactly the grants it was given"
+        );
+    }
 }

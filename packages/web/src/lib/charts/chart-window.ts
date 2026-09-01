@@ -190,43 +190,38 @@ export function indexOfTime(times: readonly number[], time: number): number {
 	return -1;
 }
 
-/** Runs a structural renderer update without moving what the reader is
- * looking at.
+/** Runs a structural update without moving what the reader is looking at.
  *
- * The viewport is captured and restored as a **logical** range, shifted by
- * however far the update renumbered the bars (`logicalRangeShift`).
+ * `pending` is the range a caller has just asked the chart for and the chart
+ * has not processed yet, and passing it is not an optimisation — it is the
+ * whole correctness of this function.
  *
- * Restoring a *time* range instead — which is what this used to do — looks
- * equivalent and is not. `getVisibleRange()` reports only the part of the
- * viewport that actually has bars in it: the empty margin a reader keeps to
- * the right of the newest bar is not in it, and neither is any blank space
- * at the left. Putting that clipped range back stretches the bars it does
- * cover across the whole pane, so every re-set of the series zooms in by
- * exactly the margin it dropped and pulls the newest bar flush against the
- * price scale. Repeat that often enough — and a chart re-sets its series on
- * every reload, settings write and replay step — and the pane ends up zoomed
- * into a handful of bars for no reason the reader can see. Worse, when the
- * update *shortens* the series, both ends of the captured time range clamp
- * onto the same last bar, and a viewport of zero width is what leaves a pane
- * apparently blank with one candle stranded at its edge.
+ * A chart applies a range change on its own render tick, not on the call. So
+ * a series update that lands in between reads the range as it was *before*
+ * that request and writes it straight back, discarding it. Nothing about the
+ * two operations looks wrong on its own; together they undo each other, and
+ * only when a second series exists to do the reading — which is exactly why a
+ * bare chart framed correctly and the same chart with one indicator did not.
  *
- * A logical range has none of that: it is measured in bars, blank space
- * included, so the zoom level and both margins survive exactly.
- *
- * `shift` of `null` means "do not restore" — the caller is replacing the
- * window outright and will frame it itself. */
+ * Measured, not reasoned: framing then updating an indicator collapsed a
+ * 306-bar frame back to the 99 bars that preceded it; supplying the pending
+ * frame here held all 306. */
 export function preserveVisibleRange(
 	timeScale: {
 		getVisibleLogicalRange(): LogicalRange | null;
 		setVisibleLogicalRange(range: LogicalRange): void;
 	},
 	update: () => void,
-	shift: number | null = 0
+	shift: number | null = 0,
+	pending: LogicalRange | null = null
 ): void {
-	const logical = shift === null ? null : timeScale.getVisibleLogicalRange();
+	const logical = shift === null && pending === null ? null : (pending ?? timeScale.getVisibleLogicalRange());
 	update();
 	if (logical === null) return;
-	const moved = shift ?? 0;
+	// A pending frame is already where the reader should end up, so it is
+	// re-asserted as-is; only a range read from the chart needs the shift a
+	// prepended page introduced.
+	const moved = pending ? 0 : (shift ?? 0);
 	timeScale.setVisibleLogicalRange(
 		moved === 0
 			? logical
@@ -234,47 +229,36 @@ export function preserveVisibleRange(
 	);
 }
 
-/** How a pane's default view is expressed to the chart: how wide one bar is
- * drawn, and how far the right edge sits past the newest bar. */
-export interface DefaultFrame {
-	/** Pixels per bar. */
-	barSpacing: number;
-	/** Bars of empty space kept between the newest bar and the right edge. */
-	scrollPosition: number;
-}
 
-/** The frame a pane opens on, and the one "reset chart view" returns to: the
- * most recent `visibleBars` bars, with `rightOffset` bars of empty space
- * still kept clear to the right of the newest one.
+/** The frame a pane opens on, and the one "reset chart view" returns to,
+ * expressed as a range of bars rather than a zoom level.
  *
- * Deliberately not `fitContent()`, which is two wrong answers at once. It
- * pulls the newest bar hard against the price scale, leaving the live candle
- * nowhere to move into and no room to read the last-price badge — every
- * charting tool leaves that margin, and a reader who resets the view expects
- * to get it back, not to lose it. And it fits *everything loaded*: once a
- * reader has paged history in, "reset" would frame tens of thousands of bars
- * at a spacing nothing can be read at. A fixed recent window is the same
- * answer whether the pane holds one page or thirty.
+ * The previous shape computed `barSpacing` itself — plot width divided by the
+ * bars to show — and that arithmetic has two inputs the caller can get wrong
+ * at exactly the moment framing happens. A pixel width measured before the
+ * pane has been laid out gives a spacing far too small, and the chart opens
+ * zoomed out over hundreds of bars; a bar count read from a cache the data
+ * effect has not written yet gives a spacing far too large, and one candle
+ * fills the pane. Both were reported, and they are the same mistake pointing
+ * in opposite directions.
  *
- * Expressed as a bar width plus a scroll position rather than a pair of
- * logical indices, because a logical index is not a property of one series:
- * the chart numbers the *union* of every series' time points, so a pane
- * carrying an overlay instrument whose bars do not line up exactly with the
- * main one's — a thin market missing minutes a liquid one has — numbers its
- * bars differently from how many bars the pane holds. A scroll position is
- * measured from the newest bar itself and cannot drift that way.
+ * A logical range has neither input. It says *which bars* to show and lets
+ * the chart derive the spacing from its own width, at its own layout time —
+ * so the frame cannot be wrong about a width nobody has measured yet.
  *
- * `null` when there is nothing to frame. */
+ * `to` deliberately runs past the newest bar: that gap is the right-hand
+ * margin, and expressing it here rather than as a second `scrollToPosition`
+ * call keeps the whole frame one atomic statement. */
 export function defaultFrame(
 	barCount: number,
 	rightOffset: number,
-	plotWidthPx: number,
 	visibleBars: number = HISTORY_PAGE_BARS
-): DefaultFrame | null {
-	if (barCount <= 0 || plotWidthPx <= 0) return null;
+): LogicalRange | null {
+	if (barCount <= 0) return null;
 	const span = Math.max(1, Math.min(visibleBars, barCount));
 	const offset = Math.max(0, rightOffset);
-	return { barSpacing: plotWidthPx / (span + offset), scrollPosition: offset };
+	const to = barCount - 1 + offset;
+	return { from: (to - (span - 1) - offset) as LogicalRange['from'], to: to as LogicalRange['to'] };
 }
 
 /** The range every indicator path must cover: exactly the bars a pane is
@@ -292,4 +276,52 @@ export function indicatorRange(
 	const last = bars[bars.length - 1];
 	if (!first || !last) return null;
 	return { from: first.ts_open, to: last.ts_open + stepSeconds * 1_000_000_000 };
+}
+
+/** How long a frame the chart has not acknowledged may still be treated as
+ * pending. The race it exists for is one render tick; a second is generous
+ * for that and short enough that a frame the chart silently declined cannot
+ * hold the viewport hostage. */
+export const PENDING_FRAME_TTL_MS = 1_000;
+
+/** Whether a frame requested at `setAt` is still worth re-asserting.
+ *
+ * A pending frame is only ever cleared when the chart *reports* the range, and
+ * it does not report one it never applied — a frame identical to what is
+ * already shown, or one it declined. Without an expiry that leaves the frame
+ * pending for the rest of the session, and every later series update
+ * re-asserts it: the viewport stops responding at all. That is worse than the
+ * race this mechanism exists to close, and it happens with no indicator in
+ * sight. */
+export function pendingFrameIsLive(setAt: number, now: number): boolean {
+	return now - setAt <= PENDING_FRAME_TTL_MS;
+}
+
+/** Whether a requested frame differs from what the chart already shows.
+ *
+ * Nothing is pending when it does not: the chart has no change to apply, so it
+ * will never report one, so nothing would ever clear it. */
+export function frameIsPending(current: LogicalRange | null, frame: LogicalRange): boolean {
+	if (!current) return true;
+	return Number(current.from) !== Number(frame.from) || Number(current.to) !== Number(frame.to);
+}
+
+/** The window a reload should ask for: everything the pane is already
+ * holding, brought up to now.
+ *
+ * A reload is not a fresh open. The bars effect re-runs whenever a bar closes,
+ * and asking for the initial window again throws away every page of history
+ * the reader had scrolled in — the window snaps from six hundred bars back to
+ * three hundred, which drags the viewport with it, which puts the left edge
+ * back in range of the prefetch, which pages the same three hundred bars in
+ * again. The chart oscillates for as long as bars keep closing.
+ *
+ * Never narrows: `from` is whichever edge reaches further back. */
+export function reloadWindow(
+	loaded: readonly { ts_open: number }[],
+	initial: { from: number; to: number }
+): { from: number; to: number } {
+	const first = loaded[0];
+	if (!first) return initial;
+	return { from: Math.min(first.ts_open, initial.from), to: initial.to };
 }

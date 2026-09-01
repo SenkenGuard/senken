@@ -31,7 +31,7 @@
 	// onMount/effects (rather than importing side effects at module init)
 	// is what actually keeps this safe for the static `vite build` step.
 	import { onMount, untrack } from 'svelte';
-	import { CandlestickSeries, HistogramSeries, LineSeries, createChart, createTextWatermark, type IChartApi, type ISeriesApi, type ITextWatermarkPluginApi, type Time, type UTCTimestamp } from 'lightweight-charts';
+	import { CandlestickSeries, HistogramSeries, LineSeries, createChart, createTextWatermark, type IChartApi, type ISeriesApi, type ITextWatermarkPluginApi, type LogicalRange, type Time, type UTCTimestamp } from 'lightweight-charts';
 	import {
 		TF_DURATION_SECONDS,
 		type Timeframe,
@@ -56,7 +56,10 @@
 	import {
 		indicatorRange,
 		initialBarWindow,
+		reloadWindow,
 		defaultFrame,
+		frameIsPending,
+		pendingFrameIsLive,
 		indexOfTime,
 		logicalRangeShift,
 		historyLoadPriority,
@@ -75,7 +78,7 @@
 	import { HistoryMarksPrimitive } from '$lib/charts/history-marks-primitive';
 	import { nativePaneData } from '$lib/charts/native-panes';
 	import { statusVolumeFromDto, type StatusBar } from '$lib/charts/status-line';
-	import { shouldFramePriceScale } from '$lib/charts/pane-settings';
+	import { paneStretchFactors, shouldFramePriceScale } from '$lib/charts/pane-settings';
 	import { LastPriceBadgePrimitive, type PriceDirection } from '$lib/charts/price-badge-primitive';
 	import { deriveLiveState, liveChipLabel, overlayMessage, priceLineColorFor, showCountdown } from '$lib/charts/live-state';
 	import type { MarketStatus } from '$lib/charts/live-state';
@@ -405,6 +408,9 @@
 
 	let lastPaneTops = '';
 	let observedPanes: HTMLElement[] = [];
+	/** The stretch factors last written, so a re-run that would write the
+	 * same ones leaves a dragged separator alone. */
+	let appliedPaneWeights = '';
 	/** Reports every sub-pane's real top edge. Runs on the next frame because
 	 * stretch factors are applied to the chart before the browser has laid the
 	 * panes out again; measuring in the same tick reads the previous layout. */
@@ -787,6 +793,11 @@
 		});
 
 		chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+			// The chart has processed a range, so nothing is pending any more —
+			// whether that was the frame this pane asked for or the reader's own
+			// pan, which supersedes it. Leaving it set would pin the viewport and
+			// the reader could never move again.
+			pendingFrame = null;
 			if (shouldPrefetchHistory(range?.from == null ? null : Number(range.from), bars.length)) {
 				requestOlderHistory();
 			}
@@ -1004,7 +1015,7 @@
 									}
 								: { color: plot.color, visible: layer.visible && plot.visible }
 						);
-						preserveVisibleRange(activeChart.timeScale(), () => {
+						holdViewport(() => {
 							handle.setData(nativePaneData(points, divisor));
 						});
 					}
@@ -1036,11 +1047,19 @@
 				// label. A stretch factor is a relative weight the chart
 				// re-divides on every resize by itself, so both stay in step
 				// with no resize handler at all.
+				// Only when the set of panes actually changed. This effect re-runs on
+				// every layout update — showing or hiding a layer is one — and
+				// rewriting the stretch factors each time overwrites a separator the
+				// reader has dragged. Hiding an indicator should make the indicator
+				// disappear and change nothing else about the pane.
 				const panes = activeChart.panes();
-				const configured = settings?.paneSplit;
-				for (const [index, pane] of panes.entries()) {
-					const weight = configured?.[index] ?? (index === 0 ? 65 : 35 / layers.length);
-					pane.setStretchFactor(Math.max(1, weight));
+				const weights = paneStretchFactors(panes.length, layers.length, settings?.paneSplit);
+				const weightKey = weights.join(',');
+				if (weightKey !== appliedPaneWeights) {
+					appliedPaneWeights = weightKey;
+					for (const [index, pane] of panes.entries()) {
+						pane.setStretchFactor(weights[index] ?? 1);
+					}
 				}
 				reportPaneTops();
 			})
@@ -1132,7 +1151,10 @@
 			gapRanges = [];
 			liveCandle = null;
 		}
-		const { from, to } = initialBarWindow(currentSpec);
+		// The pane's own window, not the initial one. This effect re-runs on every
+		// bar close, and re-requesting the opening window discards every page of
+		// history the reader scrolled in.
+		const { from, to } = reloadWindow(bars, initialBarWindow(currentSpec));
 		loadBars(
 			currentInstrument,
 			currentSpec,
@@ -1525,6 +1547,30 @@
 	 * user's own choice and must survive a live tick or a replay step, so the
 	 * frame is only reset when the pane starts showing a *different* series. */
 	let framedFor = '';
+	/** The range `frameDefaultView` last asked the chart for and the chart has
+	 * not reported back yet. A series update landing in this window would
+	 * otherwise read the range as it was before the request and write it back,
+	 * silently discarding the frame — which only ever happened when a second
+	 * series existed to do the reading, and is why a bare chart framed
+	 * correctly while the same chart with one indicator did not. */
+	let pendingFrame: LogicalRange | null = null;
+	let pendingFrameAt = 0;
+
+	/** The pending frame, or `null` once it has expired. Read through this and
+	 * never directly: a frame the chart silently declined is never reported and
+	 * so never cleared, and one that outlives its race pins the viewport for the
+	 * rest of the session. */
+	function livePendingFrame(): LogicalRange | null {
+		if (pendingFrame && !pendingFrameIsLive(pendingFrameAt, Date.now())) pendingFrame = null;
+		return pendingFrame;
+	}
+
+	/** Every structural series update goes through here, so none of them can
+	 * forget the pending frame. */
+	function holdViewport(update: () => void, shift: number | null = 0): void {
+		if (!chart) return;
+		preserveVisibleRange(chart.timeScale(), update, shift, livePendingFrame());
+	}
 
 	/** Length plus both ends identifies a contiguous bar window, so the
 	 * timeline is only published when it really moved — a colour setting
@@ -1556,10 +1602,23 @@
 	function frameDefaultView(): void {
 		if (!chart) return;
 		const timeScale = chart.timeScale();
-		const frame = defaultFrame(renderedTimes.length, paneSettings.marginRight, timeScale.width());
+		// Counted from the bars this pane holds right now, not from
+		// `renderedTimes` — that cache is only written inside the data effect's
+		// own guard, so anything framing before it runs (the reset button, a
+		// freshly loaded window) reads the *previous* series' length. Getting it
+		// too small is not a small error: `barSpacing` is the plot width divided
+		// by it, so a stale count of a handful leaves one candle filling the
+		// pane, and the price axis then auto-fits to that single bar.
+		const drawn =
+			replayIdx == null ? bars.length : Math.max(30, Math.min(bars.length, replayIdx));
+		const frame = defaultFrame(drawn, paneSettings.marginRight);
 		if (!frame) return;
-		timeScale.applyOptions({ barSpacing: frame.barSpacing });
-		timeScale.scrollToPosition(frame.scrollPosition, false);
+		// Only pending when the chart actually has a change to make. Marking an
+		// unchanged frame pending leaves it pending forever, because the chart
+		// never reports a range it did not apply.
+		pendingFrame = frameIsPending(timeScale.getVisibleLogicalRange(), frame) ? frame : null;
+		pendingFrameAt = Date.now();
+		timeScale.setVisibleLogicalRange(frame);
 	}
 
 	// Re-set data whenever the resolved bars or the replay position change.
@@ -1582,13 +1641,13 @@
 		const dataKey = `${identity}|${timesKey}|${cut}|${themeEpoch}|${cs.colorPrevClose}|${up}|${down}`;
 		if (dataKey !== renderedDataKey) {
 			renderedDataKey = dataKey;
+			const shift = logicalRangeShift(renderedTimes, barTimes);
 			// Wrapped because a page of older history renumbers every bar:
 			// without shifting the visible range by as far as they moved, the
 			// chart jumps back by the size of the page the moment it lands. A
 			// window sharing no bar with its predecessor reports no shift at
 			// all, and is framed below instead.
-			preserveVisibleRange(
-				chart.timeScale(),
+			holdViewport(
 				() => {
 					series?.setData(
 						window.map((b, i) => {
@@ -1613,8 +1672,18 @@
 						})
 					);
 				},
-				logicalRangeShift(renderedTimes, barTimes)
+				shift
 			);
+			// A window that shares no bar with the one it replaced is not this
+			// pane scrolling — it is different data. The frame computed for the
+			// old bars describes nothing that is on screen any more, so it has to
+			// be computed again. Keying the guard on `instrument|spec` alone let
+			// the *first* window a pane received frame it permanently: on a reload
+			// the chart could be framed against one dataset, have a second replace
+			// it a moment later, and keep the first one's frame for good. That is
+			// the flash of unfamiliar bars a reader sees just before the real ones
+			// arrive, and why the wrong frame outlived them.
+			if (shift === null && renderedTimes.length > 0) framedFor = '';
 			renderedTimes = barTimes;
 			// The status line reads the newest bar whenever the pointer is not
 			// over the plot, so a new window has to refresh it — otherwise the
@@ -1962,7 +2031,17 @@
 								: { color: plot.color, visible }
 						);
 						const windowed = Number.isFinite(cut) ? points.slice(0, cut) : points;
-						handle.setData(windowed.map((p) => ({ time: p.time as UTCTimestamp, value: p.value / divisor })));
+						// Held, like every other `setData` in this file. Replacing a
+						// series' data is a structural update to the chart, and the
+						// reader did not ask for one — showing or hiding a layer must
+						// change what is drawn and nothing else. This path is the one an
+						// overlay indicator takes, so it is the one a hidden EMA moved
+						// the viewport through.
+						holdViewport(() => {
+							handle!.setData(
+								windowed.map((p) => ({ time: p.time as UTCTimestamp, value: p.value / divisor }))
+							);
+						});
 					}
 				}
 				for (const [key, handle] of overlaySeries) {
@@ -2052,10 +2131,15 @@
 							visible: item.visible && plot.visible
 						});
 					}
-					// Deliberately not wrapped in `preserveVisibleRange` — same as
-					// the indicator-overlay effect above: an added overlay series
-					// must not move the reader's own viewport.
-					handle.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+					// Held, for exactly the reason the comment here used to give for
+					// *not* holding it: an added overlay series must not move the
+					// reader's viewport. Leaving it unwrapped is what allows the
+					// move — wrapping is what prevents it. An overlaid instrument's
+					// times need not match the candles', so replacing its data can
+					// change the chart's extent and renumber every logical index.
+					holdViewport(() => {
+						handle!.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+					});
 				}
 				for (const key of overlaySeriesKeysToRemove(plan, overlayInstrumentSeries.keys())) {
 					const handle = overlayInstrumentSeries.get(key);
@@ -2157,19 +2241,31 @@
 		untrack(() => {
 			const currentPriceScale = priceScale;
 			const currentQtyScale = qtyScale;
-			for (const [layerId, topic] of liveIndicatorTopics) {
-				const reading = indicatorFrameFor(event, topic);
-				if (!reading) continue;
-				const handle = overlaySeries.get(`${layerId}:${reading.field}`) ?? subPaneSeries.get(`${layerId}:${reading.field}`);
-				if (!handle) continue;
-				const layer = overlayLayers.find((l) => l.id === layerId) ?? subPaneLayers.find((l) => l.id === layerId);
-				const scaleKind = indicatorFieldScale(layer?.indicatorName ?? '');
-				const divisor = scaleKind === 'price' ? 10 ** currentPriceScale : scaleKind === 'qty' ? 10 ** currentQtyScale : 1;
-				handle.update({
-					time: Math.floor(reading.ts_open / 1_000_000_000) as UTCTimestamp,
-					value: reading.value / divisor
-				});
-			}
+			// Held, and the asymmetry with the candle update above is the point.
+			//
+			// `shiftVisibleRangeOnNewBar` is on by default, so giving a series a
+			// time point it does not yet have scrolls the chart right by one bar.
+			// The candles want exactly that — a new bar should carry the reader
+			// forward. A derived line must not: an indicator batch ends at the
+			// last *closed* bar, so the first live reading for the forming bar is
+			// a new point on that series and shifts the view — again on every
+			// tick. It is why the viewport crept away from the newest bar only on
+			// panes carrying an indicator, and why a bare chart was fine.
+			holdViewport(() => {
+				for (const [layerId, topic] of liveIndicatorTopics) {
+					const reading = indicatorFrameFor(event, topic);
+					if (!reading) continue;
+					const handle = overlaySeries.get(`${layerId}:${reading.field}`) ?? subPaneSeries.get(`${layerId}:${reading.field}`);
+					if (!handle) continue;
+					const layer = overlayLayers.find((l) => l.id === layerId) ?? subPaneLayers.find((l) => l.id === layerId);
+					const scaleKind = indicatorFieldScale(layer?.indicatorName ?? '');
+					const divisor = scaleKind === 'price' ? 10 ** currentPriceScale : scaleKind === 'qty' ? 10 ** currentQtyScale : 1;
+					handle.update({
+						time: Math.floor(reading.ts_open / 1_000_000_000) as UTCTimestamp,
+						value: reading.value / divisor
+					});
+				}
+			});
 		});
 	});
 

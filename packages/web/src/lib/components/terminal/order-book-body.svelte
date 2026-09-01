@@ -24,6 +24,10 @@
 		 * actually gone out for this topic — see `order-book.svelte`'s doc on
 		 * why this is tracked separately from `capability`. */
 		unsupportedTopic,
+		/** The server tried and could not. A snapshot that failed used to be
+		 * indistinguishable from one still in flight, so the panel waited
+		 * forever for a frame that was never coming. */
+		failedTopic,
 		/** `null` until this topic's first `book` frame has arrived; `[]` for a
 		 * snapshot that arrived and is genuinely empty on both sides. */
 		rows,
@@ -31,17 +35,21 @@
 	}: {
 		capability: boolean | undefined;
 		unsupportedTopic: boolean;
+		failedTopic: boolean;
 		rows: BookRow[] | null;
 		onRefresh: () => void;
 	} = $props();
 
-	const state = $derived.by((): 'unsupported' | 'checking' | 'waiting' | 'empty' | 'ready' => {
+	const state = $derived.by(
+		(): 'unsupported' | 'failed' | 'checking' | 'waiting' | 'empty' | 'ready' => {
 		if (capability === false || unsupportedTopic) return 'unsupported';
+		if (failedTopic) return 'failed';
 		if (capability === undefined) return 'checking';
 		if (rows === null) return 'waiting';
 		if (rows.length === 0) return 'empty';
 		return 'ready';
-	});
+		}
+	);
 </script>
 
 <div data-book-state={state}>
@@ -53,6 +61,22 @@
 		<div class="px-3 py-6 text-center font-mono text-[9px] tracking-[0.14em] text-dim">CHECKING ORDER-BOOK SUPPORT…</div>
 	{:else if state === 'waiting'}
 		<div class="px-3 py-6 text-center font-mono text-[9px] tracking-[0.14em] text-dim">WAITING FOR DEPTH SNAPSHOT…</div>
+	{:else if state === 'failed'}
+		<!-- Stated, and retryable. The venue supports depth; this attempt did
+		     not arrive, which is a different fact from both "not supported" and
+		     "still waiting" — and the only one of the three worth a button. -->
+		<div class="flex flex-col items-center gap-2 px-3 py-6">
+			<span class="text-center font-mono text-[9px] tracking-[0.14em] text-dim">COULD NOT LOAD ORDER-BOOK DEPTH</span>
+			<button
+				type="button"
+				onclick={onRefresh}
+				class="flex cursor-pointer items-center gap-1 font-mono text-[8px] tracking-[0.18em] text-dim2 hover:text-foreground"
+				aria-label="Retry order book"
+			>
+				<RotateCcwIcon class="size-2.5" />
+				RETRY
+			</button>
+		</div>
 	{:else}
 		<div class="flex items-center justify-end border-b border-ink/6 px-3 py-1">
 			<button

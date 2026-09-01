@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { parsePaneSettings, paneSettingsToJson, shouldFramePriceScale } from './pane-settings';
+import {
+	paneSettingsToJson,
+	paneStretchFactors,
+	parsePaneSettings,
+	shouldFramePriceScale
+} from './pane-settings';
 import { defaultChartSettings } from '$lib/mock/chart-settings';
 
 describe("parsePaneSettings — a pane's settings text must never break the chart", () => {
@@ -90,5 +95,27 @@ describe('shouldFramePriceScale', () => {
 		// Writing a price-scale option that is already correct discards the
 		// manual range, so there must be nothing to write here.
 		expect(shouldFramePriceScale({ ...state, storedAutoScale: true })).toBe(false);
+	});
+});
+
+describe('paneStretchFactors', () => {
+	test('the main pane keeps the larger share and sub-panes split the rest', () => {
+		expect(paneStretchFactors(3, 2, undefined)).toEqual([65, 17.5, 17.5]);
+	});
+
+	test('a stored split wins over the fallback', () => {
+		expect(paneStretchFactors(2, 1, [70, 30])).toEqual([70, 30]);
+	});
+
+	// Every sub-pane indicator can be dropped at once — one fetch returning no
+	// points is enough — and dividing the remainder by zero handed a pane an
+	// infinite stretch factor, which takes the whole chart.
+	test('no sub-panes never produces an infinite weight', () => {
+		const weights = paneStretchFactors(2, 0, undefined);
+		expect(weights.every((w) => Number.isFinite(w) && w > 0)).toBe(true);
+	});
+
+	test('a stored zero or negative is not applied as a height', () => {
+		expect(paneStretchFactors(2, 1, [0, -5])).toEqual([1, 1]);
 	});
 });
