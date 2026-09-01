@@ -94,7 +94,7 @@ mod tests {
             high: 1,
             low: 1,
             close: 1,
-            volume: 1,
+            volume: senken_series::Volume::Real(1),
             quote_volume: None,
             trade_count: None,
             taker_buy_volume: None,

@@ -7,6 +7,7 @@
 
 use futures::{SinkExt, StreamExt};
 use senken_core::UnixNanos;
+use senken_feed::LiveUpdate;
 use senken_marketdata::InstrumentId;
 use senken_subscription::{ConnectionError, PriceUpdate, SubscriptionPool};
 use senken_venue::LimitGroup;
@@ -109,7 +110,7 @@ impl senken_feed::VenueProtocol for TestProtocol {
         Ok(format!("UNSUB {}", instrument.symbol()))
     }
 
-    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, PriceUpdate)> {
+    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, LiveUpdate)> {
         // "PRICE <symbol> <price> <scale>"
         let mut parts = text.split_whitespace();
         if parts.next() != Some("PRICE") {
@@ -129,13 +130,13 @@ impl senken_feed::VenueProtocol for TestProtocol {
         };
         vec![(
             instrument,
-            PriceUpdate {
+            LiveUpdate::Price(PriceUpdate {
                 ts: UnixNanos::EPOCH,
                 price,
                 price_scale,
-                qty: 0,
+                qty: senken_series::Volume::Real(0),
                 qty_scale: 0,
-            },
+            }),
         )]
     }
 }

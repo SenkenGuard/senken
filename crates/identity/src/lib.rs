@@ -410,7 +410,7 @@ mod tests {
                 &admin,
                 "Viewer",
                 "",
-                &[Grant::new(Action::View, Resource::Layout, Scope::Own)],
+                &[Grant::new(Action::View, Resource::ChartLayout, Scope::Own)],
             )
             .unwrap();
         store.assign_role(&admin, user_id, role_id).unwrap();
@@ -668,7 +668,7 @@ mod tests {
                 &admin,
                 "Charts Only",
                 "",
-                &[Grant::new(Action::View, Resource::Layout, Scope::Own)],
+                &[Grant::new(Action::View, Resource::ChartLayout, Scope::Own)],
             )
             .unwrap();
 
@@ -691,7 +691,7 @@ mod tests {
                 &admin,
                 "Charts Only",
                 "",
-                &[Grant::new(Action::View, Resource::Layout, Scope::Own)],
+                &[Grant::new(Action::View, Resource::ChartLayout, Scope::Own)],
             )
             .unwrap();
 
@@ -703,7 +703,7 @@ mod tests {
             .expect("the role we just created");
         assert_eq!(
             charts_only.grants,
-            vec![Grant::new(Action::View, Resource::Layout, Scope::Own)]
+            vec![Grant::new(Action::View, Resource::ChartLayout, Scope::Own)]
         );
     }
 
@@ -858,7 +858,7 @@ mod tests {
                 &admin,
                 "Own Viewer",
                 "",
-                &[Grant::new(Action::View, Resource::Layout, Scope::Own)],
+                &[Grant::new(Action::View, Resource::ChartLayout, Scope::Own)],
             )
             .unwrap();
         store.assign_role(&admin, user_id, role_id).unwrap();
@@ -866,7 +866,7 @@ mod tests {
             .grant_direct(
                 &admin,
                 user_id,
-                Grant::new(Action::View, Resource::Layout, Scope::All),
+                Grant::new(Action::View, Resource::ChartLayout, Scope::All),
             )
             .unwrap();
 
@@ -877,7 +877,7 @@ mod tests {
 
         assert_eq!(
             auth.effective_grants(),
-            &[Grant::new(Action::View, Resource::Layout, Scope::All)],
+            &[Grant::new(Action::View, Resource::ChartLayout, Scope::All)],
             "the more permissive scope wins, and the pair appears only once"
         );
         assert_eq!(auth.role_names(), &["Own Viewer".to_owned()]);

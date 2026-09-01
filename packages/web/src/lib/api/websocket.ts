@@ -22,6 +22,7 @@ import { describeError } from './errors';
 import { backoffDelay } from './backoff';
 import { publishWsEvent, type WsEvent } from './ws-events.svelte';
 import { TopicRefCounter } from './topic-refcount';
+import { indicatorTopic, type IndicatorSubscribeRequest } from './indicator-topic';
 import type { WsTicketResponse } from './types';
 
 // Q4 landed: `POST /api/ws/ticket` and `GET /api/ws` (`crates/api/src/lib.rs`'s
@@ -85,6 +86,15 @@ class WsClient {
 	// `crates/api/src/ws.rs`'s own doc) on anything but the last local
 	// caller's `unsubscribe` either.
 	private readonly subscriptions = new TopicRefCounter();
+	// The `subscribe_indicator` request behind each currently-referenced
+	// indicator topic, so `open` (reconnect) can replay the right frame kind
+	// for it below — a live indicator session lives inside the connection
+	// that opened it (`crates/api/src/ws.rs`'s own per-connection
+	// `subscriptions: HashMap<String, AbortHandle>`), unlike a price/quote
+	// lease's topic string, which a plain `subscribe` frame is enough to
+	// re-establish. Entries are added on the first reference to a topic and
+	// removed on the last release, in step with `subscriptions` itself.
+	private readonly indicatorRequests = new Map<string, IndicatorSubscribeRequest>();
 	private attempt = 0;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private generation = 0;
@@ -97,12 +107,37 @@ class WsClient {
 		if (this.subscriptions.retain(topic)) this.sendFrame('subscribe', topic);
 	}
 
+	/** Opens (or, ref-counted the same way `subscribe` is, joins) a live
+	 * indicator session and returns its canonical topic
+	 * (`indicator-topic.ts`'s `indicatorTopic`) — computed the same way the
+	 * server does, so the caller can key its own bookkeeping (which series
+	 * to update on an incoming `indicator` frame) on it immediately, rather
+	 * than waiting for the `subscribed` reply. Sends the `subscribe_indicator`
+	 * frame only on the first outstanding reference for this exact topic;
+	 * later callers for the same `(instrument, spec, indicator, params)`
+	 * share it, released the same way `unsubscribe` already releases any
+	 * other topic. */
+	subscribeIndicator(request: IndicatorSubscribeRequest): string {
+		const topic = indicatorTopic(request);
+		if (this.subscriptions.retain(topic)) {
+			this.indicatorRequests.set(topic, request);
+			this.sendIndicatorFrame(request);
+		}
+		return topic;
+	}
+
 	/** Releases one reference on `topic`. Only the caller dropping the last
 	 * outstanding reference actually sends `unsubscribe` — same "the last
 	 * lease releases it" contract `SubscriptionPool::lease`/`Drop for Lease`
-	 * implement server-side. */
+	 * implement server-side. Works uniformly for a price/quote topic or an
+	 * indicator one: the server's own `Unsubscribe` handling only looks the
+	 * topic string up in its per-connection map, regardless of which frame
+	 * originally inserted it. */
 	unsubscribe(topic: string): void {
-		if (this.subscriptions.release(topic)) this.sendFrame('unsubscribe', topic);
+		if (this.subscriptions.release(topic)) {
+			this.indicatorRequests.delete(topic);
+			this.sendFrame('unsubscribe', topic);
+		}
 	}
 
 	connect(): void {
@@ -143,7 +178,11 @@ class WsClient {
 			if (generation !== this.generation) return;
 			this.attempt = 0;
 			setConnectionState('authenticated');
-			for (const topic of this.subscriptions.topics()) this.sendFrame('subscribe', topic);
+			for (const topic of this.subscriptions.topics()) {
+				const indicatorRequest = this.indicatorRequests.get(topic);
+				if (indicatorRequest) this.sendIndicatorFrame(indicatorRequest);
+				else this.sendFrame('subscribe', topic);
+			}
 		});
 
 		socket.addEventListener('message', (event: MessageEvent) => {
@@ -176,6 +215,12 @@ class WsClient {
 	private sendFrame(type: 'subscribe' | 'unsubscribe', topic: string): void {
 		if (this.socket?.readyState === WebSocket.OPEN) {
 			this.socket.send(JSON.stringify({ type, topic }));
+		}
+	}
+
+	private sendIndicatorFrame(request: IndicatorSubscribeRequest): void {
+		if (this.socket?.readyState === WebSocket.OPEN) {
+			this.socket.send(JSON.stringify({ type: 'subscribe_indicator', ...request }));
 		}
 	}
 }

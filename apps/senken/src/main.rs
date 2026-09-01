@@ -199,10 +199,11 @@ fn open_identity_store(
 /// itself.
 fn open_runtime(
     data_dir: &std::path::Path,
+    identity: std::sync::Arc<senken_identity::IdentityStore>,
 ) -> anyhow::Result<std::sync::Arc<senken_runtime::Runtime>> {
-    Ok(std::sync::Arc::new(senken_cli::runtime_with_plugins(
-        data_dir,
-    )?))
+    Ok(std::sync::Arc::new(
+        senken_cli::runtime_with_plugins_and_identity(data_dir, identity)?,
+    ))
 }
 
 /// `senken serve`: the server alone, run until `Ctrl-C`.
@@ -218,7 +219,7 @@ async fn run_serve(
     // second format. `-v` is still what turns on the tracing detail.
     logging::init(verbose);
     let identity = open_identity_store(data_dir)?;
-    let runtime = open_runtime(data_dir)?;
+    let runtime = open_runtime(data_dir, std::sync::Arc::clone(&identity))?;
     let handle = senken_api::serve(
         ServeOptions {
             host,
@@ -283,7 +284,7 @@ async fn run_gui(
 ) -> anyhow::Result<ExitCode> {
     logging::init(verbose);
     let identity = open_identity_store(data_dir)?;
-    let runtime = open_runtime(data_dir)?;
+    let runtime = open_runtime(data_dir, std::sync::Arc::clone(&identity))?;
     let handle = senken_api::serve(
         ServeOptions {
             host,

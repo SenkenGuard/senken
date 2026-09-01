@@ -15,7 +15,7 @@ themselves and survive the chart that created them being closed.
   closed bars using the same "never emit a partial bucket" discipline
   `senken_series::Aggregator` already uses for finer-to-coarser bar
   aggregation.
-- **The same guarded-query pattern as `senken-workspace`/`senken-identity`.**
+- **The same guarded-query pattern as `senken-chart`/`senken-identity`.**
   Every caller-facing method on `AlertStore` takes an `AuthenticatedUser`
   and turns its resolved `Scope` into a `WHERE` clause, including in every
   listing's total row count. The one deliberate exception is the small,
@@ -24,7 +24,7 @@ themselves and survive the chart that created them being closed.
   why answering "what does the server need to keep running" is a different
   question from "what can this caller see".
 - **Shares `senken-identity`'s accounts database**, the same way
-  `senken-workspace` does — alerts reference `users(id)`, so their table
+  `senken-chart` does — alerts reference `users(id)`, so their table
   lives in the same SQLite file rather than a second one.
 - **Out of scope**: notification delivery of any kind (firing is recording
   that it fired) and conditions on anything but bars and indicators.

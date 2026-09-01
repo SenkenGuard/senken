@@ -4,13 +4,13 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Int64Array, RecordBatch, UInt32Array};
+use arrow::array::{ArrayRef, Int64Array, RecordBatch, UInt8Array, UInt32Array};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, Encoding, ZstdLevel};
 use parquet::file::properties::{WriterProperties, WriterVersion};
 use parquet::schema::types::ColumnPath;
 use senken_core::TimeRange;
-use senken_series::{Anchor, Bar, SeriesKey};
+use senken_series::{Anchor, Bar, SeriesKey, Volume};
 
 use crate::assertions::assert_bars_valid;
 use crate::error::{StoreError, WriteAssertionError};
@@ -89,9 +89,11 @@ impl Store {
         }
 
         let metadata = SeriesMetadata {
+            schema_version: crate::schema::SCHEMA_VERSION,
             source_id: key.source_id.to_string(),
             symbol: key.symbol.to_string(),
             origin: key.origin,
+            price_basis: key.price_basis,
             spec: key.spec,
             price_scale,
             qty_scale,
@@ -127,7 +129,15 @@ fn encode_bars(bars: &[Bar], metadata: &SeriesMetadata) -> Result<Vec<u8>, Store
     let high: ArrayRef = Arc::new(Int64Array::from_iter_values(bars.iter().map(|b| b.high)));
     let low: ArrayRef = Arc::new(Int64Array::from_iter_values(bars.iter().map(|b| b.low)));
     let close: ArrayRef = Arc::new(Int64Array::from_iter_values(bars.iter().map(|b| b.close)));
-    let volume: ArrayRef = Arc::new(Int64Array::from_iter_values(bars.iter().map(|b| b.volume)));
+    let volume: ArrayRef = Arc::new(Int64Array::from(
+        bars.iter()
+            .map(|bar| match bar.volume {
+                Volume::Real(value) => Some(value),
+                Volume::Tick(value) => Some(i64::from(value)),
+                Volume::Absent => None,
+            })
+            .collect::<Vec<_>>(),
+    ));
     // Nullable columns are built from `Option`s directly — a `None` here
     // becomes a genuine Parquet null, never a `0` (Bybit
     // reports no trade count at all, and a `0` would claim "no trades",
@@ -141,6 +151,14 @@ fn encode_bars(bars: &[Bar], metadata: &SeriesMetadata) -> Result<Vec<u8>, Store
     let taker_buy_volume: ArrayRef = Arc::new(Int64Array::from(
         bars.iter().map(|b| b.taker_buy_volume).collect::<Vec<_>>(),
     ));
+    let volume_kind: ArrayRef =
+        Arc::new(UInt8Array::from_iter_values(bars.iter().map(
+            |bar| match bar.volume {
+                Volume::Real(_) => 0,
+                Volume::Tick(_) => 1,
+                Volume::Absent => 2,
+            },
+        )));
 
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
@@ -154,6 +172,7 @@ fn encode_bars(bars: &[Bar], metadata: &SeriesMetadata) -> Result<Vec<u8>, Store
             quote_volume,
             trade_count,
             taker_buy_volume,
+            volume_kind,
         ],
     )?;
 
@@ -193,7 +212,7 @@ mod tests {
             high: 110,
             low: 90,
             close: 105,
-            volume: 1_000,
+            volume: Volume::Real(1_000),
             quote_volume: Some(50_000),
             trade_count: None,
             taker_buy_volume: Some(400),

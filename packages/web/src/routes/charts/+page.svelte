@@ -29,15 +29,17 @@
 		PANEL_TABS,
 		type ChartPanelKey,
 		CHART_MENUS,
-		INDICATOR_CATALOG,
 		parseInstrumentId,
 		fmtDecimal,
 		tfLabel
 	} from '$lib/components/terminal/chart-config';
 	import { apiClient } from '$lib/api/client';
 	import type { InstrumentSummaryDto } from '$lib/api/types';
+	import type { MarketStatus } from '$lib/charts/live-state';
+	import { setIndicatorDescriptors, type IndicatorDescriptorClient } from '$lib/charts/layer-style';
 	import { wsClient } from '$lib/api/websocket';
 	import { wsEventsStore, priceFromEvent } from '$lib/api/ws-events.svelte';
+	import { hasQuoteFeed } from '$lib/api/sources.svelte';
 	import { objectTree } from '$lib/charts/pane-runtime';
 	import {
 		chartWorkspaceStore,
@@ -63,6 +65,7 @@
 		updateDrawingGeometry,
 		updatePaneSettings
 	} from '$lib/charts/workspace-store.svelte';
+	import type { IndicatorCatalogItem } from '$lib/charts/workspace-store.svelte';
 	import type { DrawingRuntime } from '$lib/charts/pane-runtime';
 	import { defaultChartSettings, type ChartSettings, type CsSectionKey } from '$lib/mock/chart-settings';
 	import ChartContextMenu, { type MenuItem } from '$lib/components/terminal/chart-context-menu.svelte';
@@ -74,13 +77,13 @@
 	import SymbolTree from '$lib/components/terminal/symbol-tree.svelte';
 	import ChartSettingsDialog from '$lib/components/terminal/chart-settings-dialog.svelte';
 	import LayerDialog from '$lib/components/terminal/layer-dialog.svelte';
+	import DateJumpDialog from '$lib/components/terminal/date-jump-dialog.svelte';
 	import DrawingToolbar from '$lib/components/terminal/drawing-toolbar.svelte';
 	import AlertsPanel from '$lib/components/terminal/alerts-panel.svelte';
 	import {
 		DEFAULT_ACCOUNT,
 		ACCOUNT_ICON,
 		ENGINE_SUB_TABS,
-		genOrderBook,
 		NOTE_TAGS,
 		ACTIVE_NOTE,
 		type OrderRow,
@@ -106,8 +109,14 @@
 	import SigmaIcon from '@lucide/svelte/icons/sigma';
 	import { toast } from 'svelte-sonner';
 
+	let indicatorCatalog = $state<IndicatorDescriptorClient[]>([]);
+
 	onMount(() => {
 		void initChartWorkspaces();
+		void apiClient.listIndicators().then((items) => {
+			indicatorCatalog = items as unknown as IndicatorDescriptorClient[];
+			setIndicatorDescriptors(indicatorCatalog);
+		});
 	});
 
 	const layout = $derived(chartWorkspaceStore.layout);
@@ -130,6 +139,11 @@
 	let activeIndex = $state(0);
 	const activePaneIndex = $derived(panes.length === 0 ? 0 : Math.min(activeIndex, panes.length - 1));
 	const activePane = $derived(panes[activePaneIndex]);
+	// Search results are the catalog status source. The server supplies this
+	// field from its cached venue catalog; keep the short-lived browser cache
+	// separate from persisted pane settings because a venue's state is market
+	// data, never a user preference.
+	let marketStatuses = $state<Record<string, MarketStatus>>({});
 
 	let tool = $state<ToolKey>('cursor');
 	let clearToken = $state(0);
@@ -155,6 +169,7 @@
 	// this reads that pane's own settings rather than one page-level object
 	// every pane used to share (and none of them actually kept).
 	const chartSettings = $derived(activePane?.settings ?? defaultChartSettings());
+	const activePaneQuotesSupported = $derived(hasQuoteFeed(activePane?.instrument ?? ''));
 	let csOpen = $state(false);
 	/** Which settings section the dialog should open on. The price-scale
 	 * menu's "More settings" points straight at scales. */
@@ -177,6 +192,19 @@
 		const next = [...resetTokens];
 		next[index] = (next[index] ?? 0) + 1;
 		resetTokens = next;
+	}
+	/** One "go to date" request per pane — same reasoning as `resetTokens`:
+	 * resetting/jumping pane 2 must not touch pane 1's own frame. */
+	let jumpTargets = $state<({ token: number; targetNanos: number } | null)[]>([]);
+	/** Which pane the open "go to date" dialog targets, or `null` while it is
+	 * closed. */
+	let dateJumpDlg = $state<{ pane: number } | null>(null);
+
+	function jumpPaneToDate(index: number, targetNanos: number) {
+		const next = [...jumpTargets];
+		const previousToken = next[index]?.token ?? 0;
+		next[index] = { token: previousToken + 1, targetNanos };
+		jumpTargets = next;
 	}
 	/** Which layer's settings are open, tracked by its *position* rather
 	 * than its id: saving a layout replaces every layer row server-side, so
@@ -254,8 +282,15 @@
 		void setAllPanesTimeframe(t);
 	}
 
-	function pickSymbol(instrumentId: string) {
-		void setPaneInstrument(activePaneIndex, instrumentId);
+	function pickSymbol(instrument: InstrumentSummaryDto) {
+		const status = (instrument as InstrumentSummaryDto & { status?: string }).status;
+		if (status === 'closed') {
+			marketStatuses = { ...marketStatuses, [instrument.id]: { status: 'closed' } };
+		} else {
+			const { [instrument.id]: _removed, ...remaining } = marketStatuses;
+			marketStatuses = remaining;
+		}
+		void setPaneInstrument(activePaneIndex, instrument.id);
 	}
 
 	function onLastCloseFromPane(paneIndex: number, price: number) {
@@ -336,6 +371,12 @@
 	// (`instrument_handlers.rs`'s own "an empty query lists something" test),
 	// so the picker opens with real rows even before the user types anything.
 	let instrumentResults = $state<InstrumentSummaryDto[]>([]);
+	// The first open of a picker has no rows yet and a request in flight.
+	// Without this the palette renders its "NO MATCH" empty state over a
+	// catalogue it has not finished asking for — which is why the instrument
+	// list looked empty until it was closed and reopened, the second open
+	// finding `instrumentResults` still populated from the first.
+	let instrumentSearchBusy = $state(false);
 	let instrumentSearchToken = 0;
 	$effect(() => {
 		const request = commandPalette.request;
@@ -344,6 +385,7 @@
 		if (!wantsInstruments) return;
 		const query = commandPalette.query;
 		const token = ++instrumentSearchToken;
+		instrumentSearchBusy = true;
 		apiClient
 			.searchInstruments(query, 20)
 			.then((page) => {
@@ -351,6 +393,9 @@
 			})
 			.catch(() => {
 				if (token === instrumentSearchToken) instrumentResults = [];
+			})
+			.finally(() => {
+				if (token === instrumentSearchToken) instrumentSearchBusy = false;
 			});
 	});
 
@@ -372,10 +417,11 @@
 			mode: 'symbol',
 			placeholder: 'Search instruments by ticker or venue…',
 			footer: `MAIN INSTRUMENT · PANE ${activePaneIndex + 1}`,
+			busy: () => instrumentSearchBusy,
 			rows: () =>
 				instrumentResults.map((x) =>
 					instrumentRow(x, x.kind.toUpperCase(), () => {
-						pickSymbol(x.id);
+						pickSymbol(x);
 						closeCommand();
 					})
 				)
@@ -386,7 +432,7 @@
 	// opens the command palette in `'layer'` mode. the
 	// INSTRUMENT tab adds an overlay instrument (`addInstrumentOverlay`),
 	// the INDICATOR tab adds a real indicator layer, placed overlay or
-	// sub-pane per `INDICATOR_CATALOG`'s own `subPane` flag. There is no
+	// The API descriptor selects an allowed placement. There is no
 	// STRATEGY tab any more — `senken_workspace::LayerKind` has no such
 	// variant.
 	function openLayerPicker() {
@@ -395,6 +441,7 @@
 			mode: 'layer',
 			placeholder: 'Search instruments or indicators…',
 			footer: `ADDING TO PANE ${paneTarget + 1}`,
+			busy: () => addMenuKind === 'instrument' && instrumentSearchBusy,
 			kindTabs: (['instrument', 'indicator'] as const).map((k) => ({
 				label: k.toUpperCase(),
 				active: () => addMenuKind === k,
@@ -410,14 +457,19 @@
 					);
 				}
 				const q = query.trim().toLowerCase();
-				return INDICATOR_CATALOG.filter((def) => !q || `${def.label} ${def.paramsLabel}`.toLowerCase().includes(q)).map((def) => ({
+				return indicatorCatalog.filter((def) => !q || `${def.title} ${def.legend}`.toLowerCase().includes(q)).map((def) => ({
 					icon: SigmaIcon,
-					title: def.label,
-					sub: def.paramsLabel,
-					meta: def.subPane ? 'SUB-PANE' : 'OVERLAY',
+					title: def.short_title,
+					sub: def.legend,
+					meta: def.placement === 'sub_pane' ? 'SUB-PANE' : 'OVERLAY',
 					metaTone: 'dim' as const,
 					onPick: () => {
-						void addIndicatorLayer(paneTarget, def);
+						const item: IndicatorCatalogItem = {
+							name: def.name,
+							defaultParams: Object.fromEntries(def.params.map((param) => [param.name, param.default.value])),
+							placement: def.placement
+						};
+						void addIndicatorLayer(paneTarget, item);
 						closeCommand();
 					}
 				}));
@@ -515,7 +567,6 @@
 	const drawingToolbarAnchor = { x: 420, y: 54 };
 
 	const mid = $derived(lastClose[activePaneIndex] ?? 0);
-	const bookRows = $derived(genOrderBook(mid));
 
 	const syncToggleKeys = ['symbol', 'interval', 'crosshair', 'time'] as const;
 	const AccountIcon = ACCOUNT_ICON;
@@ -586,6 +637,7 @@
 		return [
 			{ kind: 'action', label: 'RESET CHART VIEW', hint: 'ALT R', onSelect: () => resetPaneView(menu.pane) },
 			{ kind: 'action', label: 'REFRESH CHART DATA', onSelect: () => (reloadToken += 1) },
+			{ kind: 'action', label: 'GO TO DATE…', onSelect: () => (dateJumpDlg = { pane: menu.pane }) },
 			{ kind: 'separator' },
 			{
 				kind: 'toggle',
@@ -859,6 +911,8 @@
 				{selectedDrawing}
 				{reloadToken}
 				{resetTokens}
+				{jumpTargets}
+				{marketStatuses}
 				onContextMenu={(pane, e) => (ctxMenu = { ...e, pane })}
 				onMoveDrawing={(pane, id, patch) => void updateDrawingGeometry(pane, id, patch)}
 				onPatchSettings={(pane, patch) => patchPane(pane, patch)}
@@ -913,7 +967,7 @@
 									{/each}
 								</div>
 								{#if engineSub === 'book'}
-									<OrderBook rows={bookRows} />
+									<OrderBook instrument={activePane?.instrument ?? ''} />
 								{:else if orders.length === 0}
 									<div class="py-5.5 text-center font-mono text-[9px] tracking-[0.16em] text-dim">NO ORDERS ON THIS ACCOUNT</div>
 								{:else}
@@ -946,7 +1000,7 @@
 									<button
 										type="button"
 										class="flex w-full cursor-pointer items-center justify-between gap-2 border-b border-ink/5 px-3 py-2.5"
-										onclick={() => pickSymbol(r.id)}
+									onclick={() => pickSymbol(r)}
 									>
 										<div class="flex min-w-0 items-center gap-2.5">
 											<div class="flex size-[18px] flex-none items-center justify-center border border-ink/14 font-mono text-[8.5px] text-secondary-foreground">{r.symbol.slice(0, 1)}</div>
@@ -1025,6 +1079,7 @@
 		open={csOpen}
 		initialSection={csSection}
 		settings={chartSettings}
+		quotesSupported={activePaneQuotesSupported}
 		scopeLabel={settingsScopeLabel}
 		onClose={() => (csOpen = false)}
 		onChange={(patch) => void updatePaneSettings(activePaneIndex, patch)}
@@ -1034,7 +1089,13 @@
 		layer={dialogLayer}
 		onClose={() => (layerDlg = null)}
 		onEditParams={(patch) => dialogLayer && layerDlg && void editLayerParams(layerDlg.pane, dialogLayer.id, patch)}
-		onStyleChanged={() => void persistLayerStyle()}
+		onStyleChanged={() => dialogLayer && void persistLayerStyle(dialogLayer.id)}
+	/>
+
+	<DateJumpDialog
+		open={!!dateJumpDlg}
+		onClose={() => (dateJumpDlg = null)}
+		onJump={(targetNanos) => dateJumpDlg && jumpPaneToDate(dateJumpDlg.pane, targetNanos)}
 	/>
 
 {:else}

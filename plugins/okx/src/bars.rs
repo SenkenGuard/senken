@@ -55,7 +55,7 @@ use senken_core::{TimeRange, UnixNanos, parse_scaled};
 use senken_marketdata::SourceSymbol;
 use senken_marketdata::source::SourceError;
 use senken_plugin::BarSource;
-use senken_series::{Bar, BarSpec, BarUnit};
+use senken_series::{Bar, BarSpec, BarUnit, Volume};
 use senken_venue::{VenueClient, common_scale};
 use serde::Deserialize;
 
@@ -268,7 +268,7 @@ impl BarSource for OkxBarSource {
                 high: scaled(&high, price_scale)?,
                 low: scaled(&low, price_scale)?,
                 close: scaled(&close, price_scale)?,
-                volume: scaled(&volume, qty_scale)?,
+                volume: Volume::Real(scaled(&volume, qty_scale)?),
                 quote_volume: Some(scaled(&quote_volume, qty_scale)?),
                 // Neither reported by this endpoint.
                 trade_count: None,

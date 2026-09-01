@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::connection::{ConnectionError, VenueConnection, VenueConnector};
 use crate::price::PriceUpdate;
+use crate::quote::QuoteUpdate;
 
 /// How a leaseholder learns the latest price for its instrument: `None`
 /// until the first update arrives for a freshly (re)subscribed instrument,
@@ -18,6 +19,12 @@ use crate::price::PriceUpdate;
 /// next time it looks, not fall behind and have to catch up through a
 /// backlog of stale ones.
 type PriceWatch = watch::Sender<Option<PriceUpdate>>;
+type QuoteWatch = watch::Sender<Option<QuoteUpdate>>;
+
+struct LeaseWatches {
+    price: PriceWatch,
+    quote: QuoteWatch,
+}
 
 /// No venue's real per-connection stream cap is verified anywhere in this
 /// project (mirroring
@@ -92,6 +99,7 @@ pub struct Lease {
     // so they all read from the one channel the actor publishes updates
     // onto (see `Actor::publish`).
     updates: PriceWatch,
+    quote_updates: QuoteWatch,
 }
 
 impl Lease {
@@ -113,6 +121,12 @@ impl Lease {
     #[must_use]
     pub fn updates(&self) -> watch::Receiver<Option<PriceUpdate>> {
         self.updates.subscribe()
+    }
+
+    /// A receiver for this instrument's latest best bid and offer.
+    #[must_use]
+    pub fn quote_updates(&self) -> watch::Receiver<Option<QuoteUpdate>> {
+        self.quote_updates.subscribe()
     }
 }
 
@@ -147,7 +161,7 @@ impl Drop for Lease {
 enum Command {
     Lease {
         instrument: InstrumentId,
-        respond: oneshot::Sender<Result<PriceWatch, PoolError>>,
+        respond: oneshot::Sender<Result<LeaseWatches, PoolError>>,
     },
     Release {
         instrument: InstrumentId,
@@ -165,6 +179,10 @@ enum Command {
         instrument: InstrumentId,
         update: PriceUpdate,
     },
+    PublishQuote {
+        instrument: InstrumentId,
+        update: QuoteUpdate,
+    },
     /// Answered only once every command sent before it has been applied —
     /// see [`SubscriptionPool::flush`].
     Flush {
@@ -179,6 +197,7 @@ struct LeaseRecord {
     count: usize,
     shard: usize,
     updates: PriceWatch,
+    quote_updates: QuoteWatch,
 }
 
 /// One connection to the venue, and the instruments currently subscribed on
@@ -224,6 +243,9 @@ impl Actor {
                     let _ = respond.send(result);
                 }
                 Command::Publish { instrument, update } => self.publish(&instrument, update),
+                Command::PublishQuote { instrument, update } => {
+                    self.publish_quote(&instrument, update);
+                }
                 Command::Flush { respond } => {
                     let _ = respond.send(());
                 }
@@ -231,10 +253,13 @@ impl Actor {
         }
     }
 
-    async fn lease(&mut self, instrument: &InstrumentId) -> Result<PriceWatch, PoolError> {
+    async fn lease(&mut self, instrument: &InstrumentId) -> Result<LeaseWatches, PoolError> {
         if let Some(record) = self.leases.get_mut(instrument) {
             record.count += 1;
-            return Ok(record.updates.clone());
+            return Ok(LeaseWatches {
+                price: record.updates.clone(),
+                quote: record.quote_updates.clone(),
+            });
         }
 
         let shard_index = self.shard_with_room().await?;
@@ -250,15 +275,20 @@ impl Actor {
 
         self.shards[shard_index].symbols.insert(instrument.clone());
         let (updates, _receiver) = watch::channel(None);
+        let (quote_updates, _quote_receiver) = watch::channel(None);
         self.leases.insert(
             instrument.clone(),
             LeaseRecord {
                 count: 1,
                 shard: shard_index,
                 updates: updates.clone(),
+                quote_updates: quote_updates.clone(),
             },
         );
-        Ok(updates)
+        Ok(LeaseWatches {
+            price: updates,
+            quote: quote_updates,
+        })
     }
 
     /// Routes one decoded price to every current leaseholder of
@@ -287,6 +317,13 @@ impl Actor {
         // consumer that subscribes late still sees the latest price"
         // (`Lease::updates`'s own contract) requires.
         let _ = record.updates.send_replace(Some(update));
+    }
+
+    fn publish_quote(&self, instrument: &InstrumentId, update: QuoteUpdate) {
+        let Some(record) = self.leases.get(instrument) else {
+            return;
+        };
+        let _ = record.quote_updates.send_replace(Some(update));
     }
 
     async fn release(&mut self, instrument: &InstrumentId) {
@@ -484,11 +521,12 @@ impl SubscriptionPool {
                 respond,
             })
             .map_err(|_| PoolError::Closed)?;
-        let updates = response.await.map_err(|_| PoolError::Closed)??;
+        let watches = response.await.map_err(|_| PoolError::Closed)??;
         Ok(Lease {
             instrument,
             release: Some(self.commands.clone()),
-            updates,
+            updates: watches.price,
+            quote_updates: watches.quote,
         })
     }
 
@@ -512,6 +550,13 @@ impl SubscriptionPool {
     /// actor is gone has nothing left to release against.
     pub fn publish(&self, instrument: InstrumentId, update: PriceUpdate) {
         let _ = self.commands.send(Command::Publish { instrument, update });
+    }
+
+    /// Delivers a top-of-book quote to every current leaseholder.
+    pub fn publish_quote(&self, instrument: InstrumentId, update: QuoteUpdate) {
+        let _ = self
+            .commands
+            .send(Command::PublishQuote { instrument, update });
     }
 
     /// Tells the pool that `connection` — a shard it previously opened
@@ -810,7 +855,7 @@ mod tests {
             ts: senken_core::UnixNanos::from_millis(1_788_000_000_000).unwrap(),
             price,
             price_scale: 2,
-            qty: 0,
+            qty: senken_series::Volume::Real(0),
             qty_scale: 0,
         }
     }

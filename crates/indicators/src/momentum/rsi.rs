@@ -102,6 +102,10 @@ impl Indicator for Rsi {
         self.prev_close = Some(price);
     }
 
+    fn snapshot(&self) -> Box<dyn Indicator> {
+        Box::new(self.clone())
+    }
+
     fn reset(&mut self) {
         self.prev_close = None;
         self.avg_gain = 0.0;

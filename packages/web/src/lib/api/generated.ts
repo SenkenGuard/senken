@@ -91,6 +91,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bars/m1-download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/bars/m1-download`: explicitly backfills the canonical minute
+         *     series for replay or simulation. It is intentionally separate from chart
+         *     loading and is always scheduled behind visible and prefetch work.
+         */
+        post: operations["download_m1"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bars/plan": {
         parameters: {
             query?: never;
@@ -131,6 +152,24 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/drawings/{drawing_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** `DELETE /api/drawings/{drawing_id}`. */
+        delete: operations["delete_drawing"];
+        options?: never;
+        head?: never;
+        /** `PATCH /api/drawings/{drawing_id}`. */
+        patch: operations["update_drawing"];
         trace?: never;
     };
     "/api/health": {
@@ -211,6 +250,24 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/layers/{layer_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** `DELETE /api/layers/{layer_id}`. */
+        delete: operations["delete_layer"];
+        options?: never;
+        head?: never;
+        /** `PATCH /api/layers/{layer_id}`. */
+        patch: operations["update_layer"];
         trace?: never;
     };
     "/api/layouts/{layout_id}": {
@@ -596,7 +653,7 @@ export interface paths {
         };
         /**
          * `GET /api/workspaces`. Scoped by
-         *     `WorkspaceStore::list_workspaces` itself — a superadmin
+         *     `ChartWorkspaceStore::list_workspaces` itself — a superadmin
          *     sees every workspace, an ordinary user sees only their own, and the
          *     reported `total` already respects that scope too.
          */
@@ -801,11 +858,10 @@ export interface components {
              */
             ts_open: number;
             /**
-             * Format: int64
              * @description Base-asset volume traded in the interval, at the series' quantity
              *     scale.
              */
-            volume: number;
+            volume: components["schemas"]["VolumeDto"];
         };
         /** @description `GET /api/bars/jobs/{job_id}` response body. */
         BarJobDto: {
@@ -841,6 +897,12 @@ export interface components {
              *     `"done"` — mirrors `senken_loader::Phase`'s own variants.
              */
             phase: string;
+            /**
+             * @description `"background"`, `"prefetch"` or `"visible"`. A minute-history
+             *     download is always background work, so it cannot jump ahead of a
+             *     chart range currently being viewed.
+             */
+            priority: string;
         };
         /**
          * @description `GET /api/bars/range` response body: whatever is already resolvable
@@ -861,6 +923,14 @@ export interface components {
         BarRangeResponse: {
             /** @description Bars already available, ascending by `ts_open`. */
             bars: components["schemas"]["BarDto"][];
+            /**
+             * Format: int64
+             * @description The earliest observed bar the venue made available for this exact
+             *     source/symbol/spec, if a complete short response established one.
+             *     `None` means the server has not observed the edge yet — it does not
+             *     mean history is unbounded.
+             */
+            earliest_available?: number | null;
             /** @description Ranges not yet resolvable. */
             missing: components["schemas"]["TimeRangeDto"][];
             /**
@@ -916,6 +986,15 @@ export interface components {
              */
             missing: components["schemas"]["TimeRangeDto"][];
         };
+        /** @description Whether a source can serve the book panel a fixed-depth snapshot. */
+        BookCapabilityDto: {
+            /**
+             * @description A `senken_subscription::BookSource` is registered for it. Never a
+             *     locally-maintained book updated from venue deltas — see that
+             *     trait's own docs.
+             */
+            supported: boolean;
+        };
         /** @description `POST /api/indicators/compute` request body. */
         ComputeIndicatorRequest: {
             /**
@@ -938,20 +1017,27 @@ export interface components {
         };
         /** @description `POST /api/indicators/compute` response body. */
         ComputeIndicatorResponse: {
+            /** @description Number of oldest bounded objects discarded before this response. */
+            discarded_objects: number;
+            /** @description The complete display list for this indicator item. */
+            display: components["schemas"]["IndicatorDrawableDto"][];
             /**
-             * @description Ranges `points` could not cover because the underlying bars are not
+             * @description Ranges `display` could not cover because the underlying bars are not
              *     resolvable yet — the same contract `BarRangeResponse::missing` makes.
              */
             missing: components["schemas"]["TimeRangeDto"][];
-            /** @description One entry per bar the indicator has initialized for. */
-            points: components["schemas"]["IndicatorPointDto"][];
+            /**
+             * @description `true` when the requested start had insufficient earlier bars to
+             *     prepare a fully warmed calculation.
+             */
+            warmup_truncated: boolean;
         };
         /**
          * @description `(field, comparator, threshold)`, on the wire — mirrors
          *     `senken_alerts::Condition` field-for-field. `field`/`comparator` reuse
          *     that crate's own enums directly (already `Serialize`/`Deserialize`) but
          *     are documented to `utoipa` as plain strings via
-         *     `#[schema(value_type = String)]`, the same technique [`GrantDto`] uses
+         *     `#[schema(value_type = String)]`, the same technique [`super::GrantDto`] uses
          *     for `senken_acl`'s enums and for the same reason: the orphan rule
          *     forbids implementing `ToSchema` for a foreign type from here.
          */
@@ -998,7 +1084,7 @@ export interface components {
             email: string;
             /**
              * @description An initial password. Omitted (or `null`) leaves the account behind
-             *     the same B4 fence the default admin is seeded with, so the new user
+             *     the same password fence the default admin is seeded with, so the new user
              *     sets their own password on first use.
              */
             initial_password?: string | null;
@@ -1018,6 +1104,27 @@ export interface components {
              */
             workspace_id: string;
         };
+        /**
+         * @description `POST /api/bars/m1-download` request body.
+         *
+         *     Minute bars are requested separately from chart loading because they are
+         *     the canonical input for replay and simulation, not a prerequisite for
+         *     rendering a chart at another venue-native interval.
+         */
+        DownloadM1Request: {
+            /**
+             * Format: int64
+             * @description Inclusive start of the range, Unix nanoseconds.
+             */
+            from: number;
+            /** @description The instrument, `source:symbol`. */
+            instrument: string;
+            /**
+             * Format: int64
+             * @description Exclusive end of the range, Unix nanoseconds.
+             */
+            to: number;
+        };
         /** @description One drawing, as read back from a layout. */
         DrawingDto: {
             /** @description The drawing's colour, as `#rrggbb`. */
@@ -1033,6 +1140,11 @@ export interface components {
              * @description This drawing's stacking order within its pane.
              */
             position: number;
+            /**
+             * @description Whether the drawing is currently shown — new in schema v8; a
+             *     drawing could not express this at all before.
+             */
+            visible: boolean;
             /**
              * Format: int32
              * @description Stroke width in pixels, 1 through 4.
@@ -1053,6 +1165,12 @@ export interface components {
              */
             position: number;
             /**
+             * @description Whether the drawing starts out visible. Defaults to `true` — a
+             *     request from before this field existed carries no opinion, and
+             *     every drawing rendered unconditionally until now.
+             */
+            visible?: boolean;
+            /**
              * Format: int32
              * @description Stroke width in pixels, 1 through 4.
              */
@@ -1060,7 +1178,11 @@ export interface components {
         };
         /**
          * @description One drawing's kind and geometry, on the wire — mirrors
-         *     `senken_workspace::DrawingKind` field-for-field.
+         *     `senken_chart::DrawingKind` field-for-field. `Ray`/`FibRetracement`/
+         *     `TextNote` are additions: the three tools that had no schema to persist
+         *     into before this build (015 maps them onto `Segment { extend: Forward
+         *     }` / `Level × 6` / `Label` respectively; this crate only carries their
+         *     geometry, never renders it).
          */
         DrawingKindDto: {
             /** @enum {string} */
@@ -1084,6 +1206,29 @@ export interface components {
             kind: "rectangle";
             /** @description One corner. */
             start: components["schemas"]["DrawingPointDto"];
+        } | {
+            /** @description The ray's second anchor; the ray extends past this point. */
+            end: components["schemas"]["DrawingPointDto"];
+            /** @enum {string} */
+            kind: "ray";
+            /** @description The ray's origin. */
+            start: components["schemas"]["DrawingPointDto"];
+        } | {
+            /** @description The other end. */
+            end: components["schemas"]["DrawingPointDto"];
+            /** @enum {string} */
+            kind: "fib_retracement";
+            /** @description One end of the retracement range. */
+            start: components["schemas"]["DrawingPointDto"];
+        } | {
+            /** @description The label's position relative to `at`. */
+            anchor: components["schemas"]["IndicatorLabelAnchorDto"];
+            /** @description Where the note is anchored. */
+            at: components["schemas"]["DrawingPointDto"];
+            /** @enum {string} */
+            kind: "text_note";
+            /** @description The note's text. */
+            text: string;
         };
         /**
          * @description A drawing's line style, on the wire — matches the exact vocabulary
@@ -1094,8 +1239,8 @@ export interface components {
          */
         DrawingLineStyleDto: "SOLID" | "DASHED" | "DOTTED";
         /**
-         * @description One (time, price) anchor for a [`DrawingKindDto::TrendLine`] or
-         *     [`DrawingKindDto::Rectangle`], on the wire.
+         * @description One (time, price) anchor for a multi-point [`DrawingKindDto`], on the
+         *     wire.
          */
         DrawingPointDto: {
             /**
@@ -1107,7 +1252,7 @@ export interface components {
             /**
              * Format: int64
              * @description Unix nanoseconds, matching every other time value this crate puts on
-             *     the wire (`BarDto`'s `ts_open`, `TimeRangeDto`'s own fields).
+             *     the wire (`super::BarDto`'s `ts_open`, `TimeRangeDto`'s own fields).
              */
             time: number;
         };
@@ -1169,10 +1314,13 @@ export interface components {
          *     paths, consumed as-is), and Rust's orphan
          *     rule forbids implementing that foreign trait for that foreign type from
          *     here. The wire format is exactly each enum's variant name (`"View"`,
-         *     `"Workspace"`, `"Own"`, …) — the same spelling
+         *     `"ChartWorkspace"`, `"Own"`, …) — the same spelling
          *     `packages/web/src/lib/components/settings/sections/access-section.svelte`
          *     already mirrors from `crates/acl/src/{action,resource,scope}.rs` for its
-         *     (currently disabled) grant matrix.
+         *     (currently disabled) grant matrix. `Resource::Workspace`/`Resource::Layout`
+         *     became `Resource::ChartWorkspace`/`Resource::ChartLayout` — that web
+         *     file's own copy of the resource list needs the same update whenever its
+         *     grant matrix is turned back on (out of this crate's owned paths).
          */
         GrantDto: {
             /** @description What the grant permits doing. */
@@ -1219,11 +1367,8 @@ export interface components {
          *     the browser's own indicator maths is replaced to avoid).
          */
         IndicatorCatalogEntry: {
-            /**
-             * @description The value keys `POST /api/indicators/compute`'s response reports for
-             *     this indicator — see [`IndicatorFieldValue`].
-             */
-            fields: string[];
+            /** @description Legend template using parameter keys in braces. */
+            legend: string;
             /**
              * @description The name to pass as `indicator.name` on `POST /api/indicators/compute`
              *     (and, unchanged, as a stored alert's or workspace layer's indicator
@@ -1231,34 +1376,227 @@ export interface components {
              */
             name: string;
             /** @description The JSON object keys `indicator.params` must supply. */
-            params: string[];
-        };
-        /**
-         * @description One `(field, value)` pair an indicator reports for one bar — see
-         *     [`IndicatorCatalogEntry::fields`] for which keys a given indicator ever
-         *     produces (a single-valued indicator reports exactly one, `"value"`).
-         */
-        IndicatorFieldValue: {
-            /** @description The field's name. */
-            field: string;
+            params: components["schemas"]["IndicatorParamDto"][];
+            /** @description Allowed display locations. */
+            placement: components["schemas"]["IndicatorPlacementDto"];
             /**
-             * Format: double
-             * @description The field's value at this bar.
+             * @description The value keys `POST /api/indicators/compute`'s response reports for
+             *     this indicator's display-list fields.
              */
-            value: number;
+            plots: components["schemas"]["IndicatorPlotDto"][];
+            /** @description Required bar-volume unit. */
+            requires_real_volume: boolean;
+            /** @description Scale semantics reported by the indicator itself. */
+            scale: components["schemas"]["IndicatorScaleDto"];
+            /** @description Compact chart label. */
+            short_title: string;
+            /** @description Full human-readable indicator name. */
+            title: string;
+            /**
+             * Format: int64
+             * @description Number of earlier bars used before the requested range.
+             */
+            warmup_bars: number;
         };
         /**
-         * @description One bar's worth of indicator output, emitted only once the indicator
-         *     reports `initialized()` ("an EMA's first values are not an EMA" — a warm-up value is never emitted, the same discipline the deleted browser copy honoured).
+         * @description One chart display primitive emitted by an indicator — mirrors
+         *     `senken_indicators::Drawable` field-for-field, so a variant this crate's
+         *     indicators emit never needs a translation nobody wrote.
          */
-        IndicatorPointDto: {
+        IndicatorDrawableDto: {
+            /** @description Field key from the indicator descriptor. */
+            field: string;
+            /** @enum {string} */
+            kind: "series";
+            /** @description Values in chronological order. */
+            points: components["schemas"]["IndicatorDrawablePointDto"][];
+            /** @description Rendering shape, e.g. `line` or `histogram`. */
+            shape: string;
+        } | {
+            /** @description First endpoint. */
+            a: components["schemas"]["IndicatorPointDto"];
+            /** @description Second endpoint. */
+            b: components["schemas"]["IndicatorPointDto"];
+            /** @description Extension behaviour. */
+            extend: components["schemas"]["IndicatorExtendDto"];
+            /** @enum {string} */
+            kind: "segment";
+        } | {
+            /** @description Extension behaviour. */
+            extend: components["schemas"]["IndicatorExtendDto"];
+            /** @enum {string} */
+            kind: "level";
+            /** @description Price coordinate. */
+            price: components["schemas"]["IndicatorPriceCoordDto"];
+        } | {
+            /** @description First corner. */
+            a: components["schemas"]["IndicatorPointDto"];
+            /** @description Opposite corner. */
+            b: components["schemas"]["IndicatorPointDto"];
+            /** @enum {string} */
+            kind: "box";
+        } | {
+            /** @description Position relative to the anchor. */
+            anchor: components["schemas"]["IndicatorLabelAnchorDto"];
+            /** @description Text position. */
+            at: components["schemas"]["IndicatorPointDto"];
+            /** @enum {string} */
+            kind: "label";
+            /** @description Text content. */
+            text: string;
+        };
+        /** @description One point in an indicator series. */
+        IndicatorDrawablePointDto: {
             /**
              * Format: int64
              * @description The bar this point was computed from, Unix nanoseconds.
              */
             ts_open: number;
-            /** @description The indicator's reported value(s) at this bar. */
-            values: components["schemas"]["IndicatorFieldValue"][];
+            /**
+             * Format: double
+             * @description The indicator value at this bar.
+             */
+            value: number;
+        };
+        /**
+         * @description How far a segment or level extends past its anchors — mirrors
+         *     `senken_indicators::Extend`.
+         * @enum {string}
+         */
+        IndicatorExtendDto: "none" | "forward" | "backward" | "both";
+        /**
+         * @description Where a label sits relative to its anchor — mirrors
+         *     `senken_indicators::LabelAnchor`. Also used by `dto::workspace`'s own
+         *     `DrawingKindDto::TextNote` (a text note drawing is a persisted `Label`
+         *     anchor the same way a computed indicator's own label output is one),
+         *     reused rather than re-declared a second time with a second casing
+         *     convention. `Deserialize` is needed for that reuse: this type started
+         *     out serialize-only (`POST /api/indicators/compute`'s response never
+         *     reads one back), but a drawing round-trips through `PUT
+         *     /api/layouts/{id}`.
+         * @enum {string}
+         */
+        IndicatorLabelAnchorDto: "above" | "below" | "center";
+        /** @description A parameter default without converting integral values to floating point. */
+        IndicatorParamDefaultDto: {
+            /** @enum {string} */
+            kind: "integer";
+            /**
+             * Format: int64
+             * @description Integral default.
+             */
+            value: number;
+        } | {
+            /** @enum {string} */
+            kind: "number";
+            /**
+             * Format: double
+             * @description Fractional indicator-parameter default.
+             */
+            value: number;
+        };
+        /** @description One parameter exposed by an indicator descriptor. */
+        IndicatorParamDto: {
+            /** @description Default value. */
+            default: components["schemas"]["IndicatorParamDefaultDto"];
+            /** @description Either `integer` or `number`. */
+            kind: string;
+            /**
+             * Format: double
+             * @description Inclusive lower bound when the parameter has one.
+             */
+            min?: number | null;
+            /** @description Wire parameter key. */
+            name: string;
+        };
+        /**
+         * @description A chart location an indicator instance may occupy.
+         * @enum {string}
+         */
+        IndicatorPlacementDto: "overlay" | "sub_pane" | "either";
+        /** @description One plot an indicator emits. */
+        IndicatorPlotDto: {
+            /** @description Default CSS colour. */
+            color: string;
+            /** @description Wire field key. */
+            field: string;
+            /** @description Display label. */
+            label: string;
+            /** @description Either `line` or `histogram`. */
+            shape: string;
+        };
+        /**
+         * @description A chart coordinate used by a non-series drawable — mirrors
+         *     `senken_indicators::Point`.
+         */
+        IndicatorPointDto: {
+            /**
+             * Format: int64
+             * @description Unix nanoseconds on the horizontal axis.
+             */
+            time: number;
+            /**
+             * Format: double
+             * @description A display or decision value on the vertical axis.
+             */
+            value: number;
+        };
+        /**
+         * @description A price coordinate carried by a `level` drawable — mirrors
+         *     `senken_indicators::PriceCoord`. No built-in indicator emits `executable`
+         *     today: nothing in this crate rounds a value to an instrument's tick, so
+         *     an executable anchor would currently have nowhere to come from.
+         */
+        IndicatorPriceCoordDto: {
+            /** @enum {string} */
+            kind: "annotation";
+            /**
+             * Format: double
+             * @description A visual annotation chosen on a chart. Not an order price.
+             */
+            value: number;
+        } | {
+            /** @enum {string} */
+            kind: "executable";
+            /** @description A price which can later be used for execution. */
+            value: components["schemas"]["IndicatorScaledPriceDto"];
+        };
+        /** @description Scaling metadata for indicator output. */
+        IndicatorScaleDto: {
+            /** @enum {string} */
+            kind: "price";
+        } | {
+            /** @enum {string} */
+            kind: "ratio";
+            /**
+             * Format: double
+             * @description Inclusive upper bound.
+             */
+            max: number;
+            /**
+             * Format: double
+             * @description Inclusive lower bound.
+             */
+            min: number;
+        } | {
+            /** @enum {string} */
+            kind: "volume";
+        } | {
+            /** @enum {string} */
+            kind: "own";
+        };
+        /** @description An exact, instrument-scaled price — mirrors `senken_indicators::ScaledPrice`. */
+        IndicatorScaledPriceDto: {
+            /**
+             * Format: int32
+             * @description Decimal scale of `value`.
+             */
+            scale: number;
+            /**
+             * Format: int64
+             * @description Integer value at `scale`.
+             */
+            value: number;
         };
         /**
          * @description A stored `(name, params)` pair, on the wire — mirrors
@@ -1299,6 +1637,15 @@ export interface components {
             source_id: string;
             /** @description The source's display name. */
             source_name: string;
+            /**
+             * @description The venue's most recently catalogued state for this instrument.
+             *
+             *     This is deliberately distinct from a live-feed capability. A venue
+             *     can have no websocket in this build and still report that an
+             *     instrument is closed; clients use that fact to avoid describing a
+             *     closed market as a broken feed.
+             */
+            status: string;
             /** @description Normalised symbol (`id`'s suffix). */
             symbol: string;
         };
@@ -1358,11 +1705,15 @@ export interface components {
             visible: boolean;
         };
         /**
-         * @description One layer's kind, on the wire — mirrors `senken_workspace::LayerKind`
-         *     field-for-field. `params` stays an opaque JSON-text string rather than a
-         *     parsed value, the same way `senken_alerts::IndicatorSpec::params` already
-         *     does on the wire below: this crate does not interpret it either (plan
-         *     005 its own scope note — that is the indicator engine's job).
+         * @description One layer's kind, on the wire. `senken_chart` no longer has a
+         *     `LayerKind` type of its own (a layer is now a pane item whose
+         *     `ItemSource` is `Computed`/`Referenced`, placed by `Slot`) — this is
+         *     this crate's own translation between that domain shape and the wire
+         *     shape web clients already speak, kept unchanged on purpose. `params`
+         *     stays an opaque JSON-text string rather than a parsed value, the same
+         *     way `senken_alerts::IndicatorSpec::params` already does on the wire
+         *     below: this crate does not interpret it either — that is the indicator
+         *     engine's job.
          */
         LayerKindDto: {
             /** @description The overlaid instrument, `source:symbol`. */
@@ -1385,8 +1736,8 @@ export interface components {
             params: string;
         };
         /**
-         * @description A layout together with its panes and their layers — the full nested
-         *     structure workspace → layout → panes → layers, minus the workspace
+         * @description A layout together with its panes and their items — the full nested
+         *     structure workspace → layout → panes → items, minus the workspace
          *     itself.
          */
         LayoutDetailDto: {
@@ -1411,7 +1762,7 @@ export interface components {
             position: number;
             /**
              * @description The pane-grid arrangement, as one of the tokens
-             *     `senken_workspace::LayoutPreset` round-trips through its own
+             *     `senken_chart::LayoutPreset` round-trips through its own
              *     `Display`/`FromStr` (`"1"`, `"2h"`, `"2v"`, `"3h"`, `"3v"`, `"4"`).
              */
             preset: string;
@@ -1446,7 +1797,7 @@ export interface components {
          *     whether it is really still authenticated, instead of `GET /api/health`:
          *     `health` needs no credential at all, so a successful poll of it reads as
          *     "authenticated" whether or not a session exists, which is exactly the
-         *     bug Q3 flagged and Q6 hit live. `me` requires
+         *     authentication bug this avoids. `me` requires
          *     [`crate::auth::EndpointPermission::Authenticated`], so a `200` here
          *     really does mean a live, unfenced session, and a `401` really does mean
          *     the credential is gone.
@@ -1536,7 +1887,7 @@ export interface components {
         };
         /**
          * @description The forming bar a client is drawing, as scaled integers at the
-         *     instrument's own price scale — the same wire form [`BarDto`] uses.
+         *     instrument's own price scale — the same wire form [`super::BarDto`] uses.
          */
         ProvisionalBarDto: {
             /**
@@ -1565,11 +1916,10 @@ export interface components {
              */
             ts_open: number;
             /**
-             * Format: int64
              * @description Base-asset volume accumulated from the ticks seen in this interval,
              *     at the instrument's own quantity scale.
              */
-            volume: number;
+            volume: components["schemas"]["VolumeDto"];
         };
         /** @description `PATCH /api/workspaces/{id}` request body. */
         RenameWorkspaceRequest: {
@@ -1578,13 +1928,13 @@ export interface components {
         };
         /**
          * @description `PUT /api/layouts/{id}` request body: replaces a layout's entire pane/
-         *     layer structure in one transaction.
+         *     item structure in one transaction.
          */
         ReplaceLayoutRequest: {
             /** @description The layout's new panes. Length must match `preset`'s pane count. */
             panes: components["schemas"]["PaneInputDto"][];
             /**
-             * @description The pane-grid arrangement, one of `senken_workspace::LayoutPreset`'s
+             * @description The pane-grid arrangement, one of `senken_chart::LayoutPreset`'s
              *     own tokens (`"1"`, `"2h"`, `"2v"`, `"3h"`, `"3v"`, `"4"`).
              */
             preset: string;
@@ -1640,6 +1990,14 @@ export interface components {
         SourceCapabilityDto: {
             /** @description A `BarSource` is registered for it, so its instruments can be charted. */
             bars: boolean;
+            /**
+             * @description The order-book panel's own capability, nested rather than a fourth
+             *     top-level flag: `bars`/`live`/`quotes` are already an established
+             *     part of this response's wire shape (`source-capability.ts` reads
+             *     each directly), so a newly added capability is grouped here instead
+             *     of widening that flat set indefinitely.
+             */
+            book: components["schemas"]["BookCapabilityDto"];
             /** @description The source id, e.g. `okx-spot` — the left half of an `InstrumentId`. */
             id: string;
             /**
@@ -1649,6 +2007,8 @@ export interface components {
             live: boolean;
             /** @description The venue's own display name. */
             name: string;
+            /** @description It reports best bid and offer updates. */
+            quotes: boolean;
         };
         /** @description `GET /api/sources` response body. */
         SourcesResponse: {
@@ -1699,6 +2059,27 @@ export interface components {
              * @description How many rows exist in total, under the same scope as `rows`.
              */
             total: number;
+        };
+        /** @description A bar volume and its unit on the wire. */
+        VolumeDto: {
+            /** @enum {string} */
+            kind: "real";
+            /**
+             * Format: int64
+             * @description Base-asset quantity actually traded.
+             */
+            value: number;
+        } | {
+            /** @enum {string} */
+            kind: "tick";
+            /**
+             * Format: int32
+             * @description Number of price changes, not an asset quantity.
+             */
+            value: number;
+        } | {
+            /** @enum {string} */
+            kind: "absent";
         };
         /** @description A workspace row (list/create/rename/delete). */
         WorkspaceDto: {
@@ -1994,6 +2375,45 @@ export interface operations {
             };
         };
     };
+    download_m1: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DownloadM1Request"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnsureBarsResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     plan_bars: {
         parameters: {
             query: {
@@ -2073,6 +2493,96 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_drawing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                drawing_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_drawing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                drawing_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DrawingInputDto"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2192,6 +2702,96 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_layer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                layer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_layer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                layer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LayerInputDto"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

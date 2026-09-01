@@ -30,6 +30,7 @@
 		spec,
 		layers,
 		loadingLayerIds = [],
+		barsLoading = false,
 		hoverText,
 		narrow,
 		livePrice,
@@ -47,6 +48,10 @@
 		/** Layers whose series is being recomputed. The plot already drawn
 		 * stays put; this only says the layer is working. */
 		loadingLayerIds?: string[];
+		/** Whether the pane's own bars are being fetched. Shown on the instrument
+		 * row for the same reason each layer shows its own: a chart that is
+		 * working looks identical to one that has stalled. */
+		barsLoading?: boolean;
 		hoverText: string;
 		narrow: boolean;
 		/** The live last-traded price, shown in place of the
@@ -96,57 +101,68 @@
 		{:else if livePrice != null}
 			<span class="min-w-0 truncate font-mono text-[9.5px] whitespace-nowrap text-secondary-foreground">{livePrice.toFixed(4)}</span>
 		{/if}
-		<button
-			type="button"
-			class="hidden flex-none cursor-pointer text-secondary-foreground group-hover/chip:block"
-			onclick={onOpenMainSettings}
-			aria-label={`${main.ticker} settings`}
-		>
-			<SettingsIcon class="size-3" />
-		</button>
+		<!-- While it is working, the spinner takes the action's place rather than
+		     sitting beside it: two controls where there was one shifts the row
+		     under the cursor, and an action pressed mid-fetch acts on a state
+		     that is about to be replaced. -->
+		{#if barsLoading}
+			<LoaderIcon class="size-3 flex-none animate-spin text-dim2" data-loading="bars" />
+		{:else}
+			<button
+				type="button"
+				class="hidden flex-none cursor-pointer text-secondary-foreground group-hover/chip:block"
+				onclick={onOpenMainSettings}
+				aria-label={`${main.ticker} settings`}
+			>
+				<SettingsIcon class="size-3" />
+			</button>
+		{/if}
 	</div>
 
 	{#each layers as l (l.id)}
 		{@const Icon = LAYER_KIND_ICON[l.kind]}
 		{@const on = l.visible}
 		<div class="group/chip pointer-events-auto flex w-fit max-w-full min-w-0 items-center gap-1.5 py-0.5 pr-1.5 pl-0.5 hover:bg-ink/7">
-			{#if loadingLayerIds.includes(l.id)}
-				<LoaderIcon class="size-3 flex-none animate-spin text-dim2" />
-			{:else}
-				<Icon class={cn('size-3 flex-none', on ? 'text-secondary-foreground' : 'text-dim')} />
-			{/if}
+			<Icon class={cn('size-3 flex-none', on ? 'text-secondary-foreground' : 'text-dim')} />
 			<span class="min-w-0 truncate font-mono text-[11px] font-medium tracking-[0.04em] whitespace-nowrap">
 				<span class={on ? 'text-secondary-foreground' : 'text-dim'}>{layerLabel(l)}</span>
 			</span>
 			<span class="min-w-0 truncate font-mono text-[9px] whitespace-nowrap text-dim2">{layerParams(l)}</span>
-			<button
-				type="button"
-				class="hidden flex-none cursor-pointer text-secondary-foreground group-hover/chip:block"
-				onclick={() => onToggleLayer(l.id)}
-				aria-label={on ? `Hide ${layerLabel(l)}` : `Show ${layerLabel(l)}`}
-			>
-				{#if on}
-					<EyeIcon class="size-3" />
-				{:else}
-					<EyeOffIcon class="size-3" />
-				{/if}
-			</button>
-			<button
-				type="button"
-				class="hidden flex-none cursor-pointer text-secondary-foreground group-hover/chip:block"
-				onclick={() => onOpenLayerSettings(l.id)}
-				aria-label={`${layerLabel(l)} settings`}
-			>
-				<SettingsIcon class="size-3" />
-			</button>
-			<button
-				type="button"
-				class="hidden flex-none cursor-pointer text-secondary-foreground group-hover/chip:block"
-				onclick={() => onRemoveLayer(l.id)}
-				aria-label={`Remove ${layerLabel(l)}`}
-			>
-				<XIcon class="size-3" />
-			</button>
+			<!-- The layer is working: its actions step aside for the spinner, so the
+			     row keeps its width and nothing can be pressed against a series that
+			     is about to be replaced. -->
+			{#if loadingLayerIds.includes(l.id)}
+				<LoaderIcon class="size-3 flex-none animate-spin text-dim2" data-loading={l.id} />
+			{:else}
+				<button
+					type="button"
+					class="hidden flex-none cursor-pointer text-secondary-foreground group-hover/chip:block"
+					onclick={() => onToggleLayer(l.id)}
+					aria-label={on ? `Hide ${layerLabel(l)}` : `Show ${layerLabel(l)}`}
+				>
+					{#if on}
+						<EyeIcon class="size-3" />
+					{:else}
+						<EyeOffIcon class="size-3" />
+					{/if}
+				</button>
+				<button
+					type="button"
+					class="hidden flex-none cursor-pointer text-secondary-foreground group-hover/chip:block"
+					onclick={() => onOpenLayerSettings(l.id)}
+					aria-label={`${layerLabel(l)} settings`}
+				>
+					<SettingsIcon class="size-3" />
+				</button>
+				<button
+					type="button"
+					class="hidden flex-none cursor-pointer text-secondary-foreground group-hover/chip:block"
+					onclick={() => onRemoveLayer(l.id)}
+					aria-label={`Remove ${layerLabel(l)}`}
+				>
+					<XIcon class="size-3" />
+				</button>
+			{/if}
 		</div>
 	{/each}
 </div>

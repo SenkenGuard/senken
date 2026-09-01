@@ -54,10 +54,10 @@ use tower_http::trace::TraceLayer;
 use utoipa::ToSchema;
 
 use senken_alerts::{AlertEngine, AlertStore};
+use senken_chart::ChartWorkspaceStore;
 use senken_identity::{DEFAULT_ADMIN_EMAIL, IdentityStore};
 use senken_runtime::Runtime;
-use senken_subscription::SubscriptionPool;
-use senken_workspace::WorkspaceStore;
+use senken_subscription::{BookSource, IndicatorSessionRegistry, SubscriptionPool};
 
 use crate::auth::{EndpointPermission, mount};
 pub(crate) use crate::error::HandlerError;
@@ -131,9 +131,9 @@ pub(crate) struct AppState {
     /// The accounts store this crate exposes over HTTP.
     pub(crate) identity: Arc<IdentityStore>,
     /// Chart workspace persistence: shares
-    /// `identity`'s own SQLite connection (see `WorkspaceStore::new`'s own
+    /// `identity`'s own SQLite connection (see `ChartWorkspaceStore::new`'s own
     /// docs) rather than opening a second one.
-    pub(crate) workspace: Arc<WorkspaceStore>,
+    pub(crate) workspace: Arc<ChartWorkspaceStore>,
     /// Standalone alerts, sharing `identity`'s
     /// connection the same way `workspace` does.
     pub(crate) alerts: Arc<AlertStore>,
@@ -152,6 +152,20 @@ pub(crate) struct AppState {
     pub(crate) alert_engine: Arc<AlertEngine>,
     /// Outstanding WS tickets.
     pub(crate) ws_tickets: Arc<ws::TicketStore>,
+    /// Live indicator sessions, deduplicated by
+    /// `senken_subscription::IndicatorSessionKey` across every WS connection
+    /// this server handles — one registry per server (built fresh in
+    /// [`serve_with_feed_pools`]), not one per process, so two servers
+    /// running in the same process (as a test stands up) never share
+    /// sessions with each other.
+    pub(crate) indicator_sessions: Arc<IndicatorSessionRegistry>,
+    /// Book-depth sources this build actually has, keyed by source id —
+    /// registration is the capability declaration, the same contract every
+    /// other market-data type in this project uses (see
+    /// `senken_subscription::BookSource`'s own docs). Built once per server
+    /// by [`source_handlers::build_book_sources`], the same way `feed_pools`
+    /// is built once by [`feed::build_feed_pools`].
+    pub(crate) book_sources: Arc<HashMap<String, Arc<dyn BookSource>>>,
     /// Login attempt counters.
     pub(crate) login_limiter: Arc<identity_handlers::LoginRateLimiter>,
     /// The address this server actually bound, for the B4 non-loopback
@@ -203,7 +217,7 @@ pub(crate) async fn serve_with_feed_pools(
         .map_err(|source| ApiError::Bind { addr, source })?;
     let local_addr = listener.local_addr().map_err(ApiError::LocalAddr)?;
 
-    let workspace = Arc::new(WorkspaceStore::new(&identity));
+    let workspace = Arc::new(ChartWorkspaceStore::new(&identity));
     let alerts = Arc::new(AlertStore::new(&identity));
     let feed_pools = Arc::new(feed_pools);
     // reconciles every already-enabled alert against those
@@ -221,6 +235,8 @@ pub(crate) async fn serve_with_feed_pools(
         feed_pools,
         alert_engine,
         ws_tickets: Arc::new(ws::TicketStore::default()),
+        indicator_sessions: Arc::new(IndicatorSessionRegistry::default()),
+        book_sources: Arc::new(source_handlers::build_book_sources()),
         login_limiter: Arc::new(identity_handlers::LoginRateLimiter::default()),
         bind_host: local_addr.ip(),
     };
@@ -511,10 +527,10 @@ fn mount_admin_routes(mut api: Router<AppState>, state: &AppState) -> Router<App
     )
 }
 
-/// Mounts the workspace/layout/pane/layer surface, split
+/// Mounts the workspace/layout/pane/item surface, split
 /// out of [`router`] the same way [`mount_admin_routes`] is. Every route is
 /// mounted at plain `EndpointPermission::Authenticated`:
-/// `senken_workspace::WorkspaceStore` performs its own `AuthenticatedUser::authorize`
+/// `senken_chart::ChartWorkspaceStore` performs its own `AuthenticatedUser::authorize`
 /// check on every read and write, so a router-level guard
 /// beyond "a valid, unfenced session exists" would only check the same
 /// thing twice.
@@ -568,11 +584,39 @@ fn mount_workspace_routes(mut api: Router<AppState>, state: &AppState) -> Router
         get(workspace_handlers::get_layout),
         EndpointPermission::Authenticated,
     );
-    mount(
+    api = mount(
         api,
         state,
         "/layouts/{layout_id}",
         put(workspace_handlers::replace_layout),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/layers/{layer_id}",
+        patch(workspace_handlers::update_layer),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/layers/{layer_id}",
+        delete(workspace_handlers::delete_layer),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/drawings/{drawing_id}",
+        patch(workspace_handlers::update_drawing),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/drawings/{drawing_id}",
+        delete(workspace_handlers::delete_drawing),
         EndpointPermission::Authenticated,
     )
 }
@@ -605,6 +649,13 @@ fn mount_bars_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppS
         state,
         "/bars/ensure",
         post(bars_handlers::ensure_bars),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/bars/m1-download",
+        post(bars_handlers::download_m1),
         EndpointPermission::Authenticated,
     );
     mount(

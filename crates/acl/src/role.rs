@@ -61,12 +61,16 @@ mod tests {
     #[test]
     fn with_grant_appends_in_order() {
         let role = Role::new("Charts Only")
-            .with_grant(Grant::new(Action::View, Resource::Layout, Scope::Own))
-            .with_grant(Grant::new(Action::View, Resource::Workspace, Scope::Own));
+            .with_grant(Grant::new(Action::View, Resource::ChartLayout, Scope::Own))
+            .with_grant(Grant::new(
+                Action::View,
+                Resource::ChartWorkspace,
+                Scope::Own,
+            ));
 
         assert_eq!(role.grants().len(), 2);
-        assert_eq!(role.grants()[0].resource, Resource::Layout);
-        assert_eq!(role.grants()[1].resource, Resource::Workspace);
+        assert_eq!(role.grants()[0].resource, Resource::ChartLayout);
+        assert_eq!(role.grants()[1].resource, Resource::ChartWorkspace);
     }
 
     #[test]

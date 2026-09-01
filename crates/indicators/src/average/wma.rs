@@ -62,6 +62,10 @@ impl Indicator for Wma {
         self.update_raw(scaled_to_f64(bar.close));
     }
 
+    fn snapshot(&self) -> Box<dyn Indicator> {
+        Box::new(self.clone())
+    }
+
     fn reset(&mut self) {
         self.window.clear();
         self.has_inputs = false;

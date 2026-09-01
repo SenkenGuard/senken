@@ -16,9 +16,10 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use senken_core::UnixNanos;
+use senken_feed::LiveUpdate;
 use senken_identity::DEFAULT_ADMIN_EMAIL;
 use senken_marketdata::InstrumentId;
-use senken_subscription::{ConnectionError, PriceUpdate, SubscriptionPool};
+use senken_subscription::{ConnectionError, PriceUpdate, QuoteUpdate, SubscriptionPool};
 use senken_venue::LimitGroup;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::WebSocketStream;
@@ -141,17 +142,24 @@ impl senken_feed::VenueProtocol for TestProtocol {
         Ok(format!("UNSUB {}", instrument.symbol()))
     }
 
-    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, PriceUpdate)> {
-        // "PRICE <symbol> <price> <scale> <ts_millis>"
+    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, LiveUpdate)> {
+        // "PRICE <symbol> <price> <scale> <ts_millis>" or
+        // "QUOTE <symbol> <bid> <ask> <scale> <ts_millis>"
         let mut parts = text.split_whitespace();
-        if parts.next() != Some("PRICE") {
-            return Vec::new();
-        }
+        let kind = parts.next();
         let Some(symbol) = parts.next() else {
             return Vec::new();
         };
-        let Some(price) = parts.next().and_then(|p| p.parse::<i64>().ok()) else {
+        let Some(first) = parts.next().and_then(|p| p.parse::<i64>().ok()) else {
             return Vec::new();
+        };
+        let second = if kind == Some("QUOTE") {
+            let Some(value) = parts.next().and_then(|p| p.parse::<i64>().ok()) else {
+                return Vec::new();
+            };
+            value
+        } else {
+            0
         };
         let Some(price_scale) = parts.next().and_then(|p| p.parse::<u8>().ok()) else {
             return Vec::new();
@@ -165,16 +173,28 @@ impl senken_feed::VenueProtocol for TestProtocol {
         let Some(ts) = UnixNanos::from_millis(ts_millis) else {
             return Vec::new();
         };
-        vec![(
-            instrument,
-            PriceUpdate {
+        match kind {
+            Some("PRICE") => vec![(
+                instrument,
+                LiveUpdate::Price(PriceUpdate {
+                    ts,
+                    price: first,
+                    price_scale,
+                    qty: senken_series::Volume::Real(0),
+                    qty_scale: 0,
+                }),
+            )],
+            Some("QUOTE") => QuoteUpdate::new(
                 ts,
-                price,
-                price_scale,
-                qty: 0,
-                qty_scale: 0,
-            },
-        )]
+                (first, price_scale),
+                (second, price_scale),
+                (0, 0),
+                (0, 0),
+            )
+            .map(|quote| vec![(instrument, LiveUpdate::Quote(quote))])
+            .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -275,6 +295,45 @@ async fn a_topic_with_no_feed_is_answered_as_unsupported() {
     assert_eq!(frame["topic"], "no-such-venue:BTCUSDT");
 }
 
+/// A book topic is gated by its own registry, entirely separate from the
+/// price/quote pool a source's `feed_pools` entry serves: `test-venue` has a
+/// live pool (this suite's own fake server proves it can stream price and
+/// quote topics), but no registered `senken_subscription::BookSource`, so a
+/// book subscription for it must still come back `unsupported` rather than
+/// falling back to "has a feed pool, so it must have everything".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_book_topic_for_a_source_with_no_registered_book_source_is_unsupported() {
+    let server = FakeServer::bind().await;
+    let feed_pools = fake_pool(&server);
+    let (_runtime_dir, runtime) = temp_empty_runtime();
+    let (handle, _identity, _dir) = serve_unfenced_test_server_with_feed(runtime, feed_pools).await;
+    let addr = handle.local_addr();
+    let token = admin_token(addr).await;
+    let ticket = ws_ticket(addr, &token).await;
+
+    let (mut client, _resp) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws?ticket={ticket}"))
+            .await
+            .unwrap();
+    let _connected = client.next().await.unwrap().unwrap();
+
+    client
+        .send(WsMessage::text(
+            r#"{"type":"subscribe","topic":"book:test-venue:BTCUSDT"}"#,
+        ))
+        .await
+        .unwrap();
+
+    let frame: serde_json::Value =
+        serde_json::from_str(client.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(frame["type"], "unsupported");
+    assert_eq!(frame["topic"], "book:test-venue:BTCUSDT");
+
+    drop(client);
+    drop(server);
+    handle.shutdown().await.unwrap();
+}
+
 /// a WS client subscribing to a live topic leases the pool
 /// exactly the way a chart pane does, and closing the connection — without
 /// ever sending `Unsubscribe` — releases it, unprompted.
@@ -359,6 +418,60 @@ async fn a_ws_subscription_streams_ticks_and_releases_on_disconnect() {
         .expect("the dropped connection must release its lease without anyone calling anything");
     assert_eq!(unsub, "UNSUB BTCUSDT");
 
+    drop(conn);
+    drop(server);
+    handle.shutdown().await.unwrap();
+}
+
+/// Quote topics are namespaced from last-trade topics and forward both sides
+/// with their shared integer scale. The fake protocol proves the complete WS
+/// path without a live venue connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ws_quote_subscription_streams_bid_and_ask() {
+    let server = FakeServer::bind().await;
+    let feed_pools = fake_pool(&server);
+    let (_runtime_dir, runtime) = temp_empty_runtime();
+    let (handle, _identity, _dir) = serve_unfenced_test_server_with_feed(runtime, feed_pools).await;
+    let addr = handle.local_addr();
+    let token = admin_token(addr).await;
+    let ticket = ws_ticket(addr, &token).await;
+
+    let server_task = tokio::spawn(async move {
+        let mut conn = server.accept().await;
+        let sub = conn.recv_text().await;
+        (server, conn, sub)
+    });
+    let (mut client, _response) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws?ticket={ticket}"))
+            .await
+            .unwrap();
+    let _connected = client.next().await.unwrap().unwrap();
+    client
+        .send(WsMessage::text(
+            r#"{"type":"subscribe","topic":"quote:test-venue:BTCUSDT"}"#,
+        ))
+        .await
+        .unwrap();
+    let ack: serde_json::Value =
+        serde_json::from_str(client.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(ack["type"], "subscribed");
+
+    let (server, mut conn, sub) = server_task.await.unwrap();
+    assert_eq!(sub, "SUB BTCUSDT");
+    conn.send_text("QUOTE BTCUSDT 779955 779956 1 1000").await;
+    let quote: serde_json::Value =
+        serde_json::from_str(client.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(quote["type"], "quote");
+    assert_eq!(quote["topic"], "quote:test-venue:BTCUSDT");
+    assert_eq!(quote["bid"], 779_955);
+    assert_eq!(quote["ask"], 779_956);
+    assert_eq!(quote["price_scale"], 1);
+
+    drop(client);
+    let unsub = tokio::time::timeout(Duration::from_secs(5), conn.recv_text())
+        .await
+        .expect("dropping a quote subscriber must release its lease");
+    assert_eq!(unsub, "UNSUB BTCUSDT");
     drop(conn);
     drop(server);
     handle.shutdown().await.unwrap();

@@ -74,7 +74,12 @@ mod tests {
     #[test]
     fn a_new_actor_has_no_matching_scopes_for_anything() {
         let actor = Actor::new();
-        assert_eq!(actor.scopes_for(Action::View, Resource::Layout).count(), 0);
+        assert_eq!(
+            actor
+                .scopes_for(Action::View, Resource::ChartLayout)
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -82,17 +87,19 @@ mod tests {
         let actor = Actor::new()
             .with_role(Role::new("viewer").with_grant(Grant::new(
                 Action::View,
-                Resource::Layout,
+                Resource::ChartLayout,
                 Scope::Own,
             )))
             .with_role(Role::new("editor").with_grant(Grant::new(
                 Action::Edit,
-                Resource::Layout,
+                Resource::ChartLayout,
                 Scope::Own,
             )))
-            .with_direct_grant(Grant::new(Action::View, Resource::Layout, Scope::All));
+            .with_direct_grant(Grant::new(Action::View, Resource::ChartLayout, Scope::All));
 
-        let scopes: Vec<Scope> = actor.scopes_for(Action::View, Resource::Layout).collect();
+        let scopes: Vec<Scope> = actor
+            .scopes_for(Action::View, Resource::ChartLayout)
+            .collect();
         assert_eq!(scopes, vec![Scope::Own, Scope::All]);
     }
 
@@ -100,13 +107,20 @@ mod tests {
     fn scopes_for_ignores_grants_for_a_different_action_or_resource() {
         let actor = Actor::new().with_direct_grant(Grant::new(
             Action::View,
-            Resource::Workspace,
+            Resource::ChartWorkspace,
             Scope::All,
         ));
 
-        assert_eq!(actor.scopes_for(Action::View, Resource::Layout).count(), 0);
         assert_eq!(
-            actor.scopes_for(Action::Edit, Resource::Workspace).count(),
+            actor
+                .scopes_for(Action::View, Resource::ChartLayout)
+                .count(),
+            0
+        );
+        assert_eq!(
+            actor
+                .scopes_for(Action::Edit, Resource::ChartWorkspace)
+                .count(),
             0
         );
     }

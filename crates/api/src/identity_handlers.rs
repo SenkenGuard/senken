@@ -515,7 +515,7 @@ mod tests {
             let raw = rusqlite::Connection::open(&db_path).unwrap();
             raw.execute(
                 "INSERT INTO role_grants (role_id, action, resource, scope)
-                 VALUES (?1, 'view', 'layout', 'own')",
+                 VALUES (?1, 'view', 'chart_layout', 'own')",
                 [role_id.to_string()],
             )
             .unwrap();
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(after.status(), reqwest::StatusCode::OK);
         assert_eq!(
             body_json(after).await["grants"],
-            serde_json::json!([{ "action": "View", "resource": "Layout", "scope": "Own" }]),
+            serde_json::json!([{ "action": "View", "resource": "ChartLayout", "scope": "Own" }]),
             "the grant change must be visible on the very next call, with no re-login"
         );
 

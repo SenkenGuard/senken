@@ -14,6 +14,14 @@
 //! than assumed — see [`okx`]'s module docs for exactly what was confirmed
 //! and what was not.
 //!
+//! [`okx_book`] is the one exception to "against a real venue WebSocket"
+//! above: a fixed-depth order-book snapshot is fetched fresh over plain
+//! HTTP rather than streamed, so it implements
+//! [`senken_subscription::BookSource`] instead of `VenueConnection`. It
+//! still lives in this crate, alongside [`okx`], because both are venue
+//! adapters against `senken-subscription`'s ports for data this crate's own
+//! pool does not carry.
+//!
 //! # Sharing the venue's rate budget
 //!
 //! A venue's connection limit is an IP-level fact, the same one
@@ -34,14 +42,15 @@
 mod connection;
 mod connector;
 pub mod okx;
+pub mod okx_book;
 mod protocol;
 mod symbol_map;
 
 pub use connection::WsVenueConnection;
 pub use connector::WsVenueConnector;
-pub use protocol::VenueProtocol;
+pub use protocol::{LiveUpdate, VenueProtocol};
 pub use symbol_map::{IdentitySymbolMap, SymbolMap};
 
 // Re-exported so a caller building a `VenueProtocol` or wiring a connector
 // needs no direct dependency on `senken-subscription` just to name these.
-pub use senken_subscription::{ConnectionError, PriceUpdate};
+pub use senken_subscription::{ConnectionError, PriceUpdate, QuoteUpdate};

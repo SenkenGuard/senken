@@ -17,6 +17,12 @@
 			rowId: 'app-license',
 			rowLabel: 'License',
 			rowDescription: 'The licence this software is distributed under.'
+		},
+		{
+			groupHeading: 'About',
+			rowId: 'app-attributions',
+			rowLabel: 'Attributions',
+			rowDescription: 'Third-party software this application is built on.'
 		}
 	];
 </script>
@@ -82,6 +88,25 @@
 	<span class="font-mono text-[12px] text-dim2">LGPL-3.0-only</span>
 {/snippet}
 
+<!-- Not decoration. lightweight-charts is Apache-2.0 and its licence requires
+     naming TradingView as the creator and linking to tradingview.com on a page
+     users can reach. The chart's built-in attribution logo is switched off in
+     `chart-pane.svelte`, so this row is what satisfies it — removing this means
+     turning that logo back on. -->
+{#snippet attributionsControl()}
+	<span class="text-right font-mono text-[11px] text-dim2">
+		Charting by
+		<a
+			href="https://www.tradingview.com/"
+			target="_blank"
+			rel="noreferrer"
+			class="text-secondary-foreground underline underline-offset-2 hover:text-foreground"
+		>TradingView Lightweight Charts&trade;</a>
+		<br />
+		Copyright (c) 2026 TradingView, Inc.
+	</span>
+{/snippet}
+
 <div class="flex flex-col gap-6">
 	<SettingsGroup
 		group={{
@@ -100,6 +125,12 @@
 					label: 'License',
 					description: 'The licence this software is distributed under.',
 					control: licenseControl
+				},
+				{
+					id: 'app-attributions',
+					label: 'Attributions',
+					description: 'Third-party software this application is built on.',
+					control: attributionsControl
 				}
 			]
 		}}

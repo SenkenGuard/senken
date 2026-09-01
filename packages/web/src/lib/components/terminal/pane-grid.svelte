@@ -11,13 +11,16 @@
 	import * as Resizable from '$lib/components/ui/resizable/index.js';
 	import PaneCell from './pane-cell.svelte';
 	import type { ChartSettings } from '$lib/mock/chart-settings';
+	import type { MarketStatus } from '$lib/charts/live-state';
 	import type { DrawingRuntime, PaneRuntime } from '$lib/charts/pane-runtime';
 	import type { LayoutId, ToolKey } from './chart-config';
 
 	let {
 		panes,
+		marketStatuses = {},
 		reloadToken = 0,
 		resetTokens = [],
+		jumpTargets = [],
 		onMoveDrawing,
 		onPatchSettings,
 		onContextMenu,
@@ -40,12 +43,18 @@
 		onToolConsumed
 	}: {
 		panes: PaneRuntime[];
+		/** Catalogued session state by instrument. Market data remains outside
+		 * the persisted chart layout, which only owns user preferences. */
+		marketStatuses?: Record<string, MarketStatus>;
 		/** Bumping this reloads every pane's bars — the manual way out of a
 		 * chart that has ended up somewhere the user cannot explain. */
 		reloadToken?: number;
 		/** One reset counter per pane — a shared counter would reset every
 		 * pane whenever any one of them was asked. */
 		resetTokens?: number[];
+		/** One "go to date" request per pane — same reasoning as
+		 * `resetTokens`. */
+		jumpTargets?: ({ token: number; targetNanos: number } | null)[];
 		onMoveDrawing?: (
 			paneIndex: number,
 			id: string,
@@ -83,12 +92,14 @@
 	<Resizable.Pane defaultSize={size} minSize={15}>
 		<PaneCell
 			instrument={panes[i].instrument}
+			marketStatus={marketStatuses[panes[i].instrument]}
 			spec={panes[i].timeframe}
 			layers={panes[i].layers}
 			drawings={panes[i].drawings}
 			settings={panes[i].settings}
 			{reloadToken}
 			resetToken={resetTokens[i] ?? 0}
+			jumpTarget={jumpTargets[i] ?? null}
 			onContextMenu={(e) => onContextMenu?.(i, e)}
 			selectedDrawingId={selectedDrawing?.pane === i ? selectedDrawing.id : null}
 			showFocusRing={panes.length > 1 && activeIndex === i}

@@ -1,120 +1,139 @@
-//! Workspaces, layouts, panes and layers over HTTP.
+//! Workspaces, layouts, panes and pane items over HTTP.
 //!
 //! Every handler here extracts `Extension(ctx): Authed` and passes
-//! `&ctx.user` straight through to `senken_workspace::WorkspaceStore`, which
-//! performs its own `AuthenticatedUser::authorize` check on every read and
-//! write — the same "the store checks itself" shape
+//! `&ctx.user` straight through to `senken_chart::ChartWorkspaceStore`,
+//! which performs its own `AuthenticatedUser::authorize` check on every
+//! read and write — the same "the store checks itself" shape
 //! `admin_handlers` already established for `senken-identity`. Every route
 //! this module's handlers are mounted on (see `crate::router`) is still
 //! declared through `crate::auth::mount` at `EndpointPermission::Authenticated`: a second all-or-nothing gate here would only ever be
 //! checking the same thing twice, never tighter.
+//!
+//! # `layers`/`drawings` are one table underneath, two routes on top
+//!
+//! `senken-chart` stores every pane item — a computed indicator, a
+//! referenced overlay instrument, or an anchored drawing — in one table
+//! (`PaneItemRecord`/`ItemSource`). The wire API keeps its two separate
+//! shapes (`layers[]`/`drawings[]` on a pane, `/api/layers/{id}` and
+//! `/api/drawings/{id}` for per-item mutation) unchanged: this module is
+//! where that split lives now, translating between the wire DTOs
+//! (`crate::dto::workspace`) and the unified domain calls. `/api/layers/
+//! {id}` can only ever produce a `Computed`/`Referenced` update and
+//! `/api/drawings/{id}` only an `Anchored` one — the wire type itself makes
+//! the other family unreachable — and the store's own
+//! `ItemSourceMismatch` check catches the one case the type system cannot:
+//! a `layers`-shaped body aimed at an id that is actually a drawing.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 
-use senken_core::UnixNanos;
-use senken_marketdata::InstrumentId;
-use senken_workspace::{
-    DrawingInput, DrawingKind, DrawingLineStyle, DrawingPoint, DrawingStyle, LayerInput, LayerKind,
-    LayoutId, LayoutPreset, PaneInput, WorkspaceId,
+use senken_chart::{
+    ChartLayoutId, ChartWorkspaceId, DrawingKind, DrawingStyle, ItemSource, LayoutPreset,
+    PaneInput, PaneItemId, PaneItemInput, Slot,
 };
+use senken_marketdata::InstrumentId;
 
 use crate::AppState;
 use crate::HandlerError;
 use crate::auth::Authed;
 use crate::dto::{
-    CreateWorkspaceRequest, DefaultWorkspaceResponse, DrawingInputDto, DrawingKindDto,
-    DrawingLineStyleDto, DrawingPointDto, IdResponse, LayerInputDto, LayerKindDto, LayoutDetailDto,
-    LayoutSummaryDto, PaneInputDto, RenameWorkspaceRequest, ReplaceLayoutRequest, WorkspaceDto,
-    WorkspacesPage,
+    CreateWorkspaceRequest, DefaultWorkspaceResponse, DrawingInputDto, DrawingKindDto, IdResponse,
+    LayerInputDto, LayerKindDto, LayoutDetailDto, LayoutSummaryDto, PaneInputDto,
+    RenameWorkspaceRequest, ReplaceLayoutRequest, WorkspaceDto, WorkspacesPage,
 };
 use crate::pagination::{PaginationQuery, normalize_pagination};
 
-/// Parses an HTTP path segment as a [`WorkspaceId`], failing with `400` (not
-/// `500`) for a malformed one.
-fn parse_workspace_id(raw: &str) -> Result<WorkspaceId, HandlerError> {
+/// Parses an HTTP path segment as a [`ChartWorkspaceId`], failing with
+/// `400` (not `500`) for a malformed one.
+fn parse_workspace_id(raw: &str) -> Result<ChartWorkspaceId, HandlerError> {
     raw.parse()
         .map_err(|_| HandlerError::BadRequest("not a valid workspace id".to_owned()))
 }
 
-/// The [`LayoutId`] counterpart of [`parse_workspace_id`].
-fn parse_layout_id(raw: &str) -> Result<LayoutId, HandlerError> {
+/// The [`ChartLayoutId`] counterpart of [`parse_workspace_id`].
+fn parse_layout_id(raw: &str) -> Result<ChartLayoutId, HandlerError> {
     raw.parse()
         .map_err(|_| HandlerError::BadRequest("not a valid layout id".to_owned()))
 }
 
-/// Converts one wire [`LayerKindDto`] into the domain [`LayerKind`] it
-/// names, parsing `instrument` and failing with `400` if it does not parse.
-fn layer_kind_from_dto(dto: LayerKindDto) -> Result<LayerKind, HandlerError> {
+/// The [`PaneItemId`] counterpart of [`parse_workspace_id`], used by both
+/// `/api/layers/{id}` and `/api/drawings/{id}` — see this module's docs.
+fn parse_pane_item_id(raw: &str) -> Result<PaneItemId, HandlerError> {
+    raw.parse()
+        .map_err(|_| HandlerError::BadRequest("not a valid item id".to_owned()))
+}
+
+/// Converts one wire [`LayerKindDto`] into the `(ItemSource, Slot)` pair
+/// `senken_chart` stores a layer as, parsing `instrument` and failing with
+/// `400` if it does not parse.
+fn layer_kind_from_dto(dto: LayerKindDto) -> Result<(ItemSource, Slot), HandlerError> {
     Ok(match dto {
-        LayerKindDto::OverlayInstrument { instrument } => LayerKind::OverlayInstrument {
-            instrument: InstrumentId::parse(&instrument)
-                .map_err(|source| HandlerError::BadRequest(source.to_string()))?,
-        },
+        LayerKindDto::OverlayInstrument { instrument } => (
+            ItemSource::Referenced {
+                instrument: InstrumentId::parse(&instrument)
+                    .map_err(|source| HandlerError::BadRequest(source.to_string()))?,
+            },
+            Slot::Main,
+        ),
         LayerKindDto::IndicatorOverlay { name, params } => {
-            LayerKind::IndicatorOverlay { name, params }
+            (ItemSource::Computed { name, params }, Slot::Main)
         }
         LayerKindDto::IndicatorSubPane { name, params } => {
-            LayerKind::IndicatorSubPane { name, params }
+            (ItemSource::Computed { name, params }, Slot::Sub(0))
         }
     })
 }
 
-fn layer_input_from_dto(dto: LayerInputDto) -> Result<LayerInput, HandlerError> {
-    Ok(LayerInput {
-        position: dto.position,
-        kind: layer_kind_from_dto(dto.kind)?,
+/// Converts one wire [`LayerInputDto`] into a [`PaneItemInput`]. `position`
+/// is left at whatever the caller passes in `position` — see
+/// [`pane_input_from_dto`] and `ChartWorkspaceStore::update_pane_item`'s
+/// own docs for why a layer's wire `position` is never trusted verbatim.
+fn layer_input_from_dto(dto: LayerInputDto, position: u32) -> Result<PaneItemInput, HandlerError> {
+    let (source, slot) = layer_kind_from_dto(dto.kind)?;
+    Ok(PaneItemInput {
+        position,
+        slot,
         visible: dto.visible,
         style: dto.style,
+        source,
     })
-}
-
-fn drawing_point_from_dto(dto: DrawingPointDto) -> DrawingPoint {
-    DrawingPoint {
-        time: UnixNanos::from_nanos(dto.time),
-        price: dto.price,
-    }
 }
 
 /// Converts one wire [`DrawingKindDto`] into the domain [`DrawingKind`] it
 /// names. Infallible — every field on the wire shape already matches the
-/// domain shape field-for-field; [`WorkspaceStore::replace_layout`](senken_workspace::WorkspaceStore::replace_layout)
+/// domain shape field-for-field; [`ChartWorkspaceStore::replace_layout`](senken_chart::ChartWorkspaceStore::replace_layout)
 /// is what validates a drawing's style.
 fn drawing_kind_from_dto(dto: DrawingKindDto) -> DrawingKind {
-    match dto {
-        DrawingKindDto::HorizontalLine { price } => DrawingKind::HorizontalLine { price },
-        DrawingKindDto::TrendLine { start, end } => DrawingKind::TrendLine {
-            start: drawing_point_from_dto(start),
-            end: drawing_point_from_dto(end),
-        },
-        DrawingKindDto::Rectangle { start, end } => DrawingKind::Rectangle {
-            start: drawing_point_from_dto(start),
-            end: drawing_point_from_dto(end),
-        },
-    }
+    dto.into()
 }
 
-fn drawing_line_style_from_dto(dto: DrawingLineStyleDto) -> DrawingLineStyle {
-    match dto {
-        DrawingLineStyleDto::Solid => DrawingLineStyle::Solid,
-        DrawingLineStyleDto::Dashed => DrawingLineStyle::Dashed,
-        DrawingLineStyleDto::Dotted => DrawingLineStyle::Dotted,
-    }
-}
-
-fn drawing_input_from_dto(dto: DrawingInputDto) -> DrawingInput {
-    DrawingInput {
-        position: dto.position,
-        kind: drawing_kind_from_dto(dto.kind),
+/// Converts one wire [`DrawingInputDto`] into a [`PaneItemInput`], the
+/// same way [`layer_input_from_dto`] does for a layer.
+fn drawing_input_from_dto(dto: DrawingInputDto, position: u32) -> PaneItemInput {
+    PaneItemInput {
+        position,
+        slot: Slot::Main,
+        visible: dto.visible,
         style: DrawingStyle {
             color: dto.color,
             width: dto.width,
-            line_style: drawing_line_style_from_dto(dto.line_style),
+            line_style: dto.line_style.into(),
+        }
+        .to_json(),
+        source: ItemSource::Anchored {
+            kind: drawing_kind_from_dto(dto.kind),
         },
     }
 }
 
+/// Builds a pane's unified `items` list from its wire `layers`/`drawings`
+/// arrays: layers first, drawings after, each renumbered by array order
+/// into one shared position space — `senken_chart`'s own `(pane_id,
+/// position)` uniqueness now spans both, where before each had its own.
+/// `GET /api/layouts/{id}` applies the exact same split-and-renumber rule
+/// in reverse (`PaneDto::from`), so a client that reads a layout and PUTs
+/// it straight back sees stable ids and stable relative ordering.
 fn pane_input_from_dto(dto: PaneInputDto) -> Result<PaneInput, HandlerError> {
     let instrument = InstrumentId::parse(&dto.instrument)
         .map_err(|source| HandlerError::BadRequest(source.to_string()))?;
@@ -124,28 +143,38 @@ fn pane_input_from_dto(dto: PaneInputDto) -> Result<PaneInput, HandlerError> {
         .map_err(|source: senken_series::ParseBarSpecError| {
             HandlerError::BadRequest(source.to_string())
         })?;
-    let layers = dto
-        .layers
-        .into_iter()
-        .map(layer_input_from_dto)
-        .collect::<Result<Vec<_>, _>>()?;
-    let drawings = dto
-        .drawings
-        .into_iter()
-        .map(drawing_input_from_dto)
-        .collect();
+    // Each half keeps the caller's own relative order (its wire
+    // `position`, still meaningful *within* `layers` or *within*
+    // `drawings`) before being renumbered into the one shared space
+    // `chart_pane_items` now uses.
+    let mut layers = dto.layers;
+    layers.sort_by_key(|layer| layer.position);
+    let mut drawings = dto.drawings;
+    drawings.sort_by_key(|drawing| drawing.position);
+
+    let mut items = Vec::with_capacity(layers.len() + drawings.len());
+    for (index, layer) in layers.into_iter().enumerate() {
+        items.push(layer_input_from_dto(
+            layer,
+            u32::try_from(index).unwrap_or(u32::MAX),
+        )?);
+    }
+    let base = u32::try_from(items.len()).unwrap_or(u32::MAX);
+    for (index, drawing) in drawings.into_iter().enumerate() {
+        let position = base.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+        items.push(drawing_input_from_dto(drawing, position));
+    }
     Ok(PaneInput {
         position: dto.position,
         instrument,
         timeframe,
-        layers,
-        drawings,
+        items,
         settings: dto.settings,
     })
 }
 
 /// `GET /api/workspaces`. Scoped by
-/// `WorkspaceStore::list_workspaces` itself — a superadmin
+/// `ChartWorkspaceStore::list_workspaces` itself — a superadmin
 /// sees every workspace, an ordinary user sees only their own, and the
 /// reported `total` already respects that scope too.
 #[utoipa::path(
@@ -331,7 +360,7 @@ pub(crate) async fn replace_layout(
     let preset: LayoutPreset =
         body.preset
             .parse()
-            .map_err(|source: senken_workspace::ParseLayoutPresetError| {
+            .map_err(|source: senken_chart::ParseLayoutPresetError| {
                 HandlerError::BadRequest(source.to_string())
             })?;
     let panes = body
@@ -342,6 +371,88 @@ pub(crate) async fn replace_layout(
     state
         .workspace
         .replace_layout(&ctx.user, layout_id, preset, &panes)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /api/layers/{layer_id}`.
+#[utoipa::path(
+    patch,
+    path = "/api/layers/{layer_id}",
+    request_body = LayerInputDto,
+    params(("layer_id" = String, Path)),
+    responses((status = 204), (status = 400, body = crate::dto::ErrorBody), (status = 401, body = crate::dto::ErrorBody), (status = 403, body = crate::dto::ErrorBody))
+)]
+pub(crate) async fn update_layer(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(item_id): Path<String>,
+    Json(body): Json<LayerInputDto>,
+) -> Result<StatusCode, HandlerError> {
+    // `position` is never read by `update_pane_item` (see its own docs) —
+    // `0` here is a placeholder, not a claim about the item's real
+    // position.
+    let input = layer_input_from_dto(body, 0)?;
+    state
+        .workspace
+        .update_pane_item(&ctx.user, parse_pane_item_id(&item_id)?, &input)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/layers/{layer_id}`.
+#[utoipa::path(
+    delete,
+    path = "/api/layers/{layer_id}",
+    params(("layer_id" = String, Path)),
+    responses((status = 204), (status = 400, body = crate::dto::ErrorBody), (status = 401, body = crate::dto::ErrorBody), (status = 403, body = crate::dto::ErrorBody))
+)]
+pub(crate) async fn delete_layer(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(item_id): Path<String>,
+) -> Result<StatusCode, HandlerError> {
+    state
+        .workspace
+        .delete_pane_item(&ctx.user, parse_pane_item_id(&item_id)?)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /api/drawings/{drawing_id}`.
+#[utoipa::path(
+    patch,
+    path = "/api/drawings/{drawing_id}",
+    request_body = DrawingInputDto,
+    params(("drawing_id" = String, Path)),
+    responses((status = 204), (status = 400, body = crate::dto::ErrorBody), (status = 401, body = crate::dto::ErrorBody), (status = 403, body = crate::dto::ErrorBody))
+)]
+pub(crate) async fn update_drawing(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(item_id): Path<String>,
+    Json(body): Json<DrawingInputDto>,
+) -> Result<StatusCode, HandlerError> {
+    // Same placeholder-position note as `update_layer`.
+    let input = drawing_input_from_dto(body, 0);
+    state
+        .workspace
+        .update_pane_item(&ctx.user, parse_pane_item_id(&item_id)?, &input)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/drawings/{drawing_id}`.
+#[utoipa::path(
+    delete,
+    path = "/api/drawings/{drawing_id}",
+    params(("drawing_id" = String, Path)),
+    responses((status = 204), (status = 400, body = crate::dto::ErrorBody), (status = 401, body = crate::dto::ErrorBody), (status = 403, body = crate::dto::ErrorBody))
+)]
+pub(crate) async fn delete_drawing(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(item_id): Path<String>,
+) -> Result<StatusCode, HandlerError> {
+    state
+        .workspace
+        .delete_pane_item(&ctx.user, parse_pane_item_id(&item_id)?)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -375,7 +486,7 @@ mod tests {
         let user_id = identity
             .create_user(admin, email, "Charts User", Some("a very long password"))
             .unwrap();
-        for resource in [Resource::Workspace, Resource::Layout] {
+        for resource in [Resource::ChartWorkspace, Resource::ChartLayout] {
             for action in [Action::View, Action::Create, Action::Edit, Action::Delete] {
                 identity
                     .grant_direct(admin, user_id, Grant::new(action, resource, Scope::Own))
@@ -730,6 +841,165 @@ mod tests {
                             ]
                         }
                     ]
+                }))
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_ray_a_fib_retracement_and_a_text_note_round_trip_over_http_and_visible_persists() {
+        let (handle, identity, _dir, _runtime_dir) = serve_unfenced_test_server().await;
+        let addr = handle.local_addr();
+        let (_uid, admin_session) = identity
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        let admin = identity
+            .resolve_session(admin_session.reveal())
+            .unwrap()
+            .unwrap();
+        let alice_token = charts_user(addr, &identity, &admin, "alice-new-tools@example.com").await;
+
+        let default = body_json(
+            get_auth(
+                format!("http://{addr}/api/workspaces/default"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let layout_id = default["layout_id"].as_str().unwrap();
+
+        let anchor = serde_json::json!({ "time": 1_700_000_000_000_000_000i64, "price": 100.0 });
+        let end = serde_json::json!({ "time": 1_700_003_600_000_000_000i64, "price": 101.5 });
+        let ray = serde_json::json!({ "position": 0, "visible": false, "color": "#7aa7e8", "width": 1, "line_style": "SOLID",
+            "kind": { "kind": "ray", "start": anchor, "end": end } });
+        let fib = serde_json::json!({ "position": 1, "color": "#7aa7e8", "width": 1, "line_style": "SOLID",
+            "kind": { "kind": "fib_retracement", "start": anchor, "end": end } });
+        let note = serde_json::json!({ "position": 2, "color": "#7aa7e8", "width": 1, "line_style": "SOLID",
+            "kind": { "kind": "text_note", "at": anchor, "text": "Breakout level", "anchor": "above" } });
+        let body = serde_json::json!({ "preset": "1", "panes": [{
+            "position": 0, "instrument": "binance-spot:BTCUSDT", "timeframe": "1h",
+            "layers": [], "drawings": [ray, fib, note],
+        }] });
+
+        let response = reqwest::Client::new()
+            .put(format!("http://{addr}/api/layouts/{layout_id}"))
+            .header("authorization", format!("Bearer {alice_token}"))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&body).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let layout = body_json(
+            get_auth(
+                format!("http://{addr}/api/layouts/{layout_id}"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let drawings = layout["panes"][0]["drawings"].as_array().unwrap();
+        assert_eq!(drawings.len(), 3);
+        assert_eq!(drawings[0]["kind"]["kind"], "ray");
+        assert_eq!(
+            drawings[0]["visible"], false,
+            "a drawing's visible flag must round-trip over HTTP — it never could before schema v8"
+        );
+        assert_eq!(drawings[1]["kind"]["kind"], "fib_retracement");
+        assert_eq!(drawings[2]["kind"]["kind"], "text_note");
+        assert_eq!(drawings[2]["kind"]["text"], "Breakout level");
+        assert_eq!(drawings[2]["kind"]["anchor"], "above");
+        assert_eq!(
+            drawings[2]["visible"], true,
+            "a drawing with no `visible` in the request must default to shown"
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn patching_a_drawing_through_the_layer_endpoint_is_refused_over_http() {
+        let (handle, identity, _dir, _runtime_dir) = serve_unfenced_test_server().await;
+        let addr = handle.local_addr();
+        let (_uid, admin_session) = identity
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        let admin = identity
+            .resolve_session(admin_session.reveal())
+            .unwrap()
+            .unwrap();
+        let alice_token =
+            charts_user(addr, &identity, &admin, "alice-family-guard@example.com").await;
+
+        let default = body_json(
+            get_auth(
+                format!("http://{addr}/api/workspaces/default"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let layout_id = default["layout_id"].as_str().unwrap();
+
+        reqwest::Client::new()
+            .put(format!("http://{addr}/api/layouts/{layout_id}"))
+            .header("authorization", format!("Bearer {alice_token}"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({
+                    "preset": "1",
+                    "panes": [{
+                        "position": 0,
+                        "instrument": "binance-spot:BTCUSDT",
+                        "timeframe": "1h",
+                        "layers": [],
+                        "drawings": [{
+                            "position": 0,
+                            "kind": { "kind": "horizontal_line", "price": 1.0 },
+                            "color": "#ffffff",
+                            "width": 1,
+                            "line_style": "SOLID"
+                        }]
+                    }]
+                }))
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        let layout = body_json(
+            get_auth(
+                format!("http://{addr}/api/layouts/{layout_id}"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let drawing_id = layout["panes"][0]["drawings"][0]["id"].as_str().unwrap();
+
+        // `/api/layers/{id}` can only ever build a `Computed`/`Referenced`
+        // update (the wire `LayerKindDto` has no anchored variant), so
+        // aiming it at an id that is actually a drawing must be refused —
+        // proof the `ItemSourceMismatch` guard, not just the type system,
+        // is reachable over HTTP.
+        let response = reqwest::Client::new()
+            .patch(format!("http://{addr}/api/layers/{drawing_id}"))
+            .header("authorization", format!("Bearer {alice_token}"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({
+                    "position": 0,
+                    "kind": { "kind": "indicator_overlay", "name": "EMA", "params": "{\"period\":20}" },
+                    "visible": true
                 }))
                 .unwrap(),
             )

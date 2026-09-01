@@ -1,7 +1,7 @@
 //! Shared test-only helpers used by every indicator's `#[cfg(test)]` module.
 
 use senken_core::UnixNanos;
-use senken_series::Bar;
+use senken_series::{Bar, Volume};
 
 use crate::indicator::Indicator;
 
@@ -16,7 +16,7 @@ pub(crate) fn bar(open: i64, high: i64, low: i64, close: i64, volume: i64) -> Ba
         high,
         low,
         close,
-        volume,
+        volume: Volume::Real(volume),
         quote_volume: None,
         trade_count: None,
         taker_buy_volume: None,

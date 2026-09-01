@@ -64,7 +64,7 @@ senken-subscription = { path = "crates/subscription", version = "0.0.3" }
 # `VenueConnection`/`VenueConnector` ports against a real venue WebSocket.
 senken-feed = { path = "crates/feed", version = "0.0.3" }
 senken-venue = { path = "crates/venue", version = "0.0.3" }
-senken-workspace = { path = "crates/workspace", version = "0.0.3" }
+senken-chart = { path = "crates/chart", version = "0.0.3" }
 # `apps/senken` is the single binary; `apps/cli` holds the market-data
 # subcommands as a library so it can be reused without duplicating them
 #.

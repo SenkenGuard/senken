@@ -9,7 +9,12 @@
 // rune-backed cache around one `fetch`.
 import { apiClient } from './client';
 import { getErrorMessage } from './errors';
-import { hasBarSource as hasBarSourceOf, hasLiveFeed as hasLiveFeedOf } from './source-capability';
+import {
+	hasBarSource as hasBarSourceOf,
+	hasBookFeed as hasBookFeedOf,
+	hasLiveFeed as hasLiveFeedOf,
+	hasQuoteFeed as hasQuoteFeedOf
+} from './source-capability';
 import type { SourceCapabilityDto } from './types';
 
 class SourcesStore {
@@ -56,8 +61,21 @@ export function hasLiveFeed(instrument: string): boolean | undefined {
 	return sourcesStore.loaded ? hasLiveFeedOf(sourcesStore.byId, instrument) : undefined;
 }
 
+/** Whether `instrument`'s source reports quotes, or `undefined` while the
+ * capability response has not arrived yet. */
+export function hasQuoteFeed(instrument: string): boolean | undefined {
+	return sourcesStore.loaded ? hasQuoteFeedOf(sourcesStore.byId, instrument) : undefined;
+}
+
 /** Whether `instrument`'s source has a bar source registered at all —
  * `undefined` while not yet loaded, same reasoning as `hasLiveFeed`. */
 export function hasBarSource(instrument: string): boolean | undefined {
 	return sourcesStore.loaded ? hasBarSourceOf(sourcesStore.byId, instrument) : undefined;
+}
+
+/** Whether `instrument`'s source can serve the order-book panel a
+ * fixed-depth snapshot — `undefined` while `GET /api/sources` has not
+ * resolved yet, same reasoning as `hasQuoteFeed`. */
+export function hasBookFeed(instrument: string): boolean | undefined {
+	return sourcesStore.loaded ? hasBookFeedOf(sourcesStore.byId, instrument) : undefined;
 }

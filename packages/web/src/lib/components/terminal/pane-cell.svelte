@@ -12,26 +12,25 @@
 	// strip below the main chart instead of a header chip, via
 	// `splitPaneLayers` — the same discriminant the former mock used, ported
 	// onto the new shape.
-	import * as Resizable from '$lib/components/ui/resizable/index.js';
-	import type { IChartApi, UTCTimestamp } from 'lightweight-charts';
 	import ChartPane from './chart-pane.svelte';
 	import PaneHeader from './pane-header.svelte';
-	import SubPaneChart from './sub-pane-chart.svelte';
 	import SubPaneHeader from './sub-pane-header.svelte';
 	import { splitPaneLayers, type DrawingRuntime, type LayerRuntime } from '$lib/charts/pane-runtime';
-	import { linkTimeScales, type LinkedTimeScales } from '$lib/charts/axis-sync';
 	import type { ChartSettings } from '$lib/mock/chart-settings';
 	import { cn } from '$lib/utils.js';
 	import type { ToolKey } from './chart-config';
+	import type { MarketStatus } from '$lib/charts/live-state';
 
 	let {
 		instrument,
+		marketStatus,
 		spec,
 		layers,
 		drawings,
 		settings,
 		reloadToken,
 		resetToken,
+		jumpTarget,
 		onContextMenu,
 		onMoveDrawing,
 		onPatchSettings,
@@ -53,6 +52,8 @@
 		onToolConsumed
 	}: {
 		instrument: string;
+		/** The catalogued status for this instrument, when the page has one. */
+		marketStatus?: MarketStatus;
 		spec: string;
 		layers: LayerRuntime[];
 		drawings: DrawingRuntime[];
@@ -60,6 +61,9 @@
 		settings: ChartSettings;
 		reloadToken: number;
 		resetToken: number;
+		/** A "go to date" request for this pane specifically, or `undefined`
+		 * while none has been made. See `chart-pane.svelte`'s own doc. */
+		jumpTarget?: { token: number; targetNanos: number } | null;
 		/** Patches this pane's chart settings — the price-scale shortcuts
 		 * below write through it, the same path the settings dialog uses. */
 		onPatchSettings?: (patch: Partial<ChartSettings>) => void;
@@ -92,120 +96,33 @@
 	 * so a sub-pane under the price draws the same vertical line the main
 	 * pane does — the pane the pointer is actually in is excluded, since
 	 * lightweight-charts already draws its own crosshair there. */
-	let crosshair = $state<{ source: string; time: UTCTimestamp | null }>({
-		source: '',
-		time: null
-	});
-
-	function crosshairFor(paneId: string): UTCTimestamp | null {
-		return crosshair.source === paneId ? null : crosshair.time;
-	}
-
 	let hoverText = $state('');
 	let narrow = $state(false);
 	/** Layers whose series is being recomputed, for the header's chips. */
 	let loadingLayerIds = $state<string[]>([]);
+	/** Whether the pane's own bars are being fetched, for the instrument row. */
+	let barsLoading = $state(false);
 
-	/** Remembers how the pane was split, debounced.
-	 *
-	 * The resizable group reports on every frame of a drag; writing each one
-	 * would be a layout save per frame. Only the size the user settles on is
-	 * worth keeping, and only if it actually differs from what is stored. */
-	let splitTimer: ReturnType<typeof setTimeout> | undefined;
-	function rememberSplit(sizes: number[]) {
-		if (splitTimer !== undefined) clearTimeout(splitTimer);
-		splitTimer = setTimeout(() => {
-			splitTimer = undefined;
-			const rounded = sizes.map((n) => Math.round(n * 10) / 10);
-			const stored = settings.paneSplit ?? [];
-			const same =
-				stored.length === rounded.length && stored.every((n, i) => n === rounded[i]);
-			if (!same) onPatchSettings?.({ paneSplit: rounded });
-		}, 400);
-	}
-	let priceScale = $state(0);
-	/** The main chart's own bar window, handed straight to every sub-pane so
-	 * the strips below cannot start at a different bar than the candles. */
-	let barTimes = $state<UTCTimestamp[]>([]);
 	let livePrice = $state<number | null>(null);
 
 	const split = $derived(splitPaneLayers(layers));
 
-	// Keeps the main chart's x-axis and every sub-pane indicator's own x-axis
-	// moving together (the acceptance point: pan or zoom one, all
-	// follow). Plain instance state, not `$state` — these are chart-library
-	// handles wired up for their side effects, the same way `chart`/`series`
-	// are plain fields in chart-pane.svelte itself, not reactive state to
-	// render from.
-	let mainChartApi: IChartApi | undefined;
-	// Keyed by the sub-pane's position, never by its layer id. Saving a
-	// layout deletes and re-inserts every pane, layer and drawing, so all of
-	// their ids change on any save — including one caused by drawing or
-	// erasing a line, which has nothing to do with an indicator strip. Keyed
-	// by id, that rebuilt every sub-pane chart on every drawing edit.
-	const subChartApis = new Map<number, IChartApi>();
-	const subLinks = new Map<number, LinkedTimeScales>();
+	/** Reported by the chart itself once its panes have been laid out. */
+	let paneTops = $state<number[]>([]);
 
-	function relinkSub(subIndex: number) {
-		subLinks.get(subIndex)?.dispose();
-		subLinks.delete(subIndex);
-		const sub = subChartApis.get(subIndex);
-		if (mainChartApi && sub) {
-			subLinks.set(subIndex, linkTimeScales(mainChartApi, sub));
-		}
+	function paneHeaderTop(subIndex: number): string {
+		// Measured beats computed. The panes divide the chart area minus the
+		// time axis and the separators between them, so no percentage of this
+		// container lands on a pane's edge — which is why these headers sat
+		// above the panes they label. The percentage below is only the first
+		// frame, before the chart has reported anything.
+		const measured = paneTops[subIndex];
+		if (measured != null) return `${measured}px`;
+		const stored = settings.paneSplit;
+		if (stored?.length) return `${stored.slice(0, subIndex + 1).reduce((sum, size) => sum + size, 0)}%`;
+		return `${65 + subIndex * (35 / split.sub.length)}%`;
 	}
 
-	// Adding or removing the *first*/*last* sub-pane layer destroys and
-	// recreates the main chart too (pane-cell's own `{#if split.sub.length
-	// === 0}` branch switch, see `chart-pane.svelte`'s `destroyed` doc), so
-	// every existing sub-pane must be relinked against the fresh main chart
-	// instance, not only the one that just (re)mounted.
-	function handleMainChartApi(chart: IChartApi | undefined) {
-		mainChartApi = chart;
-		for (const subIndex of subChartApis.keys()) relinkSub(subIndex);
-		alignPriceScales();
-	}
-
-	function handleSubChartApi(subIndex: number, chart: IChartApi | undefined) {
-		if (chart) subChartApis.set(subIndex, chart);
-		else subChartApis.delete(subIndex);
-		relinkSub(subIndex);
-		alignPriceScales();
-	}
-
-	/** Makes every chart in this pane reserve the same width for its price
-	 * scale.
-	 *
-	 * A sub-pane is the same bars as the main chart, drawn differently — so
-	 * the same instant has to sit at the same x in both, or reading one
-	 * against the other means nothing. They are separate chart instances
-	 * sharing only a *logical* range, and a logical range maps to pixels
-	 * through the plot width. An RSI axis labelled `90.00` is narrower than a
-	 * price axis labelled `4444.71`, so the two plots end up different widths
-	 * and the same bar lands in two places.
-	 *
-	 * The library's own note on `minimumWidth` names this case: a minimum
-	 * width is how vertically stacked charts are given identical price
-	 * scales. It is a floor, not a fixed size, so the widest scale is
-	 * measured and every chart is given that as its minimum. */
-	let alignTimer: ReturnType<typeof setTimeout> | undefined;
-	function alignPriceScales() {
-		if (alignTimer !== undefined) clearTimeout(alignTimer);
-		// After the charts have laid out and measured their own labels.
-		alignTimer = setTimeout(() => {
-			alignTimer = undefined;
-			const charts = [mainChartApi, ...subChartApis.values()].filter(
-				(c): c is IChartApi => c !== undefined
-			);
-			if (charts.length < 2) return;
-			const widest = Math.max(...charts.map((c) => c.priceScale('right').width()));
-			for (const c of charts) {
-				if (c.priceScale('right').options().minimumWidth !== widest) {
-					c.priceScale('right').applyOptions({ minimumWidth: widest });
-				}
-			}
-		}, 60);
-	}
 </script>
 
 {#snippet mainChart()}
@@ -251,6 +168,7 @@
 
 		<ChartPane
 			{instrument}
+			{marketStatus}
 			{spec}
 			{tool}
 			replayIdx={replayCut}
@@ -258,23 +176,22 @@
 			overlayLayers={split.main}
 			{drawings}
 			{settings}
+			subPaneLayers={split.sub}
 			{reloadToken}
 			{resetToken}
+			{jumpTarget}
 			{onContextMenu}
 			{onMoveDrawing}
 			onLayerLoading={(ids) => (loadingLayerIds = ids)}
+			onBarsLoading={(busy) => (barsLoading = busy)}
 			onAutoScaleChanged={(autoScale) => onPatchSettings?.({ autoScale })}
 			{selectedDrawingId}
 			onCrosshair={(t) => (hoverText = t)}
 			onNarrow={(n) => (narrow = n)}
 			onLastClose={(price) => onLastClose?.(price)}
 			onLiveNotice={(notice) => (liveNotice = notice)}
-			onPriceScale={(scale) => (priceScale = scale)}
-			onBarTimes={(times) => (barTimes = times)}
 			onLivePrice={(price) => (livePrice = price)}
-			crosshairTime={crosshairFor('main')}
-			onCrosshairTime={(time) => (crosshair = { source: 'main', time })}
-			onChartApi={handleMainChartApi}
+			onPaneTops={(tops) => (paneTops = tops)}
 			{onCreateDrawing}
 			{onSelectDrawing}
 			{onToolConsumed}
@@ -285,6 +202,7 @@
 			{spec}
 			layers={split.main}
 			{loadingLayerIds}
+			{barsLoading}
 			{hoverText}
 			{narrow}
 			{livePrice}
@@ -294,7 +212,7 @@
 			{onRemoveLayer}
 		/>
 		{#if replaying}
-			<div class="absolute bottom-2.5 left-2.5 z-[8] flex items-center gap-2 border border-ink/14 bg-bg2 px-2.5 py-1">
+			<div class="absolute right-2 bottom-7 z-[8] flex items-center gap-2 border border-ink/14 bg-bg2 px-2.5 py-1">
 				<div class="size-[5px] rounded-full bg-gain" style="animation: pane-cell-pulse 1.2s infinite;"></div>
 				<span class="font-mono text-[9px] tracking-[0.2em] text-secondary-foreground">REPLAY {replayPct}</span>
 			</div>
@@ -311,51 +229,19 @@
 		if (e.key === 'Enter' || e.key === ' ') onFocus();
 	}}
 >
-	{#if split.sub.length === 0}
-		<div class="min-h-0 flex-1">
-			{@render mainChart()}
-		</div>
-	{:else}
-		<Resizable.PaneGroup
-			direction="vertical"
-			class="min-h-0 flex-1"
-			onLayoutChange={(sizes) => rememberSplit(sizes)}
-		>
-			<Resizable.Pane
-				defaultSize={settings.paneSplit?.[0] ?? (split.sub.length > 1 ? 55 : 65)}
-				minSize={25}
+	<div class="relative min-h-0 flex-1">
+		{@render mainChart()}
+		{#each split.sub as sl, subIndex (sl.id)}
+			<div
+				class="pointer-events-none absolute right-16 left-0 z-[8]"
+				style:top={paneHeaderTop(subIndex)}
 			>
-				{@render mainChart()}
-			</Resizable.Pane>
-			{#each split.sub as sl, subIndex (subIndex)}
-				<Resizable.Handle />
-				<Resizable.Pane
-					defaultSize={settings.paneSplit?.[subIndex + 1] ?? 45 / split.sub.length}
-					minSize={12}
-				>
-					<div class="relative h-full min-h-0 border-t border-border">
-						<SubPaneChart
-							{instrument}
-							{spec}
-							layer={sl}
-							{settings}
-							{priceScale}
-							{barTimes}
-							crosshairTime={crosshairFor(sl.id)}
-							onCrosshairTime={(time) => (crosshair = { source: sl.id, time })}
-							onChartApi={(chart) => handleSubChartApi(subIndex, chart)}
-							onApplyPlots={(apply) => {
-								const link = subLinks.get(subIndex);
-								if (link) link.applyToFollower(apply);
-								else apply();
-							}}
-						/>
-						<SubPaneHeader layer={sl} {onToggleLayer} onOpenSettings={(id) => onOpenLayerSettings(id)} {onRemoveLayer} />
-					</div>
-				</Resizable.Pane>
-			{/each}
-		</Resizable.PaneGroup>
-	{/if}
+				<div class="pointer-events-auto">
+					<SubPaneHeader layer={sl} loading={loadingLayerIds.includes(sl.id)} {onToggleLayer} onOpenSettings={(id) => onOpenLayerSettings(id)} {onRemoveLayer} />
+				</div>
+			</div>
+		{/each}
+	</div>
 </div>
 
 <style>

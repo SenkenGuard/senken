@@ -53,6 +53,12 @@ export interface CommandRequest {
 	 * the INSTRUMENT / INDICATOR / STRATEGY strip above the row list. */
 	kindTabs?: CommandKindTab[];
 	rows: (query: string) => CommandRow[];
+	/** Whether the rows are still being fetched. A getter for the same reason
+	 * `CommandKindTab.active` is one: the request is built once when the
+	 * palette opens, while this keeps changing underneath it. Without it an
+	 * in-flight search renders as "NO MATCH", which is not merely unhelpful —
+	 * it states something untrue about the venue's catalogue. */
+	busy?: () => boolean;
 }
 
 class CommandPaletteStore {

@@ -18,15 +18,15 @@
 //!   database; this crate stays the single owner of the file's
 //!   `user_version` sequence for exactly that reason, rather than a second
 //!   crate racing it with one of its own. Unlike v1/v2, this crate never
-//!   queries these four tables itself — `senken-workspace` does, sharing
+//!   queries these four tables itself — `senken-chart` does, sharing
 //!   this connection via [`crate::IdentityStore::shared_connection`] rather
 //!   than opening a second one to the same file. See that crate's module
 //!   docs for the full reasoning behind putting the tables here instead of
-//!   giving `senken-workspace` its own database.
+//!   giving `senken-chart` its own database.
 //! - **v4**: `alerts` — one row per standalone alert. Alerts reference
 //!   `users(id)` too, so the same
 //!   single-schema-owner reasoning v3 already established for
-//!   `senken-workspace` applies verbatim here: this crate creates the
+//!   `senken-chart` applies verbatim here: this crate creates the
 //!   table and owns `user_version`, but `senken-alerts` is the only crate
 //!   that ever queries it, sharing this connection via
 //!   [`crate::IdentityStore::shared_connection`] rather than opening a
@@ -34,7 +34,7 @@
 //! - **v5**: `drawings` — one row per chart drawing object (horizontal
 //!   line, trend line, rectangle), owned by a pane the same way `layers`
 //!   already is. Same reasoning as v3/v4: created here, queried only by
-//!   `senken-workspace`.
+//!   `senken-chart`.
 //! - **v7**: `layers.style` — one JSON-object-text column holding an
 //!   indicator layer's plot styling (colour, line style, width, per-plot
 //!   visibility), kept apart from `params`: an input change recomputes the
@@ -46,6 +46,44 @@
 //!   relationship `instrument`/`timeframe` already have. This crate does
 //!   not interpret the column's contents, matching how it already treats
 //!   `layers.indicator_params`.
+//! - **v8**: two changes landed together because the second only becomes
+//!   cheap while the first is already rewriting every row.
+//!
+//!   1. `layers` and `drawings` collapse into one `chart_pane_items` table.
+//!      They were always the same concept — a positioned, orderable,
+//!      show/hideable thing attached to a pane — encoded twice: `layers`
+//!      had `visible` and no drawing ever could be hidden, `layers.kind`
+//!      baked an overlay-vs-sub-pane *placement* into the same tag as its
+//!      *source*, and `drawings` had its own three style columns instead of
+//!      `layers`' one JSON one. A `layers` row becomes `source_kind =
+//!      'computed'` (an indicator) or `'referenced'` (an overlay
+//!      instrument); its old `overlay`/`sub_pane` placement moves out of
+//!      the kind tag and into `slot`. A `drawings` row becomes
+//!      `source_kind = 'anchored'`, its three style columns folded into
+//!      the one shared `style` JSON column every other item already used,
+//!      and `visible` defaults to `1` — every drawing has always rendered
+//!      unconditionally, so this is the fact that was already true, now
+//!      finally expressible. Positions are renumbered contiguously per
+//!      pane, layers first then drawings, since the two source tables each
+//!      had their own independent `(pane_id, position)` uniqueness and the
+//!      merged table has one.
+//!   2. `workspaces`/`layouts`/`panes` rename to `chart_workspaces`/
+//!      `chart_layouts`/`chart_panes` (`chart_pane_items` is named that way
+//!      from birth). A table is prefixed when it is part of a domain
+//!      aggregate, and the prefix is the owning crate's name — that rule
+//!      did not change. What changed is that a *dashboard* aggregate is
+//!      coming with its own `dashboard_workspaces`, and at that point
+//!      "workspace" stops naming one aggregate and starts being a common
+//!      noun for two of them: `workspace_panes` would no longer answer
+//!      "which workspace's pane". `chart_*` still does. `senken_acl::Resource::ChartWorkspace`/`ChartLayout` rename for the same
+//!      reason, and every existing `role_grants`/`user_grants` row still
+//!      holding the old `workspace`/`layout` token is rewritten to
+//!      `chart_workspace`/`chart_layout` in the same migration step — an
+//!      account's grants surviving an upgrade is not optional. `ALTER
+//!      TABLE … RENAME TO` is cheap in SQLite and keeps every foreign key,
+//!      including `chart_pane_items`' own, correctly pointed; only the
+//!      indexes need re-creating under their new `<table>_<column>` names,
+//!      since SQLite has no `ALTER INDEX RENAME`.
 
 use std::path::Path;
 use std::time::Duration;
@@ -58,7 +96,7 @@ use crate::error::IdentityError;
 /// this and extend the schema (or add a migration step) when the shape
 /// changes — there is deliberately no migration crate, not schema
 /// evolution itself.
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 /// `CREATE TABLE` statements for every table assigned to this
 /// milestone: users, roles and the grants attached to either, plus
@@ -158,7 +196,7 @@ CREATE TABLE user_plugin_grants (
 
 /// `CREATE TABLE` statements added in schema v3: workspace →
 /// layout → panes → layers. Queried and mutated entirely by
-/// `senken-workspace`, not this crate — see this module's doc comment.
+/// `senken-chart`, not this crate — see this module's doc comment.
 ///
 /// A pane holds one main instrument (`instrument`/`timeframe`) plus zero or
 /// more layers; a layer is either an overlay instrument or an indicator in
@@ -205,8 +243,8 @@ CREATE INDEX panes_layout_id ON panes(layout_id);
 -- `instrument` is set iff `kind = 'overlay_instrument'`; `indicator_name`/
 -- `indicator_params` are set iff `kind` is one of the two `indicator_*`
 -- values. Not enforced by a `CHECK` constraint: the only writer is
--- `senken-workspace`, which enforces it in Rust before this table is ever
--- touched (`senken_workspace::LayerKind`'s three variants each carry
+-- `senken-chart`, which enforces it in Rust before this table is ever
+-- touched (`senken_chart::store::ItemSource`'s three variants each carry
 -- exactly the fields their own case needs, so there is nothing to check
 -- twice).
 CREATE TABLE layers (
@@ -264,7 +302,7 @@ CREATE INDEX alerts_enabled ON alerts(enabled);
 
 /// `CREATE TABLE` statements added in schema v5: `drawings`, one row per
 /// chart drawing object attached to a pane. Queried and mutated entirely by
-/// `senken-workspace`, not this crate — see this module's doc comment.
+/// `senken-chart`, not this crate — see this module's doc comment.
 ///
 /// `kind` is one of `horizontal_line` / `trend_line` / `rectangle`. A
 /// horizontal line uses only `price`; a trend line or rectangle uses both
@@ -302,7 +340,7 @@ CREATE INDEX drawings_pane_id ON drawings(pane_id);
 /// `ALTER TABLE` statement added in schema v6: `panes.settings`, a
 /// JSON-object-text column for a pane's display settings — see this
 /// module's doc comment. Defaults existing rows to an empty settings
-/// object rather than `NULL`, so every reader (`senken-workspace`'s own
+/// object rather than `NULL`, so every reader (`senken-chart`'s own
 /// `PaneRecord::settings`) can treat the column as a plain, always-present
 /// string with no `Option` to thread through call sites that predate this
 /// column.
@@ -319,6 +357,115 @@ ALTER TABLE panes ADD COLUMN settings TEXT NOT NULL DEFAULT '{}';
 /// it as an always-present string.
 const SCHEMA_SQL_V7: &str = r"
 ALTER TABLE layers ADD COLUMN style TEXT NOT NULL DEFAULT '{}';
+";
+
+/// Statements added in schema v8 — see this module's doc comment for the
+/// full reasoning. Wrapped in its own explicit `BEGIN`/`COMMIT` (unlike
+/// every simpler step above it): `execute_batch` runs each statement in a
+/// script separately and does not roll one back on its own, and this step
+/// is complex enough — table renames, a data-carrying merge, two drops —
+/// that a failure partway through must leave a v7 database exactly as it
+/// was, never a half-renamed one.
+///
+/// Order matters: the three renames run first so `chart_pane_items`' own
+/// foreign key can name `chart_panes` directly; `layers`/`drawings` are
+/// merged into it next (`layers` first, `drawings` after, per pane — see
+/// the module doc comment on why positions are renumbered rather than
+/// copied); the two old tables are dropped once every row has a new home;
+/// and the grant-token rewrite runs last since `role_grants`/`user_grants`
+/// are untouched by anything above it.
+const SCHEMA_SQL_V8: &str = r"
+BEGIN IMMEDIATE;
+
+ALTER TABLE workspaces RENAME TO chart_workspaces;
+DROP INDEX workspaces_owner_id;
+CREATE INDEX chart_workspaces_owner_id ON chart_workspaces(owner_id);
+
+ALTER TABLE layouts RENAME TO chart_layouts;
+DROP INDEX layouts_workspace_id;
+CREATE INDEX chart_layouts_workspace_id ON chart_layouts(workspace_id);
+
+ALTER TABLE panes RENAME TO chart_panes;
+DROP INDEX panes_layout_id;
+CREATE INDEX chart_panes_layout_id ON chart_panes(layout_id);
+
+CREATE TABLE chart_pane_items (
+    id                TEXT PRIMARY KEY,
+    pane_id           TEXT NOT NULL REFERENCES chart_panes(id) ON DELETE CASCADE,
+    position          INTEGER NOT NULL,
+    slot              TEXT NOT NULL,
+    slot_index        INTEGER,
+    visible           INTEGER NOT NULL DEFAULT 1,
+    style             TEXT NOT NULL DEFAULT '{}',
+    source_kind       TEXT NOT NULL,
+    instrument        TEXT,
+    indicator_name    TEXT,
+    indicator_params  TEXT,
+    tool_kind         TEXT,
+    price             REAL,
+    time1             INTEGER,
+    price1            REAL,
+    time2             INTEGER,
+    price2            REAL,
+    label_text        TEXT,
+    label_anchor      TEXT,
+    UNIQUE (pane_id, position)
+) STRICT;
+
+CREATE INDEX chart_pane_items_pane_id ON chart_pane_items(pane_id);
+
+-- `layers` rows first: `indicator_sub_pane` becomes `slot = 'sub'`
+-- (index 0 — this build has never had more than one sub-pane slot per
+-- pane), everything else `slot = 'main'`. `overlay_instrument` becomes
+-- `source_kind = 'referenced'`; the two indicator kinds collapse into
+-- `'computed'` now that placement lives on `slot` rather than the kind tag.
+INSERT INTO chart_pane_items (
+    id, pane_id, position, slot, slot_index, visible, style,
+    source_kind, instrument, indicator_name, indicator_params
+)
+SELECT
+    id, pane_id,
+    ROW_NUMBER() OVER (PARTITION BY pane_id ORDER BY position) - 1,
+    CASE WHEN kind = 'indicator_sub_pane' THEN 'sub' ELSE 'main' END,
+    CASE WHEN kind = 'indicator_sub_pane' THEN 0 ELSE NULL END,
+    visible, style,
+    CASE WHEN kind = 'overlay_instrument' THEN 'referenced' ELSE 'computed' END,
+    instrument, indicator_name, indicator_params
+FROM layers;
+
+-- `drawings` rows land after that pane's own migrated layers (the offset
+-- subquery reads only what the insert above already committed), so a
+-- drawing keeps stacking visually above indicators the same way it always
+-- has. `drawings` never had a `visible` column at all — every drawing has
+-- always rendered unconditionally, so `1` is not a default so much as the
+-- fact that was already true. Its three style columns fold into the one
+-- JSON `style` column every other item already used.
+INSERT INTO chart_pane_items (
+    id, pane_id, position, slot, slot_index, visible, style,
+    source_kind, tool_kind, price, time1, price1, time2, price2
+)
+SELECT
+    d.id, d.pane_id,
+    (SELECT COALESCE(MAX(position), -1) + 1 FROM chart_pane_items WHERE pane_id = d.pane_id)
+      + ROW_NUMBER() OVER (PARTITION BY d.pane_id ORDER BY d.position) - 1,
+    'main', NULL, 1,
+    json_object('color', d.color, 'width', d.width, 'line_style', d.line_style),
+    'anchored', d.kind, d.price, d.time1, d.price1, d.time2, d.price2
+FROM drawings d;
+
+DROP TABLE layers;
+DROP TABLE drawings;
+
+-- `senken_acl::Resource::ChartWorkspace`/`ChartLayout` (formerly
+-- `Workspace`/`Layout`) changed their stored token to match; every grant
+-- referencing the old token is rewritten so an upgrade never silently
+-- revokes a user's existing chart permissions.
+UPDATE role_grants SET resource = 'chart_workspace' WHERE resource = 'workspace';
+UPDATE role_grants SET resource = 'chart_layout' WHERE resource = 'layout';
+UPDATE user_grants SET resource = 'chart_workspace' WHERE resource = 'workspace';
+UPDATE user_grants SET resource = 'chart_layout' WHERE resource = 'layout';
+
+COMMIT;
 ";
 
 /// Opens (creating if absent) the SQLite database at `path`, applies the
@@ -357,9 +504,11 @@ pub(crate) fn open(path: &Path) -> Result<Connection, IdentityError> {
 /// matches what this crate expects — migrating an older database in place
 /// by applying each version's SQL in turn (v1 adds v2's plugin permission
 /// tables, v2 adds v3's workspace tables, v3 adds v4's alerts table, v4 adds
-/// v5's drawings table, v5 adds v6's `panes.settings` column), since there
-/// is no migration crate but not migrating by hand. A database newer than
-/// this crate knows about is reported, never guessed at.
+/// v5's drawings table, v5 adds v6's `panes.settings` column, v6 adds v7's
+/// `layers.style` column, v7 merges `layers`/`drawings` into
+/// `chart_pane_items` and renames the chart tables to `chart_*`), since
+/// there is no migration crate but not migrating by hand. A database newer
+/// than this crate knows about is reported, never guessed at.
 fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
     let found: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if found == SCHEMA_VERSION {
@@ -401,6 +550,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
         conn.execute_batch(SCHEMA_SQL_V7)?;
         version = 7;
     }
+    if version == 7 {
+        conn.execute_batch(SCHEMA_SQL_V8)?;
+        version = 8;
+    }
     debug_assert_eq!(
         version, SCHEMA_VERSION,
         "every step from `found` to SCHEMA_VERSION must be applied above"
@@ -441,12 +594,11 @@ mod tests {
             "plugin_permissions",
             "role_plugin_grants",
             "user_plugin_grants",
-            "workspaces",
-            "layouts",
-            "panes",
-            "layers",
+            "chart_workspaces",
+            "chart_layouts",
+            "chart_panes",
+            "chart_pane_items",
             "alerts",
-            "drawings",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -456,6 +608,19 @@ mod tests {
                 )
                 .unwrap_or(false);
             assert!(exists, "table `{table}` was not created");
+        }
+        for table in ["workspaces", "layouts", "panes", "layers", "drawings"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            assert!(
+                !exists,
+                "pre-v8 table `{table}` must not survive on a fresh database"
+            );
         }
     }
 
@@ -486,10 +651,10 @@ mod tests {
             "plugin_permissions",
             "role_plugin_grants",
             "user_plugin_grants",
-            "workspaces",
-            "layouts",
-            "panes",
-            "layers",
+            "chart_workspaces",
+            "chart_layouts",
+            "chart_panes",
+            "chart_pane_items",
             "alerts",
         ] {
             let exists: bool = conn
@@ -532,7 +697,7 @@ mod tests {
             .unwrap();
         assert_eq!(version, super::SCHEMA_VERSION);
 
-        for table in ["workspaces", "layouts", "panes", "layers", "alerts"] {
+        for table in ["chart_workspaces", "chart_layouts", "chart_panes", "alerts"] {
             let exists: bool = conn
                 .query_row(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -586,14 +751,14 @@ mod tests {
 
         let workspaces_exists: bool = conn
             .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'",
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chart_workspaces'",
                 [],
                 |_| Ok(true),
             )
             .unwrap_or(false);
         assert!(
             workspaces_exists,
-            "the v3 tables must still be there — this is a migration, not a rebuild"
+            "the v3 tables must still be there (renamed to chart_* by v8) — this is a migration, not a rebuild"
         );
     }
 
@@ -619,14 +784,17 @@ mod tests {
             .unwrap();
         assert_eq!(version, super::SCHEMA_VERSION);
 
-        let drawings_exists: bool = conn
+        let pane_items_exists: bool = conn
             .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'drawings'",
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chart_pane_items'",
                 [],
                 |_| Ok(true),
             )
             .unwrap_or(false);
-        assert!(drawings_exists, "migration must add `drawings`");
+        assert!(
+            pane_items_exists,
+            "migration must add `drawings` (v5) and later fold it, with `layers`, into `chart_pane_items` (v8)"
+        );
 
         let alerts_exists: bool = conn
             .query_row(
@@ -678,7 +846,7 @@ mod tests {
 
         let settings: String = conn
             .query_row(
-                "SELECT settings FROM panes WHERE id = 'pane-1'",
+                "SELECT settings FROM chart_panes WHERE id = 'pane-1'",
                 [],
                 |row| row.get(0),
             )
@@ -688,17 +856,338 @@ mod tests {
             "a pane written before this column existed must default to an empty settings object, not NULL"
         );
 
-        let drawings_exists: bool = conn
+        let pane_items_exists: bool = conn
             .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'drawings'",
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chart_pane_items'",
                 [],
                 |_| Ok(true),
             )
             .unwrap_or(false);
         assert!(
-            drawings_exists,
-            "the v5 tables must still be there — this is a migration, not a rebuild"
+            pane_items_exists,
+            "the v5 tables must still be there (renamed/merged by v8) — this is a migration, not a rebuild"
         );
+    }
+
+    /// Builds a genuine v7 database at `path` with the exact v1..v7 SQL
+    /// this crate has actually shipped (not an invented approximation of
+    /// the schema), then writes a realistic layout by hand the same way
+    /// `senken-chart`'s own `replace_layout` would have: three layers (an
+    /// EMA overlay, an RSI sub-pane, an overlaid instrument) and two
+    /// drawings (a horizontal line, a trend line) on one pane, plus a role
+    /// grant and a direct user grant still holding the pre-rename
+    /// `workspace`/`layout` tokens — exactly what a real account
+    /// accumulated before this crate ever knew about
+    /// `chart_workspace`/`chart_layout`. Shared by every
+    /// `a_v7_database_*` test below so each one migrates its own fresh
+    /// copy rather than one test's assertions depending on another's.
+    fn seed_v7_layout_fixture(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V2).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V3).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V4).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V5).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V6).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V7).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, display_name, created_at) VALUES ('user-1', 'v7@example.com', 'V7 User', 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO roles (id, name, builtin) VALUES ('role-1', 'Charts User', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO role_grants (role_id, action, resource, scope) VALUES ('role-1', 'view', 'workspace', 'own'), ('role-1', 'edit', 'layout', 'own')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO user_grants (user_id, action, resource, scope) VALUES ('user-1', 'create', 'workspace', 'own')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO workspaces (id, owner_id, name, created_at, updated_at) VALUES ('ws-1', 'user-1', 'My Charts', 0, 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO layouts (id, workspace_id, name, preset, position, created_at, updated_at) VALUES ('layout-1', 'ws-1', 'Main', '1', 0, 0, 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO panes (id, layout_id, position, instrument, timeframe) VALUES ('pane-1', 'layout-1', 0, 'okx-spot:BTCUSDT', '1h')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO layers (id, pane_id, position, kind, instrument, indicator_name, indicator_params, visible, style)
+             VALUES ('layer-ema', 'pane-1', 0, 'indicator_overlay', NULL, 'EMA', '{\"period\":20}', 1, '{\"color\":\"#ffaa00\"}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO layers (id, pane_id, position, kind, instrument, indicator_name, indicator_params, visible, style)
+             VALUES ('layer-rsi', 'pane-1', 1, 'indicator_sub_pane', NULL, 'RSI', '{\"period\":14}', 1, '{}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO layers (id, pane_id, position, kind, instrument, indicator_name, indicator_params, visible, style)
+             VALUES ('layer-overlay', 'pane-1', 2, 'overlay_instrument', 'okx-spot:ETHUSDT', NULL, NULL, 0, '{}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO drawings (id, pane_id, position, kind, price, time1, price1, time2, price2, color, width, line_style)
+             VALUES ('drawing-hline', 'pane-1', 0, 'horizontal_line', 2450.5, NULL, NULL, NULL, NULL, '#f2f2ef', 2, 'dashed')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO drawings (id, pane_id, position, kind, price, time1, price1, time2, price2, color, width, line_style)
+             VALUES ('drawing-trend', 'pane-1', 1, 'trend_line', NULL, 1700000000000000000, 100.0, 1700003600000000000, 101.5, '#7aa7e8', 1, 'solid')",
+            [],
+        ).unwrap();
+        conn.pragma_update(None, "user_version", 7).unwrap();
+    }
+
+    #[test]
+    fn a_v7_database_migrates_to_v8_without_losing_a_single_row() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v7_layout_fixture(&path);
+
+        let (before_layer_count, before_drawing_count): (i64, i64) = {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            (
+                conn.query_row("SELECT COUNT(*) FROM layers", [], |row| row.get(0))
+                    .unwrap(),
+                conn.query_row("SELECT COUNT(*) FROM drawings", [], |row| row.get(0))
+                    .unwrap(),
+            )
+        };
+        assert_eq!((before_layer_count, before_drawing_count), (3, 2));
+
+        let conn = open(&path).unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0))
+                .unwrap(),
+            super::SCHEMA_VERSION
+        );
+
+        // No row was lost: three migrated layers plus two migrated
+        // drawings is exactly five pane items — counted, not assumed.
+        let after_item_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chart_pane_items", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            after_item_count,
+            before_layer_count + before_drawing_count,
+            "every layer and drawing row must land as exactly one pane item"
+        );
+
+        // Every id survived, in insertion order, indicator/overlay items
+        // before drawings.
+        let mut stmt = conn
+            .prepare("SELECT id FROM chart_pane_items WHERE pane_id = 'pane-1' ORDER BY position")
+            .unwrap();
+        let ids: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            ids,
+            vec![
+                "layer-ema",
+                "layer-rsi",
+                "layer-overlay",
+                "drawing-hline",
+                "drawing-trend",
+            ]
+        );
+    }
+
+    #[test]
+    fn renaming_workspaces_layouts_and_panes_to_chart_preserves_every_row_count() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v7_layout_fixture(&path);
+
+        let (workspaces_before, layouts_before, panes_before): (i64, i64, i64) = {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            (
+                conn.query_row("SELECT COUNT(*) FROM workspaces", [], |row| row.get(0))
+                    .unwrap(),
+                conn.query_row("SELECT COUNT(*) FROM layouts", [], |row| row.get(0))
+                    .unwrap(),
+                conn.query_row("SELECT COUNT(*) FROM panes", [], |row| row.get(0))
+                    .unwrap(),
+            )
+        };
+        assert_eq!((workspaces_before, layouts_before, panes_before), (1, 1, 1));
+
+        let conn = open(&path).unwrap();
+        let workspaces_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chart_workspaces", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let layouts_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chart_layouts", [], |row| row.get(0))
+            .unwrap();
+        let panes_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chart_panes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            (workspaces_after, layouts_after, panes_after),
+            (workspaces_before, layouts_before, panes_before),
+            "a table rename must not add or drop a single row"
+        );
+        // And the actual row, not just the count, is still reachable under
+        // its original id.
+        let workspace_name: String = conn
+            .query_row(
+                "SELECT name FROM chart_workspaces WHERE id = 'ws-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(workspace_name, "My Charts");
+    }
+
+    #[test]
+    fn a_migrated_v7_layer_carries_the_right_slot_and_source_kind() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v7_layout_fixture(&path);
+        let conn = open(&path).unwrap();
+
+        // Placement moved from the kind tag to `slot`: the sub-pane
+        // indicator is the only `sub` row, everything else is `main`.
+        let (rsi_slot, rsi_source): (String, String) = conn
+            .query_row(
+                "SELECT slot, source_kind FROM chart_pane_items WHERE id = 'layer-rsi'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (rsi_slot.as_str(), rsi_source.as_str()),
+            ("sub", "computed")
+        );
+
+        let (overlay_slot, overlay_source, overlay_instrument): (String, String, String) = conn
+            .query_row(
+                "SELECT slot, source_kind, instrument FROM chart_pane_items WHERE id = 'layer-overlay'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(overlay_slot, "main");
+        assert_eq!(overlay_source, "referenced");
+        assert_eq!(overlay_instrument, "okx-spot:ETHUSDT");
+    }
+
+    #[test]
+    fn a_migrated_v7_drawing_defaults_to_visible_while_a_hidden_layer_stays_hidden() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v7_layout_fixture(&path);
+        let conn = open(&path).unwrap();
+
+        // `visible` now applies uniformly: the layer that was explicitly
+        // hidden stays hidden, and — the property that could not be
+        // expressed before this migration — a drawing that had no
+        // `visible` column at all defaults to shown.
+        let overlay_visible: bool = conn
+            .query_row(
+                "SELECT visible FROM chart_pane_items WHERE id = 'layer-overlay'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!overlay_visible, "the layer's own visible=0 must survive");
+        let (hline_visible, trend_visible): (bool, bool) = conn
+            .query_row(
+                "SELECT
+                    (SELECT visible FROM chart_pane_items WHERE id = 'drawing-hline'),
+                    (SELECT visible FROM chart_pane_items WHERE id = 'drawing-trend')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            hline_visible && trend_visible,
+            "a migrated drawing must default to visible — it could never be hidden before v8"
+        );
+    }
+
+    #[test]
+    fn a_migrated_v7_drawings_geometry_and_style_columns_survive() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v7_layout_fixture(&path);
+        let conn = open(&path).unwrap();
+
+        // A drawing's geometry and its three former style columns survive,
+        // folded into the shared JSON `style` column.
+        let (tool_kind, price, style): (String, f64, String) = conn
+            .query_row(
+                "SELECT tool_kind, price, style FROM chart_pane_items WHERE id = 'drawing-hline'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(tool_kind, "horizontal_line");
+        assert!((price - 2450.5).abs() < f64::EPSILON);
+        assert!(style.contains(r##""color":"#f2f2ef""##));
+        assert!(style.contains(r#""width":2"#));
+        assert!(style.contains(r#""line_style":"dashed""#));
+
+        let (t1_kind, t1_time1, t1_price1, t1_time2, t1_price2): (String, i64, f64, i64, f64) = conn
+            .query_row(
+                "SELECT tool_kind, time1, price1, time2, price2 FROM chart_pane_items WHERE id = 'drawing-trend'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(t1_kind, "trend_line");
+        assert_eq!(t1_time1, 1_700_000_000_000_000_000);
+        assert!((t1_price1 - 100.0).abs() < f64::EPSILON);
+        assert_eq!(t1_time2, 1_700_003_600_000_000_000);
+        assert!((t1_price2 - 101.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_v7_accounts_grants_survive_the_resource_token_rewrite() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v7_layout_fixture(&path);
+        let conn = open(&path).unwrap();
+
+        // Authorisation survives: the grants this account already held
+        // under the old `workspace`/`layout` tokens are rewritten, not
+        // dropped — an upgrade must never silently revoke access.
+        let role_grant_resources: Vec<String> = conn
+            .prepare("SELECT resource FROM role_grants WHERE role_id = 'role-1' ORDER BY resource")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            role_grant_resources,
+            vec!["chart_layout", "chart_workspace"]
+        );
+        let user_grant_resource: String = conn
+            .query_row(
+                "SELECT resource FROM user_grants WHERE user_id = 'user-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(user_grant_resource, "chart_workspace");
     }
 
     #[test]

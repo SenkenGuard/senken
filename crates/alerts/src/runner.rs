@@ -184,7 +184,7 @@ mod tests {
             ts: UnixNanos::from_secs(secs).unwrap(),
             price,
             price_scale: 2,
-            qty: 0,
+            qty: senken_series::Volume::Real(0),
             qty_scale: 0,
         }
     }
@@ -313,5 +313,46 @@ mod tests {
             outcome.is_err(),
             "no bucket has closed yet — the runner must not have produced an outcome"
         );
+    }
+
+    /// The two-part proof this crate exists to give: a still-forming price
+    /// that already satisfies the condition must never fire the alert —
+    /// exactly the previous test's own property — but the *same* condition
+    /// must fire once the bar that carries it actually closes. Together
+    /// they show the forming/closed boundary is what gates firing, not the
+    /// raw price ever touching the threshold.
+    #[tokio::test]
+    async fn a_provisional_price_above_threshold_does_not_fire_but_closing_above_it_does() {
+        let connector = Arc::new(FakeConnector::default());
+        let pool = SubscriptionPool::new("fake-venue", Arc::clone(&connector));
+        let (indicator, condition) = above_100();
+        let lease = pool.lease(instrument()).await.unwrap();
+        let mut runner = AlertRunner::from_lease(
+            lease,
+            BarSpec::new(1, BarUnit::Minute),
+            indicator,
+            condition,
+        );
+
+        // Opens minute 0 already above the threshold — still forming, so
+        // this alone must never fire.
+        pool.publish(instrument(), tick(0, 150));
+        pool.flush().await;
+        let still_forming =
+            tokio::time::timeout(std::time::Duration::from_millis(50), runner.step()).await;
+        assert!(
+            still_forming.is_err(),
+            "a still-forming price above the threshold must not fire the alert"
+        );
+
+        // Minute 1 opens, closing minute 0 with its close still above the
+        // threshold — now the alert must fire.
+        pool.publish(instrument(), tick(65, 200));
+        let fired = tokio::time::timeout(std::time::Duration::from_secs(5), runner.step())
+            .await
+            .expect("the runner must observe the closing tick well within this timeout")
+            .unwrap()
+            .expect("the closed bar's value is above the threshold — the alert must fire");
+        assert_eq!(fired.value.to_bits(), 150.0_f64.to_bits());
     }
 }

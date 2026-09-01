@@ -1,8 +1,8 @@
 //! [`AlertId`] — the opaque primary key for a row this crate owns.
 //!
-//! Copied from `senken_identity`/`senken_workspace`'s own identical macro
+//! Copied from `senken_identity`/`senken_chart`'s own identical macro
 //! rather than shared (it is private to each of those crates) — see
-//! `senken-workspace`'s module docs for why the guarded-query *pattern* is
+//! `senken-chart`'s module docs for why the guarded-query *pattern* is
 //! copied exactly while small mechanical pieces like this one are
 //! necessarily re-declared per crate.
 

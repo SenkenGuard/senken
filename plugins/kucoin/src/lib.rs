@@ -11,7 +11,7 @@ use senken_marketdata::instrument::{
     Contract, Instrument, InstrumentKind, InstrumentStatus, Settlement,
 };
 use senken_marketdata::source::SourceError;
-use senken_plugin::{ActivationContext, Plugin, PluginError, PluginManifest};
+use senken_plugin::{HttpActivationContext, Plugin, PluginError, PluginManifest};
 use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 
 use crate::api::{Envelope, RawContract, RawSymbol};
@@ -195,7 +195,14 @@ impl Plugin for KucoinPlugin {
         }
     }
 
-    fn activate(&self, context: &mut ActivationContext) -> Result<(), PluginError> {
+    fn requires_http(&self) -> bool {
+        true
+    }
+
+    fn activate_with_http(
+        &self,
+        context: &mut HttpActivationContext<'_>,
+    ) -> Result<(), PluginError> {
         let group = context.limit_group("kucoin");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));

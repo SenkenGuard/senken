@@ -17,6 +17,17 @@ keywords.workspace = true
 # series, not on the bar, so this crate never needs `senken-core` directly
 # outside of tests.
 senken-series = { workspace = true }
+# `dynamic` (`ConcreteIndicator`/`IndicatorField`) is the read contract a
+# caller uses when the indicator to build is only known by name at runtime
+# — an alert row, a workspace layer, a live session — none of which know at
+# compile time which of the ten built-ins they name. `IndicatorField`
+# travels over the wire (an alert's stored condition, a WS indicator frame),
+# so it needs `serde`; `params` arrives as a JSON object, so building one
+# needs `serde_json`; `DynamicIndicatorError` is `thiserror` like every
+# other error type in this workspace.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # Only for `test_support::bar`'s `UnixNanos::EPOCH` — production code never

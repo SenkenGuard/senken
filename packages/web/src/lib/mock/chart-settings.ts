@@ -18,7 +18,6 @@ import ChartBarIcon from '@lucide/svelte/icons/chart-bar';
 import ListIcon from '@lucide/svelte/icons/list';
 import RulerIcon from '@lucide/svelte/icons/ruler';
 import PencilIcon from '@lucide/svelte/icons/pencil';
-import ZapIcon from '@lucide/svelte/icons/zap';
 
 export type LineStyle = 'SOLID' | 'DASHED' | 'DOTTED';
 export const LINE_STYLES: LineStyle[] = ['SOLID', 'DASHED', 'DOTTED'];
@@ -85,11 +84,6 @@ export interface ChartSettings {
 	marginTop: number;
 	marginBottom: number;
 	marginRight: number;
-	showPositions: boolean;
-	showOrders: boolean;
-	tif: 'GTC' | 'IOC' | 'FOK';
-	buyColor: string;
-	sellColor: string;
 }
 
 /** reference: the `chartSettings` initial state, lines 1514-1528. */
@@ -106,7 +100,6 @@ export function defaultChartSettings(): ChartSettings {
 		priceScaleMode: 'REGULAR', invertScale: false, autoScale: true, paneSplit: [],
 		scaleTextColor: 'auto', scaleFont: 9, scaleLineColor: 'auto', timeAxis: true,
 		navButtons: 'ON HOVER', paneButtons: 'ON HOVER', marginTop: 10, marginBottom: 8, marginRight: 6,
-		showPositions: true, showOrders: true, tif: 'GTC', buyColor: '#7de0a3', sellColor: '#e8836f'
 	};
 }
 
@@ -145,14 +138,13 @@ export function chartThemeDefaults(light: boolean): ChartThemeDefaults {
 			};
 }
 
-export type CsSectionKey = 'symbol' | 'status' | 'scales' | 'canvas' | 'trading';
+export type CsSectionKey = 'symbol' | 'status' | 'scales' | 'canvas';
 
 export const CS_SECTIONS: { key: CsSectionKey; label: string; icon: Component }[] = [
 	{ key: 'symbol', label: 'SYMBOL', icon: ChartBarIcon },
 	{ key: 'status', label: 'STATUS LINE', icon: ListIcon },
 	{ key: 'scales', label: 'SCALES & LINES', icon: RulerIcon },
-	{ key: 'canvas', label: 'CANVAS', icon: PencilIcon },
-	{ key: 'trading', label: 'TRADING', icon: ZapIcon }
+	{ key: 'canvas', label: 'CANVAS', icon: PencilIcon }
 ];
 
 /** One rendered row of the settings body (reference: the `csRows` row
@@ -176,6 +168,10 @@ export interface SettingsRow {
 	unit?: string;
 	onInc?: () => void;
 	onDec?: () => void;
+	/** A capability-gated control remains visible to explain why it cannot be
+	 * used, rather than appearing to accept a setting it cannot honour. */
+	disabled?: boolean;
+	disabledReason?: string;
 }
 
 /** Builds the rows for one section (reference: the `if (s.csSection === …)`
@@ -186,7 +182,8 @@ export function buildSettingsRows(
 	section: CsSectionKey,
 	cs: ChartSettings,
 	set: (patch: Partial<ChartSettings>) => void,
-	theme: ChartThemeDefaults
+	theme: ChartThemeDefaults,
+	capabilities: { quotes?: boolean } = {}
 ): { groupLabel: string; rows: SettingsRow[] } {
 	const chk = (label: string, key: keyof ChartSettings): SettingsRow => ({
 		label,
@@ -266,7 +263,14 @@ export function buildSettingsRows(
 				chk('COUNTDOWN TO BAR CLOSE', 'countdown'),
 				optRow('SYMBOL LABEL', 'symbolLabel', ['VALUE + LINE', 'VALUE', 'HIDDEN']),
 				chk('HIGH AND LOW LINES', 'highLow'),
-				chk('BID AND ASK LINES', 'bidAsk'),
+				{
+					...chk('BID AND ASK LINES', 'bidAsk'),
+					disabled: capabilities.quotes === false,
+					disabledReason:
+						capabilities.quotes === false
+							? 'This source does not report best bid and ask prices.'
+							: undefined
+				},
 				group('TIME SCALE'),
 				chk('TIME AXIS', 'timeAxis'),
 				chk('DAY OF WEEK ON LABELS', 'dayOfWeek'),
@@ -306,15 +310,5 @@ export function buildSettingsRows(
 			]
 		};
 	}
-	// 'trading'
-	return {
-		groupLabel: 'TRADING',
-		rows: [
-			chk('SHOW POSITIONS ON CHART', 'showPositions'),
-			chk('SHOW ORDERS ON CHART', 'showOrders'),
-			{ label: 'BUY COLOR', hasColor: true, colorValue: cs.buyColor, colorFallback: '#7de0a3', onColorChange: (hex) => set({ buyColor: hex }) },
-			{ label: 'SELL COLOR', hasColor: true, colorValue: cs.sellColor, colorFallback: '#e8836f', onColorChange: (hex) => set({ sellColor: hex }) },
-			optRow('DEFAULT TIF', 'tif', ['GTC', 'IOC', 'FOK'])
-		]
-	};
+	return { groupLabel: '', rows: [] };
 }

@@ -50,7 +50,7 @@
 //! # Persistence
 //!
 //! [`AlertStore`] follows exactly the guarded-query pattern
-//! `senken-workspace` established for alerts are owned SQLite
+//! `senken-chart` established for alerts are owned SQLite
 //! records sharing `senken-identity`'s accounts database (via
 //! [`senken_identity::IdentityStore::shared_connection`]) rather than a
 //! second database or a JSON blob, and every caller-facing method takes a
@@ -87,7 +87,7 @@ pub use crate::indicator_spec::{ConcreteIndicator, IndicatorSpec};
 pub use crate::runner::AlertRunner;
 pub use crate::store::{AlertRecord, AlertStore};
 
-// Re-exported for convenience, exactly like `senken-workspace` re-exports
+// Re-exported for convenience, exactly like `senken-chart` re-exports
 // it: every listing here returns `senken_identity::Page<T>`, so a caller of
 // both crates' listings is not asked to learn two names for one concept.
 pub use senken_identity::Page;

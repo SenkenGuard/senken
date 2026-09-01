@@ -85,14 +85,15 @@ impl Decision {
 #[must_use]
 pub fn decide(actor: &Actor, action: Action, resource: Resource) -> Decision {
     match resource {
-        Resource::Workspace
-        | Resource::Layout
+        Resource::ChartWorkspace
+        | Resource::ChartLayout
         | Resource::Alert
         | Resource::Strategy
         | Resource::Account
         | Resource::Adapter
         | Resource::User
-        | Resource::Role => decide_by_grant(actor, action, resource),
+        | Resource::Role
+        | Resource::Indicator => decide_by_grant(actor, action, resource),
     }
 }
 
@@ -113,17 +114,20 @@ mod tests {
 
     #[test]
     fn an_actor_with_no_grants_is_denied() {
-        let decision = decide(&Actor::new(), Action::View, Resource::Layout);
+        let decision = decide(&Actor::new(), Action::View, Resource::ChartLayout);
         assert!(!decision.is_allowed());
         assert_eq!(decision.scope(), None);
     }
 
     #[test]
     fn a_matching_direct_grant_is_allowed_with_its_scope() {
-        let actor =
-            Actor::new().with_direct_grant(Grant::new(Action::View, Resource::Layout, Scope::Own));
+        let actor = Actor::new().with_direct_grant(Grant::new(
+            Action::View,
+            Resource::ChartLayout,
+            Scope::Own,
+        ));
 
-        let decision = decide(&actor, Action::View, Resource::Layout);
+        let decision = decide(&actor, Action::View, Resource::ChartLayout);
         assert!(decision.is_allowed());
         assert_eq!(decision.scope(), Some(Scope::Own));
     }
@@ -132,30 +136,36 @@ mod tests {
     fn a_matching_role_grant_is_allowed_with_its_scope() {
         let actor = Actor::new().with_role(Role::new("viewer").with_grant(Grant::new(
             Action::View,
-            Resource::Layout,
+            Resource::ChartLayout,
             Scope::Own,
         )));
 
-        let decision = decide(&actor, Action::View, Resource::Layout);
+        let decision = decide(&actor, Action::View, Resource::ChartLayout);
         assert!(decision.is_allowed());
         assert_eq!(decision.scope(), Some(Scope::Own));
     }
 
     #[test]
     fn a_grant_for_a_different_action_does_not_allow_this_one() {
-        let actor =
-            Actor::new().with_direct_grant(Grant::new(Action::View, Resource::Layout, Scope::All));
+        let actor = Actor::new().with_direct_grant(Grant::new(
+            Action::View,
+            Resource::ChartLayout,
+            Scope::All,
+        ));
 
-        let decision = decide(&actor, Action::Edit, Resource::Layout);
+        let decision = decide(&actor, Action::Edit, Resource::ChartLayout);
         assert!(!decision.is_allowed());
     }
 
     #[test]
     fn a_grant_for_a_different_resource_does_not_allow_this_one() {
-        let actor =
-            Actor::new().with_direct_grant(Grant::new(Action::View, Resource::Layout, Scope::All));
+        let actor = Actor::new().with_direct_grant(Grant::new(
+            Action::View,
+            Resource::ChartLayout,
+            Scope::All,
+        ));
 
-        let decision = decide(&actor, Action::View, Resource::Workspace);
+        let decision = decide(&actor, Action::View, Resource::ChartWorkspace);
         assert!(!decision.is_allowed());
     }
 
@@ -168,12 +178,12 @@ mod tests {
         let actor = Actor::new()
             .with_role(Role::new("viewer").with_grant(Grant::new(
                 Action::View,
-                Resource::Layout,
+                Resource::ChartLayout,
                 Scope::Own,
             )))
-            .with_direct_grant(Grant::new(Action::View, Resource::Layout, Scope::All));
+            .with_direct_grant(Grant::new(Action::View, Resource::ChartLayout, Scope::All));
 
-        let decision = decide(&actor, Action::View, Resource::Layout);
+        let decision = decide(&actor, Action::View, Resource::ChartLayout);
         assert_eq!(decision.scope(), Some(Scope::All));
     }
 
@@ -186,14 +196,15 @@ mod tests {
         // accidentally drops an arm and replaces it with a `_ => todo!()`
         // is caught here too.
         let resources = [
-            Resource::Workspace,
-            Resource::Layout,
+            Resource::ChartWorkspace,
+            Resource::ChartLayout,
             Resource::Alert,
             Resource::Strategy,
             Resource::Account,
             Resource::Adapter,
             Resource::User,
             Resource::Role,
+            Resource::Indicator,
         ];
         for resource in resources {
             let _ = decide(&Actor::new(), Action::View, resource);

@@ -286,27 +286,35 @@ fn sql_to_action(text: &str) -> Result<Action, IdentityError> {
 
 fn resource_to_sql(resource: Resource) -> &'static str {
     match resource {
-        Resource::Workspace => "workspace",
-        Resource::Layout => "layout",
+        // Schema v8 renames these two tokens from `workspace`/`layout` to
+        // match `Resource::ChartWorkspace`/`Resource::ChartLayout` — see
+        // `schema::migrate_workspace_to_chart_grants`, which rewrites every
+        // existing `role_grants`/`user_grants` row still holding the old
+        // token so upgrading never silently drops a user's chart
+        // permissions.
+        Resource::ChartWorkspace => "chart_workspace",
+        Resource::ChartLayout => "chart_layout",
         Resource::Alert => "alert",
         Resource::Strategy => "strategy",
         Resource::Account => "account",
         Resource::Adapter => "adapter",
         Resource::User => "user",
         Resource::Role => "role",
+        Resource::Indicator => "indicator",
     }
 }
 
 fn sql_to_resource(text: &str) -> Result<Resource, IdentityError> {
     Ok(match text {
-        "workspace" => Resource::Workspace,
-        "layout" => Resource::Layout,
+        "chart_workspace" => Resource::ChartWorkspace,
+        "chart_layout" => Resource::ChartLayout,
         "alert" => Resource::Alert,
         "strategy" => Resource::Strategy,
         "account" => Resource::Account,
         "adapter" => Resource::Adapter,
         "user" => Resource::User,
         "role" => Resource::Role,
+        "indicator" => Resource::Indicator,
         other => {
             return Err(IdentityError::CorruptGrant(format!(
                 "unknown resource `{other}`"

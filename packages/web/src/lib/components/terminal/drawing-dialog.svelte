@@ -14,6 +14,9 @@
 	import MinusIcon from '@lucide/svelte/icons/minus';
 	import SlashIcon from '@lucide/svelte/icons/slash';
 	import RectangleHorizontalIcon from '@lucide/svelte/icons/rectangle-horizontal';
+	import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
+	import PercentIcon from '@lucide/svelte/icons/percent';
+	import TypeIcon from '@lucide/svelte/icons/type';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
 
@@ -29,8 +32,22 @@
 		onDelete: () => void;
 	} = $props();
 
-	const ICON = { horizontal_line: MinusIcon, trend_line: SlashIcon, rectangle: RectangleHorizontalIcon } as const;
-	const TITLE = { horizontal_line: 'HORIZONTAL LINE', trend_line: 'TREND LINE', rectangle: 'RECTANGLE' } as const;
+	const ICON = {
+		horizontal_line: MinusIcon,
+		trend_line: SlashIcon,
+		rectangle: RectangleHorizontalIcon,
+		ray: ArrowUpRightIcon,
+		fib_retracement: PercentIcon,
+		text_note: TypeIcon
+	} as const;
+	const TITLE = {
+		horizontal_line: 'HORIZONTAL LINE',
+		trend_line: 'TREND LINE',
+		rectangle: 'RECTANGLE',
+		ray: 'RAY',
+		fib_retracement: 'FIB RETRACEMENT',
+		text_note: 'TEXT NOTE'
+	} as const;
 
 	const Icon = $derived(drawing ? ICON[drawing.kind] : null);
 	const title = $derived(drawing ? TITLE[drawing.kind] : '');

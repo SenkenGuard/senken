@@ -53,6 +53,7 @@
 	} as const;
 
 	const rows = $derived(commandPalette.request?.rows(commandPalette.query) ?? []);
+	const busy = $derived(commandPalette.request?.busy?.() ?? false);
 
 	// bits-ui's Dialog only traps focus inside its content on open — it
 	// does not descend into a search input the way a command palette needs
@@ -129,7 +130,7 @@
 				{/each}
 				{#if rows.length === 0}
 					<Command.Empty class="px-[15px] py-[26px] text-center font-mono text-[10px] tracking-[0.16em] text-dim">
-						NO MATCH
+						{busy ? 'SEARCHING…' : 'NO MATCH'}
 					</Command.Empty>
 				{/if}
 			</Command.List>

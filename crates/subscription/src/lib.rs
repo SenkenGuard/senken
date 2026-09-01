@@ -58,10 +58,21 @@
 //! at the cap, the pool opens another one through the [`VenueConnector`] it
 //! was built with, rather than failing the lease.
 
+mod book;
 mod connection;
+mod indicator_session;
 mod pool;
 mod price;
+mod quote;
+mod session;
 
+pub use book::{BookError, BookLevel, BookSnapshot, BookSource};
 pub use connection::{ConnectionError, VenueConnection, VenueConnector};
+pub use indicator_session::{
+    IndicatorEngine, IndicatorReading, IndicatorSessionHandle, IndicatorSessionKey,
+    IndicatorSessionRegistry,
+};
 pub use pool::{Lease, PoolError, SubscriptionPool};
 pub use price::PriceUpdate;
+pub use quote::{QuoteError, QuoteLease, QuoteSource, QuoteUpdate};
+pub use session::TickBarBuilder;

@@ -50,17 +50,17 @@ mod tests {
 
     #[test]
     fn matches_is_true_only_for_the_same_action_and_resource() {
-        let grant = Grant::new(Action::View, Resource::Layout, Scope::Own);
-        assert!(grant.matches(Action::View, Resource::Layout));
-        assert!(!grant.matches(Action::Edit, Resource::Layout));
-        assert!(!grant.matches(Action::View, Resource::Workspace));
+        let grant = Grant::new(Action::View, Resource::ChartLayout, Scope::Own);
+        assert!(grant.matches(Action::View, Resource::ChartLayout));
+        assert!(!grant.matches(Action::Edit, Resource::ChartLayout));
+        assert!(!grant.matches(Action::View, Resource::ChartWorkspace));
     }
 
     #[test]
     fn matches_ignores_scope() {
         // A grant matches by (action, resource) alone; scope is read
         // separately by the caller once a match is found.
-        let grant = Grant::new(Action::View, Resource::Layout, Scope::All);
-        assert!(grant.matches(Action::View, Resource::Layout));
+        let grant = Grant::new(Action::View, Resource::ChartLayout, Scope::All);
+        assert!(grant.matches(Action::View, Resource::ChartLayout));
     }
 }

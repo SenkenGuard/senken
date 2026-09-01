@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use senken_core::TimeRange;
+use senken_core::{TimeRange, UnixNanos};
 use senken_series::{Anchor, Bar, BarSpec, Clock, Origin, SeriesKey};
 use senken_store::Store;
 use tokio::sync::{oneshot, watch};
@@ -247,16 +247,11 @@ impl SeriesLoader {
         let fetch_span = self.chunk_span_nanos(self.fetch_spec_for(key));
         let mut chunks: u32 = 0;
         let mut estimated_bars: u64 = 0;
-        let base_duration = self
-            .inner
-            .candidates
-            .base_spec
-            .duration_nanos()
-            .unwrap_or(1);
+        let fetch_duration = self.fetch_spec_for(key).duration_nanos().unwrap_or(1);
         for g in &gap.missing {
             let span = g.end().as_nanos() - g.start().as_nanos();
             chunks += chunk_count(span, fetch_span);
-            estimated_bars += u64::try_from(span / base_duration.max(1)).unwrap_or(0);
+            estimated_bars += u64::try_from(span / fetch_duration.max(1)).unwrap_or(0);
         }
         Ok(Requirement {
             key: key.clone(),
@@ -443,6 +438,17 @@ impl SeriesLoader {
             })
     }
 
+    /// Whether this loader's source can fetch `spec` directly.
+    ///
+    /// This reports the source capability captured when the loader was
+    /// built. Callers use it before enqueueing an explicit native download,
+    /// so an unsupported interval is rejected rather than becoming a job
+    /// that can only fail after reaching the venue.
+    #[must_use]
+    pub fn supports_venue_spec(&self, spec: BarSpec) -> bool {
+        self.inner.candidates.base_spec == spec || self.inner.candidates.finer_specs.contains(&spec)
+    }
+
     /// A live, coalesced feed of every job's snapshot.
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<Vec<JobSnapshot>> {
@@ -477,6 +483,27 @@ impl SeriesLoader {
         self.inner.bar_cache.metrics()
     }
 
+    /// The observed left edge for the venue series that backs `key`. A
+    /// derived request intentionally asks the same underlying venue-spec
+    /// fact: aggregation cannot manufacture older bars, but the fact still
+    /// remains per fetch spec rather than being shared across every spec.
+    ///
+    /// # Errors
+    /// Returns [`LoadError::Store`] if the persisted boundary cannot be
+    /// read.
+    pub fn earliest_available(
+        &self,
+        key: &SeriesKey,
+        anchor: Anchor,
+    ) -> Result<Option<UnixNanos>, LoadError> {
+        let fetch_spec = self.fetch_spec_for(key);
+        let fetch_key = match key.origin {
+            Origin::Venue => key.clone(),
+            Origin::Derived => ladder::venue_key(key, fetch_spec),
+        };
+        Ok(self.inner.store.earliest_available(&fetch_key, anchor)?)
+    }
+
     /// Requests cancellation of job `id`. Takes effect before the job's
     /// *next* chunk starts — a chunk already being fetched or written
     /// completes and is kept ("anything already written is
@@ -497,7 +524,7 @@ impl SeriesLoader {
     fn fetch_spec_for(&self, key: &SeriesKey) -> BarSpec {
         match key.origin {
             Origin::Venue => key.spec,
-            Origin::Derived => self.inner.candidates.base_spec,
+            Origin::Derived => self.inner.candidates.fetch_spec_for(key.spec),
         }
     }
 
@@ -688,7 +715,16 @@ impl SeriesLoader {
         }
         self.publish_jobs(false);
 
-        let write_result = {
+        // A venue that answers with nothing has told us something true, and
+        // there is nothing to write: coverage is derived from the names of
+        // the files on disk, so an empty file would claim a range it does not
+        // hold. Failing the job here instead — which is what writing an empty
+        // batch does — would turn "the venue has no bars for this window"
+        // into an error the reader cannot act on, and would skip the boundary
+        // update below that is the only way the left edge is ever learnt.
+        let write_result = if bars.is_empty() {
+            Ok(())
+        } else {
             let inner = Arc::clone(&self.inner);
             let fetch_key = fetch_key.clone();
             let bars = Arc::clone(&bars);
@@ -708,6 +744,20 @@ impl SeriesLoader {
             .await
         };
         if let Err(error) = write_result {
+            let mut snap = record
+                .snapshot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            snap.last_error = Some(error.to_string());
+            drop(snap);
+            self.publish_jobs(true);
+            return Err(JobOutcome::Failed(error));
+        }
+
+        if let Err(error) = self
+            .update_earliest_boundary(fetch_key, anchor, fetch_spec, chunk_range, &bars)
+            .await
+        {
             let mut snap = record
                 .snapshot
                 .lock()
@@ -737,6 +787,71 @@ impl SeriesLoader {
         }
         self.publish_jobs(false);
         Ok(())
+    }
+
+    /// Records the venue's left edge, or removes a recorded edge once a
+    /// later response reaches earlier than it.
+    ///
+    /// A chunk is evidence that the venue has nothing older **only when it
+    /// asked for a whole page and came back completely empty**. Two weaker
+    /// signals look reasonable and are both wrong:
+    ///
+    /// - A chunk narrower than a page cannot return a page's worth of rows,
+    ///   so counting its rows proves nothing. `split_into_chunks` leaves a
+    ///   short trailing chunk on any span that is not a whole multiple of the
+    ///   page, so this fires on ordinary requests.
+    /// - A whole page that returns *some* rows is ambiguous: one minute with
+    ///   no trades produces exactly the same short response as the true start
+    ///   of history.
+    ///
+    /// The asymmetry settles it. Missing the edge costs one wasted request
+    /// that the next page corrects. Claiming it wrongly makes every older bar
+    /// unreachable, because the client stops asking — and then nothing
+    /// arrives to revoke the claim.
+    ///
+    /// Deliberately after the Parquet write: a failed write must never make a
+    /// future reader believe the historical probe succeeded.
+    async fn update_earliest_boundary(
+        &self,
+        fetch_key: &SeriesKey,
+        anchor: Anchor,
+        fetch_spec: BarSpec,
+        chunk_range: TimeRange,
+        bars: &[Bar],
+    ) -> Result<(), LoadError> {
+        let span = chunk_range
+            .end()
+            .as_nanos()
+            .saturating_sub(chunk_range.start().as_nanos());
+        let whole_page = span >= self.chunk_span_nanos(fetch_spec);
+        let exhausted = whole_page && bars.is_empty();
+        let reached = bars.first().map(|bar| bar.ts_open);
+        let observed_earliest = chunk_range.end();
+
+        let inner = Arc::clone(&self.inner);
+        let fetch_key = fetch_key.clone();
+        run_blocking(move || {
+            let existing = inner.store.earliest_available(&fetch_key, anchor)?;
+            if exhausted {
+                match existing {
+                    Some(previous) if previous <= observed_earliest => Ok(()),
+                    _ => inner.store.record_earliest_available(
+                        &fetch_key,
+                        anchor,
+                        Some(observed_earliest),
+                    ),
+                }
+            } else if reached.is_some_and(|first| existing.is_some_and(|prev| first < prev)) {
+                // A real bar older than the recorded edge disproves it.
+                inner
+                    .store
+                    .record_earliest_available(&fetch_key, anchor, None)
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .map_err(LoadError::from)
     }
 
     async fn fetch_chunk_with_retry(
@@ -834,7 +949,7 @@ mod tests {
     use senken_series::{Anchor, Bar, BarSpec, BarUnit, Origin, SeriesKey};
     use senken_store::Store;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::time::Duration;
     use tempfile::TempDir;
 
@@ -860,7 +975,7 @@ mod tests {
                 high: 1,
                 low: 1,
                 close: 1,
-                volume: 1,
+                volume: senken_series::Volume::Real(1),
                 quote_volume: None,
                 trade_count: None,
                 taker_buy_volume: None,
@@ -908,6 +1023,43 @@ mod tests {
     struct FlakySource {
         attempts: AtomicU32,
         fail_first: u32,
+    }
+
+    /// Starts with a short historical response, then can return a full page
+    /// that reaches farther back. `empty` makes the venue answer a whole page
+    /// with nothing, which is the only response this loader accepts as proof
+    /// that no older history exists; `full_response` distinguishes a complete
+    /// page from a short one.
+    struct BoundarySource {
+        full_response: AtomicBool,
+        empty: AtomicBool,
+    }
+
+    #[async_trait]
+    impl BarSource for BoundarySource {
+        fn source_id(&self) -> &'static str {
+            "okx"
+        }
+
+        fn max_rows(&self) -> usize {
+            2
+        }
+
+        async fn bars(
+            &self,
+            _symbol: &str,
+            spec: BarSpec,
+            range: TimeRange,
+        ) -> Result<Vec<Bar>, FetchError> {
+            if self.empty.load(Ordering::SeqCst) {
+                return Ok(Vec::new());
+            }
+            let mut bars = m1_bars_for(range, spec);
+            if !self.full_response.load(Ordering::SeqCst) {
+                bars.truncate(1);
+            }
+            Ok(bars)
+        }
     }
 
     #[async_trait]
@@ -959,6 +1111,134 @@ mod tests {
 
     fn m1() -> BarSpec {
         BarSpec::new(1, BarUnit::Minute)
+    }
+
+    fn boundary_loader(source: &Arc<BoundarySource>) -> (TempDir, crate::SeriesLoader) {
+        let dir = TempDir::new().unwrap();
+        let store = Store::new(dir.path());
+        store.init().unwrap();
+        let loader = SeriesLoaderBuilder::new(
+            store,
+            Arc::clone(source) as Arc<dyn BarSource>,
+            Arc::new(SystemClock),
+            m1(),
+        )
+        .finer_specs(vec![BarSpec::new(1, BarUnit::Hour)])
+        .build();
+        (dir, loader)
+    }
+
+    #[tokio::test]
+    async fn a_whole_page_that_comes_back_empty_records_the_edge_per_spec_and_a_later_bar_revokes_it()
+     {
+        let source = Arc::new(BoundarySource {
+            full_response: AtomicBool::new(true),
+            empty: AtomicBool::new(true),
+        });
+        let (_dir, loader) = boundary_loader(&source);
+        let m1_key = SeriesKey::new("okx", "BTCUSDT", Origin::Venue, m1());
+        let h1_key = SeriesKey::new(
+            "okx",
+            "BTCUSDT",
+            Origin::Venue,
+            BarSpec::new(1, BarUnit::Hour),
+        );
+
+        // `max_rows` is 2, so 120 seconds of M1 is exactly one whole page.
+        let edge_range = secs_range(600, 720);
+        let outcome = loader
+            .ensure(&m1_key, edge_range, Anchor::UTC, 0, 0, Priority::Prefetch)
+            .wait()
+            .await;
+        assert!(matches!(outcome, JobOutcome::Completed));
+        assert_eq!(
+            loader.earliest_available(&m1_key, Anchor::UTC).unwrap(),
+            Some(UnixNanos::from_secs(720).unwrap()),
+            "a whole page answered with nothing is the venue saying it has no more"
+        );
+        assert_eq!(
+            loader.earliest_available(&h1_key, Anchor::UTC).unwrap(),
+            None,
+            "a boundary observed for M1 must not be inherited by H1"
+        );
+
+        source.empty.store(false, Ordering::SeqCst);
+        let earlier = secs_range(0, 120);
+        let outcome = loader
+            .ensure(&m1_key, earlier, Anchor::UTC, 0, 0, Priority::Prefetch)
+            .wait()
+            .await;
+        assert!(matches!(outcome, JobOutcome::Completed));
+        assert_eq!(
+            loader.earliest_available(&m1_key, Anchor::UTC).unwrap(),
+            None,
+            "a real bar older than the recorded edge disproves it"
+        );
+    }
+
+    /// The trailing chunk of any span that is not a whole multiple of a page
+    /// is narrower than a page by construction (`split_into_chunks`), so it
+    /// can never return a page's worth of rows. Counting its rows as evidence
+    /// of the venue's left edge is what made scrolling back stop dead while
+    /// the venue still had years of history.
+    #[tokio::test]
+    async fn a_chunk_narrower_than_a_page_never_claims_the_edge() {
+        let source = Arc::new(BoundarySource {
+            full_response: AtomicBool::new(true),
+            empty: AtomicBool::new(true),
+        });
+        let (_dir, loader) = boundary_loader(&source);
+        let m1_key = SeriesKey::new("okx", "BTCUSDT", Origin::Venue, m1());
+
+        // 60 seconds is one M1 bar; `max_rows` is 2, so this is half a page.
+        let outcome = loader
+            .ensure(
+                &m1_key,
+                secs_range(600, 660),
+                Anchor::UTC,
+                0,
+                0,
+                Priority::Prefetch,
+            )
+            .wait()
+            .await;
+        assert!(matches!(outcome, JobOutcome::Completed));
+        assert_eq!(
+            loader.earliest_available(&m1_key, Anchor::UTC).unwrap(),
+            None,
+            "a chunk that could not hold a whole page proves nothing about the venue"
+        );
+    }
+
+    /// One minute with no trades produces exactly the same short response as
+    /// the true start of history. Treating it as the edge is unrecoverable:
+    /// the client stops asking, so nothing ever arrives to revoke it.
+    #[tokio::test]
+    async fn a_whole_page_that_returns_some_bars_never_claims_the_edge() {
+        let source = Arc::new(BoundarySource {
+            full_response: AtomicBool::new(false),
+            empty: AtomicBool::new(false),
+        });
+        let (_dir, loader) = boundary_loader(&source);
+        let m1_key = SeriesKey::new("okx", "BTCUSDT", Origin::Venue, m1());
+
+        let outcome = loader
+            .ensure(
+                &m1_key,
+                secs_range(600, 720),
+                Anchor::UTC,
+                0,
+                0,
+                Priority::Prefetch,
+            )
+            .wait()
+            .await;
+        assert!(matches!(outcome, JobOutcome::Completed));
+        assert_eq!(
+            loader.earliest_available(&m1_key, Anchor::UTC).unwrap(),
+            None,
+            "a short but non-empty page is a gap or the edge, and the two are indistinguishable"
+        );
     }
 
     /// Required test: "two concurrent requests at different
@@ -1082,6 +1362,33 @@ mod tests {
         assert_eq!(requirement.covered, vec![range]);
         assert_eq!(requirement.chunks, 0);
         assert_eq!(loader.jobs().len(), 0, "plan() must not start any job");
+    }
+
+    #[test]
+    fn an_uncovered_h1_request_fetches_native_h1_in_three_chunks() {
+        let dir = TempDir::new().unwrap();
+        let store = Store::new(dir.path());
+        store.init().unwrap();
+        let h1 = BarSpec::new(1, BarUnit::Hour);
+        let loader = SeriesLoaderBuilder::new(
+            store,
+            Arc::new(CountingSource {
+                calls: AtomicU32::new(0),
+                max_rows: 100,
+                delay: Duration::ZERO,
+            }),
+            Arc::new(SystemClock),
+            m1(),
+        )
+        .finer_specs(vec![h1])
+        .build();
+        let key = SeriesKey::new("okx-spot", "BTCUSDT", Origin::Derived, h1);
+        let range = secs_range(0, 300 * 3600);
+
+        let requirement = loader.plan(&key, range, Anchor::UTC).unwrap();
+
+        assert_eq!(requirement.chunks, 3);
+        assert_eq!(requirement.estimated_bars, 300);
     }
 
     /// Required test: "a backfill invalidates a stale derived

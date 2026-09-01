@@ -56,6 +56,10 @@ impl Indicator for Ema {
         self.update_raw(scaled_to_f64(bar.close));
     }
 
+    fn snapshot(&self) -> Box<dyn Indicator> {
+        Box::new(self.clone())
+    }
+
     fn reset(&mut self) {
         self.value = 0.0;
         self.count = 0;
@@ -141,6 +145,18 @@ mod tests {
         assert!(!ema.has_inputs());
         assert!(!ema.initialized());
         assert_approx_eq(ema.value(), 0.0);
+    }
+
+    #[test]
+    fn advancing_a_snapshot_does_not_advance_the_confirmed_indicator() {
+        let mut ema = Ema::new(1);
+        ema.handle_bar(&bar(0, 0, 0, 10, 0));
+
+        let mut provisional = ema.snapshot();
+        provisional.handle_bar(&bar(0, 0, 0, 20, 0));
+
+        assert_approx_eq(ema.value(), 10.0);
+        assert!(provisional.has_inputs());
     }
 
     #[test]

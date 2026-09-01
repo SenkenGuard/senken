@@ -38,9 +38,12 @@ senken-alerts = { workspace = true }
 # Live price feed wiring: `WsVenueConnector`/`okx::OkxTradesProtocol`
 # build the one `SubscriptionPool` this build actually knows a live venue
 # protocol for (OKX's public trades channel — see `feed.rs`'s own docs).
+# `okx_book::OkxBookSource` is wired the same direct way for book-depth
+# snapshots — see `source_handlers::book_sources`'s own docs.
 senken-feed = { workspace = true }
 # The accounts store this crate exposes over HTTP.
 senken-identity = { workspace = true }
+senken-indicators = { workspace = true }
 # `SeriesKey`/`BarSpec`/`Anchor`/`Origin` — the bars endpoints' request/
 # response shapes are built from these directly, not a re-declared copy.
 senken-series = { workspace = true }
@@ -67,17 +70,24 @@ senken-runtime = { workspace = true }
 senken-subscription = { workspace = true }
 # `LimitGroup` for the OKX WS connection's own dial/reconnect budget
 # (see `feed.rs`'s doc on why this is a dedicated budget
-# rather than the OKX plugin's own REST one).
+# rather than the OKX plugin's own REST one), and for `source_handlers`'s
+# own `VenueClient` behind the book-depth snapshot source, for the same
+# reason.
 senken-venue = { workspace = true }
-# Chart workspace persistence: `WorkspaceStore`
+# Chart workspace persistence: `ChartWorkspaceStore`
 # is mounted directly, the same way `senken-alerts`' `AlertStore` is.
-senken-workspace = { workspace = true }
+senken-chart = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
+# The plain HTTP client `source_handlers`'s `VenueClient` wraps to fetch a
+# book-depth snapshot — everywhere else this crate's live data arrives over
+# the WS pool instead, so this is the one place a bare `reqwest::Client` is
+# built directly.
+reqwest = { workspace = true }
 # Splits the WS endpoint's socket into independent send/receive halves
 #: a live-price forwarder task and the client's own
 # subscribe/unsubscribe frames must both reach the one socket concurrently.

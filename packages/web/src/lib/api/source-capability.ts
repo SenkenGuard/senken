@@ -21,10 +21,27 @@ export function hasLiveFeed(sources: ReadonlyMap<string, SourceCapabilityDto>, i
 	return sources.get(sourceIdOf(instrument))?.live ?? false;
 }
 
+/** Whether `instrument`'s source explicitly reports best-bid-and-offer
+ * updates. A live last-trade feed is not enough: quote lines must only be
+ * offered when this separate capability is present. */
+export function hasQuoteFeed(sources: ReadonlyMap<string, SourceCapabilityDto>, instrument: string): boolean {
+	return sources.get(sourceIdOf(instrument))?.quotes ?? false;
+}
+
 /** Whether `instrument`'s source has a bar source registered at all — a
  * source can chart without streaming (`bars: true, live: false`), but never
  * the reverse (`SourceCapabilityDto`'s own doc: "never true without
  * `bars`"). */
 export function hasBarSource(sources: ReadonlyMap<string, SourceCapabilityDto>, instrument: string): boolean {
 	return sources.get(sourceIdOf(instrument))?.bars ?? false;
+}
+
+/** Whether `instrument`'s source can serve the order-book panel a
+ * fixed-depth snapshot — `book` is a nested object (`{ supported: boolean }`),
+ * not a fourth flat flag, so this reads `.book?.supported` rather than
+ * `.book` itself. Same absent-is-false default as every other capability
+ * read here: the panel must never render as if it works on the strength of
+ * an answer that has not arrived yet. */
+export function hasBookFeed(sources: ReadonlyMap<string, SourceCapabilityDto>, instrument: string): boolean {
+	return sources.get(sourceIdOf(instrument))?.book?.supported ?? false;
 }

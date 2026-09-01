@@ -51,7 +51,7 @@ pub struct AlertRecord {
 }
 
 /// Guarded queries over alerts, following exactly the pattern
-/// `senken-workspace` established for every read and write
+/// `senken-chart` established for every read and write
 /// takes an [`AuthenticatedUser`], calls
 /// [`AuthenticatedUser::authorize`] before touching a row, and turns the
 /// returned [`Scope`] into a `WHERE` clause (or, for a single-row
@@ -60,7 +60,7 @@ pub struct AlertRecord {
 ///
 /// Shares `senken-identity`'s own SQLite connection
 /// ([`IdentityStore::shared_connection`]) rather than opening a second one,
-/// for the exact reason `senken-workspace`'s module docs give: alerts
+/// for the exact reason `senken-chart`'s module docs give: alerts
 /// reference `users(id)`, so their table lives in the same file
 /// `senken-identity` alone owns the `user_version` sequence for.
 #[derive(Debug)]
@@ -86,7 +86,7 @@ impl AlertStore {
     /// Refuses to persist an alert whose indicator cannot even be built
     /// (an unknown name, or parameters missing a required field) — the same
     /// "refuse a value that could never be read back" discipline
-    /// `senken-workspace` applies to an indicator layer's JSON, taken one
+    /// `senken-chart` applies to an indicator layer's JSON, taken one
     /// step further here since this crate actually knows how to build the
     /// ten indicators.
     ///
@@ -180,7 +180,7 @@ impl AlertStore {
             }
             // `Scope` is `#[non_exhaustive]` — fail closed for
             // a future variant this crate has not been taught to interpret,
-            // the same discipline `senken-workspace` applies.
+            // the same discipline `senken-chart` applies.
             _ => return Err(AlertError::Identity(IdentityError::Forbidden)),
         };
 
@@ -396,7 +396,7 @@ fn decode_alert(raw: RawAlertRow) -> Result<AlertRecord, AlertError> {
 }
 
 /// Resolves `Scope` against a row's owner — the single-row counterpart to
-/// `list_alerts`' `WHERE` clause, identical to `senken-workspace`'s own
+/// `list_alerts`' `WHERE` clause, identical to `senken-chart`'s own
 /// `ensure_scope_allows`.
 fn ensure_scope_allows(scope: Scope, owner: UserId, actor: UserId) -> Result<(), AlertError> {
     match scope {
@@ -467,7 +467,7 @@ fn decode_condition(
 }
 
 /// The current time as a Unix timestamp, for `created_at`/`updated_at` — a
-/// direct wall-clock read, exactly like `senken-workspace`'s own
+/// direct wall-clock read, exactly like `senken-chart`'s own
 /// `now_unix`. This is account/administrative bookkeeping, not the
 /// market-data or replay path reserved for `senken_series::Clock`
 /// (see this crate's evaluation path — `TickBarBuilder`/`AlertEvaluator` —
@@ -498,7 +498,7 @@ mod tests {
     const ADMIN_TEST_PASSWORD: &str = "correct horse battery staple";
 
     /// Sets the seeded default admin's password, logs in, and resolves the
-    /// session — identical to `senken-workspace`'s own `admin_auth`.
+    /// session — identical to `senken-chart`'s own `admin_auth`.
     fn admin_auth(identity: &IdentityStore) -> AuthenticatedUser {
         identity
             .set_password(

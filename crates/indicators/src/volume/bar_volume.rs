@@ -1,6 +1,6 @@
 //! [`Volume`] — the current bar's traded volume, as a plottable indicator.
 
-use senken_series::Bar;
+use senken_series::{Bar, Volume as BarVolume};
 
 use crate::convert::scaled_to_f64;
 use crate::indicator::Indicator;
@@ -59,9 +59,15 @@ impl Indicator for Volume {
         self.has_inputs
     }
 
+    fn snapshot(&self) -> Box<dyn Indicator> {
+        Box::new(self.clone())
+    }
+
     fn handle_bar(&mut self, bar: &Bar) {
-        self.value = scaled_to_f64(bar.volume);
-        self.has_inputs = true;
+        if let BarVolume::Real(value) = bar.volume {
+            self.value = scaled_to_f64(value);
+            self.has_inputs = true;
+        }
     }
 
     fn reset(&mut self) {

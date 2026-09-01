@@ -27,6 +27,7 @@ senken-core = { workspace = true }
 # the opposite direction (parsing an inbound message back into an
 # `InstrumentId`).
 senken-marketdata = { workspace = true }
+senken-series = { workspace = true }
 # The ports this crate implements (`VenueConnection`/`VenueConnector`), the
 # pool this crate publishes decoded prices into, and `PriceUpdate` itself.
 senken-subscription = { workspace = true }
@@ -51,3 +52,7 @@ tracing = { workspace = true }
 # fake"). `net` for `TcpListener`, `macros`/`rt-multi-thread` to run async
 # tests.
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }
+# `OkxBookSource`'s own tests mock its plain HTTP call the same way
+# `senken-plugin-okx`'s bar source tests do.
+reqwest = { workspace = true }
+wiremock = { workspace = true }

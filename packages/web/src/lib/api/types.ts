@@ -72,8 +72,13 @@ export type BarJobDto = Schemas['BarJobDto'];
 export type IndicatorSpecDto = Schemas['IndicatorSpecDto'];
 export type IndicatorCatalogEntry = Schemas['IndicatorCatalogEntry'];
 export type ComputeIndicatorRequest = Schemas['ComputeIndicatorRequest'];
-export type IndicatorFieldValue = Schemas['IndicatorFieldValue'];
+export type IndicatorDrawableDto = Schemas['IndicatorDrawableDto'];
+export type IndicatorDrawablePointDto = Schemas['IndicatorDrawablePointDto'];
 export type IndicatorPointDto = Schemas['IndicatorPointDto'];
+export type IndicatorPriceCoordDto = Schemas['IndicatorPriceCoordDto'];
+export type IndicatorScaledPriceDto = Schemas['IndicatorScaledPriceDto'];
+export type IndicatorExtendDto = Schemas['IndicatorExtendDto'];
+export type IndicatorLabelAnchorDto = Schemas['IndicatorLabelAnchorDto'];
 export type ComputeIndicatorResponse = Schemas['ComputeIndicatorResponse'];
 
 // Alerts. `crates/api` mounts

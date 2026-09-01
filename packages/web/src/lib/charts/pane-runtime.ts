@@ -1,11 +1,16 @@
-// Converts between the server's workspace/layout wire shapes
-// (`$lib/api/types.ts`'s `LayoutDetailDto`/`PaneDto`/`LayerDto`, generated
-// from `senken_workspace::{LayoutDetail,PaneRecord,LayerRecord}`) and a
-// small runtime shape the charts page's components render from. Unlike the former mock model (`$lib/mock/charts.ts`'s `PaneLayer`),
-// a pane's *main* instrument/timeframe are the pane's own fields, not a
-// "primary" layer — `senken_workspace::LayerKind` only ever models a
-// *second* overlaid instrument or an indicator, matching
-// `crates/workspace/src/store.rs::PaneRecord` exactly.
+// Converts between the server's chart wire shapes
+// (`$lib/api/types.ts`'s `LayoutDetailDto`/`PaneDto`/`LayerDto`/`DrawingDto`,
+// generated from the API's DTO layer over `senken_chart::{ChartLayoutDetail,
+// PaneRecord, PaneItemRecord}`) and a small runtime shape the charts page's
+// components render from. Unlike the former mock model (`$lib/mock/charts.ts`'s
+// `PaneLayer`), a pane's *main* instrument/timeframe are the pane's own
+// fields, not a "primary" layer — the store's own `ItemSource`
+// (`crates/chart/src/store.rs`) only ever models a *second* overlaid
+// instrument, a computed indicator, or an anchored drawing, matching
+// `PaneRecord`/`PaneItemRecord` exactly. The wire still splits those into
+// separate `layers`/`drawings` arrays (`LayerDto`/`DrawingDto`) rather than
+// `PaneItemRecord`'s one unified list, which is why this module keeps that
+// same split.
 import type {
 	DrawingDto,
 	DrawingInputDto,
@@ -18,8 +23,9 @@ import type {
 	ReplaceLayoutRequest
 } from '$lib/api/types';
 import type { ChartSettings, LineStyle } from '$lib/mock/chart-settings';
+import type { LabelAnchor } from './drawable';
 import { hydrateLayerStyle, serializeLayerStyle } from './layer-style';
-import type { LayerKindTag } from '$lib/components/terminal/chart-config';
+import type { LayerKindTag, ToolKey } from '$lib/components/terminal/chart-config';
 import { parsePaneSettings, paneSettingsToJson } from './pane-settings';
 
 export interface LayerRuntime {
@@ -40,12 +46,15 @@ export interface LayerRuntime {
 	params: Record<string, number>;
 }
 
-/** What kind of drawing object this is — the minimum viable set (a
- * horizontal line, a trend line, a rectangle zone), matching
- * `senken_workspace::DrawingKind` exactly. */
-export type DrawingKindTag = 'horizontal_line' | 'trend_line' | 'rectangle';
+/** What kind of drawing object this is, matching `senken_chart::DrawingKind`
+ * exactly: the original `horizontal_line`/`trend_line`/`rectangle`, plus
+ * `ray` (a segment that extends forward), `fib_retracement` (renders as six
+ * levels — see `$lib/charts/drawable.ts`'s `drawablesFromDrawingRuntime`)
+ * and `text_note` (a label). */
+export type DrawingKindTag = 'horizontal_line' | 'trend_line' | 'rectangle' | 'ray' | 'fib_retracement' | 'text_note';
 
-/** One (time, price) anchor for a `trend_line`/`rectangle` drawing.
+/** One (time, price) anchor for a multi-point drawing (`trend_line`/
+ * `rectangle`/`ray`/`fib_retracement`'s `start`/`end`, `text_note`'s `at`).
  * `time` is Unix **seconds** (a `lightweight-charts` `UTCTimestamp`,
  * matching how `chart-pane.svelte` already turns a bar's nanosecond
  * `ts_open` into chart time) — `drawingFromDto`/`drawingToInput` are the
@@ -63,21 +72,62 @@ export interface DrawingRuntime {
 	id: string;
 	position: number;
 	kind: DrawingKindTag;
+	/** Whether the drawing is currently shown — a real, server-stored field
+	 * since schema v8 (`DrawingDto.visible`), not a client-side guess. */
+	visible: boolean;
 	/** `horizontal_line` only. */
 	price?: number;
-	/** `trend_line`/`rectangle` only. */
+	/** `trend_line`/`rectangle`/`ray`/`fib_retracement`'s two anchors, or
+	 * `text_note`'s one (`at` on the wire — reused here rather than adding a
+	 * fourth optional point field for a kind that only ever needs one). */
 	start?: DrawingPointRuntime;
-	/** `trend_line`/`rectangle` only. */
+	/** `trend_line`/`rectangle`/`ray`/`fib_retracement` only. */
 	end?: DrawingPointRuntime;
+	/** `text_note` only. */
+	text?: string;
+	/** `text_note` only. */
+	anchor?: LabelAnchor;
 	color: string;
 	width: number;
 	lineStyle: LineStyle;
 }
 
+/** How many chart clicks a draw tool needs before it acts. A tool anchored
+ * to a single (time, price) click — a horizontal line (price only) or a
+ * text note (both) — finishes on the first click; every other live tool
+ * needs two. This is the one place `chart-pane.svelte`'s click handler asks
+ * "how many anchors does this tool have" — a table lookup instead of a
+ * chain of `tool === '...'` checks per tool. */
+export const TOOL_ANCHOR_COUNT: Partial<Record<ToolKey, 1 | 2>> = {
+	hline: 1,
+	text: 1,
+	trend: 2,
+	rect: 2,
+	ray: 2,
+	fib: 2,
+	measure: 2
+};
+
+/** The `DrawingKindTag` a finished tool becomes, for the tools that persist
+ * one at all. `measure` has two anchors (`TOOL_ANCHOR_COUNT`) but no entry
+ * here — its second click never calls `onCreateDrawing`, only
+ * `$lib/charts/measure.ts`'s pure stats. `chart-pane.svelte`'s click
+ * handler treats "no kind for this tool" as the one condition that means
+ * "transient, not persisted", rather than naming `measure` itself. */
+export const DRAWING_KIND_FOR_TOOL: Partial<Record<ToolKey, DrawingKindTag>> = {
+	hline: 'horizontal_line',
+	trend: 'trend_line',
+	rect: 'rectangle',
+	ray: 'ray',
+	fib: 'fib_retracement',
+	text: 'text_note'
+};
+
 export function drawingFromDto(dto: DrawingDto): DrawingRuntime {
 	const base = {
 		id: dto.id,
 		position: dto.position,
+		visible: dto.visible,
 		color: dto.color,
 		width: dto.width,
 		lineStyle: dto.line_style
@@ -85,6 +135,15 @@ export function drawingFromDto(dto: DrawingDto): DrawingRuntime {
 	const kind = dto.kind;
 	if (kind.kind === 'horizontal_line') {
 		return { ...base, kind: 'horizontal_line', price: kind.price };
+	}
+	if (kind.kind === 'text_note') {
+		return {
+			...base,
+			kind: 'text_note',
+			start: { time: Math.floor(kind.at.time / 1_000_000_000), price: kind.at.price },
+			text: kind.text,
+			anchor: kind.anchor
+		};
 	}
 	return {
 		...base,
@@ -95,17 +154,27 @@ export function drawingFromDto(dto: DrawingDto): DrawingRuntime {
 }
 
 export function drawingToInput(drawing: DrawingRuntime): DrawingInputDto {
-	const kind: DrawingKindDto =
-		drawing.kind === 'horizontal_line'
-			? { kind: 'horizontal_line', price: drawing.price ?? 0 }
-			: {
-					kind: drawing.kind,
-					start: { time: (drawing.start?.time ?? 0) * 1_000_000_000, price: drawing.start?.price ?? 0 },
-					end: { time: (drawing.end?.time ?? 0) * 1_000_000_000, price: drawing.end?.price ?? 0 }
-				};
+	let kind: DrawingKindDto;
+	if (drawing.kind === 'horizontal_line') {
+		kind = { kind: 'horizontal_line', price: drawing.price ?? 0 };
+	} else if (drawing.kind === 'text_note') {
+		kind = {
+			kind: 'text_note',
+			at: { time: (drawing.start?.time ?? 0) * 1_000_000_000, price: drawing.start?.price ?? 0 },
+			text: drawing.text ?? '',
+			anchor: drawing.anchor ?? 'above'
+		};
+	} else {
+		kind = {
+			kind: drawing.kind,
+			start: { time: (drawing.start?.time ?? 0) * 1_000_000_000, price: drawing.start?.price ?? 0 },
+			end: { time: (drawing.end?.time ?? 0) * 1_000_000_000, price: drawing.end?.price ?? 0 }
+		};
+	}
 	return {
 		position: drawing.position,
 		kind,
+		visible: drawing.visible,
 		color: drawing.color,
 		width: drawing.width,
 		line_style: drawing.lineStyle
@@ -217,11 +286,18 @@ function drawingDisplayName(kind: DrawingKindTag): string {
 			return 'TREND LINE';
 		case 'rectangle':
 			return 'RECTANGLE';
+		case 'ray':
+			return 'RAY';
+		case 'fib_retracement':
+			return 'FIB RETRACEMENT';
+		case 'text_note':
+			return 'TEXT NOTE';
 	}
 }
 
 function drawingParamsLabel(drawing: DrawingRuntime): string {
 	if (drawing.kind === 'horizontal_line') return (drawing.price ?? 0).toFixed(2);
+	if (drawing.kind === 'text_note') return drawing.text ?? '';
 	const start = drawing.start;
 	const end = drawing.end;
 	if (!start || !end) return '';
@@ -230,9 +306,10 @@ function drawingParamsLabel(drawing: DrawingRuntime): string {
 
 /** Object-tree groups for the right panel's OBJECT TREE tab: this pane's
  * layers grouped by kind, plus a DRAWINGS group listing its real drawing
- * objects — always shown as `visible: true` since a drawing has no
- * visibility toggle of its own (unlike a layer's), only colour/width/
- * style. */
+ * objects, using each drawing's own `visible` flag the same way a layer's
+ * is used above — real since schema v8 (`DrawingDto.visible`), not the
+ * hardcoded `true` this used to fall back to before a drawing could store
+ * one at all. */
 export function objectTree(layers: LayerRuntime[], drawings: DrawingRuntime[] = []): TreeGroup[] {
 	const groups: { kind: LayerKindTag[]; title: string }[] = [
 		{ kind: ['overlay_instrument'], title: 'INSTRUMENTS' },
@@ -251,7 +328,7 @@ export function objectTree(layers: LayerRuntime[], drawings: DrawingRuntime[] = 
 				items: drawings.map((d) => ({
 					name: drawingDisplayName(d.kind),
 					params: drawingParamsLabel(d),
-					visible: true
+					visible: d.visible
 				}))
 			}
 		]);
@@ -267,9 +344,9 @@ export function splitPaneLayers(layers: LayerRuntime[]): { main: LayerRuntime[];
 }
 
 /** Builds the whole-layout request `PUT /api/layouts/{id}` needs — there is
- * no per-pane or per-layer patch endpoint (`WorkspaceStore` itself has none;
- *'s implementation notes), so every mutation the charts
- * page makes replaces the full pane/layer structure in one call. */
+ * no per-pane or per-layer patch endpoint (`senken_chart::ChartWorkspaceStore`
+ * itself has none), so every mutation the charts page makes replaces the
+ * full pane/layer structure in one call. */
 export function toReplaceLayoutRequest(preset: string, panes: PaneRuntime[]): ReplaceLayoutRequest {
 	return { preset, panes: panes.map(paneToInput) };
 }

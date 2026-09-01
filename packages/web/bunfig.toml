@@ -1,0 +1,4 @@
+[test]
+# Lets a test import a `.svelte` file directly — see the preload script's own
+# header comment for why this exists and what it does and does not cover.
+preload = ["./scripts/svelte-server-preload.ts"]

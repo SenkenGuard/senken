@@ -14,14 +14,19 @@
 	import EyeOffIcon from '@lucide/svelte/icons/eye-off';
 	import SettingsIcon from '@lucide/svelte/icons/settings-2';
 	import XIcon from '@lucide/svelte/icons/x';
+	import LoaderIcon from '@lucide/svelte/icons/loader-circle';
 
 	let {
 		layer,
+		loading = false,
 		onToggleLayer,
 		onOpenSettings,
 		onRemoveLayer
 	}: {
 		layer: LayerRuntime;
+		/** Whether this layer's series is being recomputed. The plot already
+		 * drawn stays put; this only says the layer is working. */
+		loading?: boolean;
 		onToggleLayer: (id: string) => void;
 		onOpenSettings: (layerId: string) => void;
 		onRemoveLayer: (layerId: string) => void;
@@ -39,33 +44,40 @@
 			{label}
 		</span>
 		<span class="font-mono text-[8.5px] whitespace-nowrap text-dim">{paramsLabel}</span>
-		<button
-			type="button"
-			class="hidden flex-none cursor-pointer pl-0.5 text-dim2 group-hover/chip:block"
-			onclick={() => onToggleLayer(layer.id)}
-			aria-label={layer.visible ? `Hide ${label}` : `Show ${label}`}
-		>
-			{#if layer.visible}
-				<EyeIcon class="size-[11px]" />
-			{:else}
-				<EyeOffIcon class="size-[11px]" />
-			{/if}
-		</button>
-		<button
-			type="button"
-			class="hidden flex-none cursor-pointer text-dim group-hover/chip:block"
-			onclick={() => onOpenSettings(layer.id)}
-			aria-label={`${label} settings`}
-		>
-			<SettingsIcon class="size-[11px]" />
-		</button>
-		<button
-			type="button"
-			class="hidden flex-none cursor-pointer text-dim group-hover/chip:block"
-			onclick={() => onRemoveLayer(layer.id)}
-			aria-label={`Remove ${label}`}
-		>
-			<XIcon class="size-[11px]" />
-		</button>
+		<!-- Actions step aside for the spinner rather than sitting beside it: two
+		     controls where there was one shifts the row under the cursor, and an
+		     action pressed mid-fetch acts on a series about to be replaced. -->
+		{#if loading}
+			<LoaderIcon class="size-[11px] flex-none animate-spin text-dim2" data-loading={layer.id} />
+		{:else}
+			<button
+				type="button"
+				class="hidden flex-none cursor-pointer pl-0.5 text-dim2 group-hover/chip:block"
+				onclick={() => onToggleLayer(layer.id)}
+				aria-label={layer.visible ? `Hide ${label}` : `Show ${label}`}
+			>
+				{#if layer.visible}
+					<EyeIcon class="size-[11px]" />
+				{:else}
+					<EyeOffIcon class="size-[11px]" />
+				{/if}
+			</button>
+			<button
+				type="button"
+				class="hidden flex-none cursor-pointer text-dim group-hover/chip:block"
+				onclick={() => onOpenSettings(layer.id)}
+				aria-label={`${label} settings`}
+			>
+				<SettingsIcon class="size-[11px]" />
+			</button>
+			<button
+				type="button"
+				class="hidden flex-none cursor-pointer text-dim group-hover/chip:block"
+				onclick={() => onRemoveLayer(layer.id)}
+				aria-label={`Remove ${label}`}
+			>
+				<XIcon class="size-[11px]" />
+			</button>
+		{/if}
 	</div>
 </div>

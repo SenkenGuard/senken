@@ -656,7 +656,7 @@ mod tests {
             serde_json::json!({
                 "name": "Charts Only",
                 "description": "",
-                "grants": [{ "action": "View", "resource": "Layout", "scope": "Own" }],
+                "grants": [{ "action": "View", "resource": "ChartLayout", "scope": "Own" }],
             }),
         )
         .await;
@@ -684,7 +684,7 @@ mod tests {
         assert_eq!(body["roles"], serde_json::json!(["Charts Only"]));
         assert_eq!(
             body["grants"],
-            serde_json::json!([{ "action": "View", "resource": "Layout", "scope": "Own" }])
+            serde_json::json!([{ "action": "View", "resource": "ChartLayout", "scope": "Own" }])
         );
 
         handle.shutdown().await.unwrap();

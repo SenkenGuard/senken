@@ -21,12 +21,11 @@ import MousePointer2Icon from '@lucide/svelte/icons/mouse-pointer-2';
 import CrosshairIcon from '@lucide/svelte/icons/crosshair';
 import SlashIcon from '@lucide/svelte/icons/slash';
 import MinusIcon from '@lucide/svelte/icons/minus';
-import ArrowRightIcon from '@lucide/svelte/icons/arrow-right';
-import Rows3Icon from '@lucide/svelte/icons/rows-3';
 import RectangleHorizontalIcon from '@lucide/svelte/icons/rectangle-horizontal';
-import TargetIcon from '@lucide/svelte/icons/target';
-import TypeIcon from '@lucide/svelte/icons/type';
 import RulerIcon from '@lucide/svelte/icons/ruler';
+import ArrowUpRightIcon from '@lucide/svelte/icons/arrow-up-right';
+import PercentIcon from '@lucide/svelte/icons/percent';
+import TypeIcon from '@lucide/svelte/icons/type';
 import CoinsIcon from '@lucide/svelte/icons/coins';
 import SigmaIcon from '@lucide/svelte/icons/sigma';
 import ZapIcon from '@lucide/svelte/icons/zap';
@@ -36,9 +35,9 @@ import LayersIcon from '@lucide/svelte/icons/layers';
 import PenLineIcon from '@lucide/svelte/icons/pen-line';
 import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 
-// --- Draw toolbar (unchanged from the former mock/charts.ts) ---------------
+// --- Draw toolbar ------------------------------------------------------------
 
-export type ToolKey = 'cursor' | 'cross' | 'trend' | 'hline' | 'ray' | 'fib' | 'rect' | 'pos' | 'text' | 'measure';
+export type ToolKey = 'cursor' | 'cross' | 'trend' | 'hline' | 'rect' | 'ray' | 'fib' | 'text' | 'measure';
 
 export interface DrawTool {
 	key: ToolKey;
@@ -50,24 +49,38 @@ export const DRAW_TOOLS: DrawTool[] = [
 	{ key: 'cursor', icon: MousePointer2Icon, label: 'CURSOR' },
 	{ key: 'cross', icon: CrosshairIcon, label: 'CROSSHAIR' },
 	{ key: 'trend', icon: SlashIcon, label: 'TREND LINE' },
+	{ key: 'ray', icon: ArrowUpRightIcon, label: 'RAY' },
 	{ key: 'hline', icon: MinusIcon, label: 'HORIZONTAL LINE' },
-	{ key: 'ray', icon: ArrowRightIcon, label: 'RAY' },
-	{ key: 'fib', icon: Rows3Icon, label: 'FIB RETRACEMENT' },
 	{ key: 'rect', icon: RectangleHorizontalIcon, label: 'RECTANGLE ZONE' },
-	{ key: 'pos', icon: TargetIcon, label: 'LONG / SHORT POSITION' },
+	{ key: 'fib', icon: PercentIcon, label: 'FIB RETRACEMENT' },
 	{ key: 'text', icon: TypeIcon, label: 'TEXT NOTE' },
-	{ key: 'measure', icon: RulerIcon, label: 'MEASURE' }
+	{ key: 'measure', icon: RulerIcon, label: 'MEASURE' },
 ];
 
-/** The drawing tools that create a real, persisted drawing object
+/** The tools that create a real, persisted drawing object
  * (`chart-pane.svelte`'s click handler, `$lib/charts/drawing-primitive.ts`'s
- * renderer/hit-test) — horizontal line, trend line, rectangle zone. The
- * owner's own instruction: fewer tools that all behave correctly beats more
- * that half-work. The remaining draw tools (ray, fib, position, text,
- * measure) stay selectable but do not draw anything yet — a fourth object
- * kind needs the same create/hit-test/select/edit/delete/persist treatment
- * as these three before it belongs here. */
-export const OBJECT_DRAW_TOOLS: ToolKey[] = ['hline', 'trend', 'rect'];
+ * renderer/hit-test) — horizontal line, trend line, rectangle zone, ray,
+ * Fibonacci retracement, text note. The owner's own instruction: fewer tools
+ * that all behave correctly beats more that half-work. Tools without a
+ * complete persisted interaction are omitted until they can create, select,
+ * edit and delete a real object.
+ *
+ * `measure` is deliberately not in this list even though it is selectable
+ * and does draw something real: it never becomes a `DrawingRuntime` at all
+ * (see `$lib/charts/measure.ts`), so there is nothing for it to persist,
+ * select or drag. `chart-pane.svelte`'s click handler drives both lists —
+ * `TOOL_ANCHOR_COUNT`/`DRAWING_KIND_FOR_TOOL` (`$lib/charts/pane-runtime.ts`)
+ * decide how many clicks a tool needs and whether it has a `DrawingKindTag`
+ * at all — instead of naming `measure` in a branch of its own.
+ *
+ * Long/short position stays out of `DRAW_TOOLS` entirely, not merely out of
+ * this list: its anchors would be order prices, and nothing on the web side
+ * yet rounds a drawn price to the instrument's tick as a scaled integer the
+ * way an executable price must be (`senken_chart::DrawingKind` has no
+ * position variant either, for the same reason). Selectable and drawing
+ * nothing durable is exactly the failure mode this catalogue exists to rule
+ * out, which is why position is left out rather than added and disabled. */
+export const OBJECT_DRAW_TOOLS: ToolKey[] = ['hline', 'trend', 'rect', 'ray', 'fib', 'text'];
 
 // --- Layout presets ---------------------------------------------------------
 
@@ -154,44 +167,6 @@ export const LAYER_KIND_ICON: Record<LayerKindTag, Component> = {
  * Bollinger and the moving averages are overlays",
  * extended to Stochastic/Atr the same way `crates/indicators`' own doc
  * comments group momentum oscillators together. */
-export interface IndicatorCatalogItem {
-	name: string;
-	label: string;
-	paramsLabel: string;
-	defaultParams: Record<string, number>;
-	subPane: boolean;
-}
-
-export const INDICATOR_CATALOG: IndicatorCatalogItem[] = [
-	{ name: 'Ema', label: 'EMA', paramsLabel: '50 · close', defaultParams: { period: 50 }, subPane: false },
-	{ name: 'Sma', label: 'SMA', paramsLabel: '20 · close', defaultParams: { period: 20 }, subPane: false },
-	{ name: 'Wma', label: 'WMA', paramsLabel: '20 · close', defaultParams: { period: 20 }, subPane: false },
-	{
-		name: 'BollingerBands',
-		label: 'BOLLINGER BANDS',
-		paramsLabel: '20 · 2.0 · overlay',
-		defaultParams: { period: 20, k: 2 },
-		subPane: false
-	},
-	{ name: 'Vwap', label: 'VWAP', paramsLabel: 'session', defaultParams: {}, subPane: false },
-	{ name: 'Volume', label: 'VOLUME', paramsLabel: 'overlay', defaultParams: {}, subPane: false },
-	{ name: 'Rsi', label: 'RSI', paramsLabel: '14 · sub-pane', defaultParams: { period: 14 }, subPane: true },
-	{
-		name: 'Macd',
-		label: 'MACD',
-		paramsLabel: '12 26 9 · sub-pane',
-		defaultParams: { fast_period: 12, slow_period: 26, signal_period: 9 },
-		subPane: true
-	},
-	{
-		name: 'Stochastic',
-		label: 'STOCHASTIC',
-		paramsLabel: '14 3 · sub-pane',
-		defaultParams: { k_period: 14, d_period: 3 },
-		subPane: true
-	},
-	{ name: 'Atr', label: 'ATR', paramsLabel: '14 · sub-pane', defaultParams: { period: 14 }, subPane: true }
-];
 
 // --- Instruments ---------------------------------------------------------
 //
@@ -224,12 +199,6 @@ export function parseInstrumentId(id: string): { venue: string; ticker: string }
  * deltas (`avgGain/avgLoss`, `(close-lowest)/(highest-lowest)`), so the
  * scale factor cancels out of the division and the reported 0–100 value is
  * already real — dividing it again would be wrong, not merely redundant. */
-export function indicatorFieldScale(indicatorName: string, field: string): 'price' | 'qty' | 'none' {
-	if (field === 'stochastic_k' || field === 'stochastic_d') return 'none';
-	if (indicatorName === 'Rsi') return 'none';
-	if (indicatorName === 'Volume') return 'qty';
-	return 'price';
-}
 
 /** The real-time duration of one of `TF_LIST`'s tokens, in seconds — used
  * to size the default `[from, to)` window a pane requests bars for. */

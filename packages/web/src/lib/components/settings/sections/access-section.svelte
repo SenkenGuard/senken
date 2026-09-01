@@ -68,7 +68,7 @@
 	/** Mirrors `crates/acl/src/action.rs::Action` exactly. */
 	const ACTIONS = ['View', 'Create', 'Edit', 'Delete', 'Share'] as const;
 	/** Mirrors `crates/acl/src/resource.rs::Resource` exactly. */
-	const RESOURCES = ['Workspace', 'Layout', 'Alert', 'Strategy', 'Account', 'Adapter', 'User', 'Role'] as const;
+	const RESOURCES = ['ChartWorkspace', 'ChartLayout', 'Alert', 'Strategy', 'Account', 'Adapter', 'User', 'Role'] as const;
 	/** Mirrors `crates/acl/src/scope.rs::Scope` exactly. */
 	const SCOPES = ['Own', 'All'] as const;
 
@@ -243,7 +243,7 @@
 
 	let directUserId = $state('');
 	let directAction = $state<(typeof ACTIONS)[number]>('View');
-	let directResource = $state<(typeof RESOURCES)[number]>('Workspace');
+	let directResource = $state<(typeof RESOURCES)[number]>('ChartWorkspace');
 	let directScope = $state<(typeof SCOPES)[number]>('Own');
 	let directBusy = $state(false);
 	let directError = $state<string | null>(null);

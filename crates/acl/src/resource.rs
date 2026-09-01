@@ -16,10 +16,13 @@ use serde::{Deserialize, Serialize};
 /// undo the whole point of closing it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Resource {
-    /// A saved arrangement of the workspace UI.
-    Workspace,
-    /// A chart layout within a workspace.
-    Layout,
+    /// A saved arrangement of chart workspace UI. Named `ChartWorkspace`
+    /// (not `Workspace`) because a dashboard is its own, separate
+    /// aggregate with its own workspace concept — "workspace" alone
+    /// stopped naming one aggregate the day a second one existed.
+    ChartWorkspace,
+    /// A chart layout within a chart workspace.
+    ChartLayout,
     /// A price or condition alert.
     Alert,
     /// A trading strategy definition.
@@ -32,6 +35,8 @@ pub enum Resource {
     User,
     /// A role definition — creating, editing or assigning roles.
     Role,
+    /// An indicator definition or instance.
+    Indicator,
 }
 
 #[cfg(test)]
@@ -40,7 +45,7 @@ mod tests {
 
     #[test]
     fn resources_with_the_same_variant_are_equal() {
-        assert_eq!(Resource::Workspace, Resource::Workspace);
-        assert_ne!(Resource::Workspace, Resource::Layout);
+        assert_eq!(Resource::ChartWorkspace, Resource::ChartWorkspace);
+        assert_ne!(Resource::ChartWorkspace, Resource::ChartLayout);
     }
 }

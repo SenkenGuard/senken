@@ -23,6 +23,14 @@ senken-core = { workspace = true }
 # symbol)`, which is exactly what `InstrumentId` already is, so it is reused
 # rather than re-declared here.
 senken-marketdata = { workspace = true }
+senken-series = { workspace = true }
+# A live indicator session builds and reads one of the ten built-ins
+# dynamically from a stored `(name, params)` pair — the exact contract
+# `senken-indicators::ConcreteIndicator` already is. `senken-alerts` needs
+# the same contract but must not be depended on here: an alert already
+# leases its series through this crate, so the reverse dependency would be
+# a cycle.
+senken-indicators = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 # `sync` for the actor's mpsc/oneshot channels, `rt` because the actor task
@@ -31,4 +39,4 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

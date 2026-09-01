@@ -3,9 +3,9 @@
 The HTTP surface for the single-binary shell: the auth surface (login,
 logout, set-password, `me`, and a WebSocket endpoint authenticated through
 a short-lived ticket exchange), user/role/grant management, and
-workspaces/layouts/panes/layers, bars, indicators and alerts. Transport
+workspaces/layouts/panes/pane items, bars, indicators and alerts. Transport
 only — authorisation itself lives in
-`senken-acl`/`senken-identity`/the guarded stores (`senken-workspace`,
+`senken-acl`/`senken-identity`/the guarded stores (`senken-chart`,
 `senken-alerts`) themselves; this crate only wires HTTP onto them.
 
 ```rust,ignore
@@ -117,22 +117,31 @@ wrong-password produce the identical response shape and status.
 ## Workspaces, bars, indicators and alerts
 
 Every route below is mounted at plain `EndpointPermission::Authenticated`:
-`senken_workspace::WorkspaceStore`/`senken_alerts::AlertStore` perform their
+`senken_chart::ChartWorkspaceStore`/`senken_alerts::AlertStore` perform their
 own `AuthenticatedUser::authorize` check on every read and write (the same
 pattern Q9.3/Q10.1 established for `senken-identity`), and bars/indicators
 have no per-row owner to scope against at all — a valid, unfenced session is
 the whole permission story for those two.
 
+`senken-chart` stores a pane's items (computed indicators, referenced
+overlay instruments, anchored drawings) in one table now, but the wire API
+keeps `layers`/`drawings` as two shapes on purpose — see
+`workspace_handlers`' own module docs for why.
+
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/workspaces` | scoped by `WorkspaceStore::list_workspaces` itself |
+| `GET` | `/api/workspaces` | scoped by `ChartWorkspaceStore::list_workspaces` itself |
 | `POST` | `/api/workspaces` | |
 | `GET` | `/api/workspaces/default` | "default-on-first-open belongs on the server" — creates the caller's default workspace and layout on the first call, returns the same pair on every later one |
 | `PATCH` | `/api/workspaces/{workspace_id}` | rename |
-| `DELETE` | `/api/workspaces/{workspace_id}` | cascades to its layouts/panes/layers |
+| `DELETE` | `/api/workspaces/{workspace_id}` | cascades to its layouts/panes/items |
 | `GET` | `/api/workspaces/{workspace_id}/layouts` | a workspace's tabs |
-| `GET` | `/api/layouts/{layout_id}` | one layout with its full nested pane/layer structure |
-| `PUT` | `/api/layouts/{layout_id}` | replaces a layout's whole pane/layer structure in one transaction |
+| `GET` | `/api/layouts/{layout_id}` | one layout with its full nested pane/item structure |
+| `PUT` | `/api/layouts/{layout_id}` | replaces a layout's whole pane/item structure in one transaction |
+| `PATCH` | `/api/layers/{layer_id}` | in-place edit of one computed/referenced item, no structural rewrite |
+| `DELETE` | `/api/layers/{layer_id}` | |
+| `PATCH` | `/api/drawings/{drawing_id}` | in-place edit of one anchored item |
+| `DELETE` | `/api/drawings/{drawing_id}` | |
 | `GET` | `/api/bars/plan` | pure inspection — `senken_loader::SeriesLoader::plan`, no network, no work started |
 | `GET` | `/api/bars/range` | `SeriesLoader::resolve` — cache → store → aggregate from a finer stored spec, never a fetch; what a chart actually renders bars from |
 | `POST` | `/api/bars/ensure` | `SeriesLoader::ensure` — enqueues the fetch and returns immediately with a job reference; never blocks |

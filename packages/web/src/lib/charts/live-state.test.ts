@@ -20,6 +20,17 @@ describe('deriveLiveState — the sources cache and the WS unsupported frame com
 	test('an unsupported WS frame overrides a sources answer that claims live', () => {
 		expect(deriveLiveState(true, true)).toEqual({ status: 'no-feed' });
 	});
+
+	test('a supplied closed status wins over the absence of a live feed', () => {
+		const closed = { status: 'closed' as const };
+		expect(deriveLiveState(false, false, closed)).toEqual(closed);
+	});
+
+	// Mutation proof: removing the `marketStatus` argument makes this fall
+	// back to `no-feed`, so the status source is what protects this copy.
+	test('without the supplied status the same source is correctly no-feed', () => {
+		expect(deriveLiveState(false, false)).toEqual({ status: 'no-feed' });
+	});
 });
 
 describe('showCountdown — "a countdown against a feed that is not running is a lie"', () => {

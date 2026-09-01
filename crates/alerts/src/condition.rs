@@ -2,10 +2,12 @@
 //! spec, condition)` triple.
 //!
 //! A condition names which scalar an indicator reports
-//! ([`IndicatorField`], needed because [`senken_indicators::Indicator`]
-//! itself has no `value() -> f64` — three of the ten built-ins report more
-//! than one number per bar,), how to compare it
-//! ([`Comparator`]), and the threshold to compare against.
+//! ([`IndicatorField`], re-exported from `senken-indicators`, which owns
+//! the dynamic build-and-read contract this crate's [`crate::ConcreteIndicator`]
+//! reuses — needed because [`senken_indicators::Indicator`] itself has no
+//! `value() -> f64`, since three of the ten built-ins report more than one
+//! number per bar), how to compare it ([`Comparator`]), and the threshold
+//! to compare against.
 //!
 //! The threshold is `f64`, on the indicator side of the boundary:
 //! an indicator's own output is a display/decision value, fractional by
@@ -20,32 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Which of an indicator's own reported numbers a [`Condition`] compares.
-///
-/// Plain `Value` covers every single-valued indicator (SMA, EMA, WMA, RSI,
-/// ATR, VWAP, Volume); the rest name one of the several numbers a compound
-/// indicator reports per bar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum IndicatorField {
-    /// The single value a single-valued indicator reports.
-    Value,
-    /// [`senken_indicators::Macd::macd`] — the MACD line.
-    MacdLine,
-    /// [`senken_indicators::Macd::signal`] — the signal line.
-    MacdSignal,
-    /// [`senken_indicators::Macd::histogram`] — MACD minus signal.
-    MacdHistogram,
-    /// [`senken_indicators::Stochastic::k`].
-    StochasticK,
-    /// [`senken_indicators::Stochastic::d`].
-    StochasticD,
-    /// [`senken_indicators::BollingerBands::upper`].
-    BollingerUpper,
-    /// [`senken_indicators::BollingerBands::middle`].
-    BollingerMiddle,
-    /// [`senken_indicators::BollingerBands::lower`].
-    BollingerLower,
-}
+pub use senken_indicators::IndicatorField;
 
 /// How a [`Condition`] compares an indicator field's current value (and,
 /// for the crossing variants, its immediately preceding one) against a

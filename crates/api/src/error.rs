@@ -118,43 +118,48 @@ impl From<senken_identity::IdentityError> for HandlerError {
     }
 }
 
-/// `workspace_handlers`' translation from `senken_workspace::WorkspaceStore`'s
-/// error type. `WorkspaceError::Identity` reuses this
+/// `workspace_handlers`' translation from `senken_chart::ChartWorkspaceStore`'s
+/// error type. `ChartError::Identity` reuses this
 /// crate's own `IdentityError` conversion above, so the exact same
 /// `Forbidden`/`PasswordNotSet` mapping every other guarded store already
-/// gets here applies to workspaces too — including the required "the wrong
-/// user gets 403, not 401" behaviour.
-impl From<senken_workspace::WorkspaceError> for HandlerError {
-    fn from(error: senken_workspace::WorkspaceError) -> Self {
-        use senken_workspace::WorkspaceError;
+/// gets here applies to chart workspaces too — including the required "the
+/// wrong user gets 403, not 401" behaviour.
+impl From<senken_chart::ChartError> for HandlerError {
+    fn from(error: senken_chart::ChartError) -> Self {
+        use senken_chart::ChartError;
         match error {
-            WorkspaceError::Identity(source) => source.into(),
-            WorkspaceError::WorkspaceNotFound => Self::BadRequest("no such workspace".to_owned()),
-            WorkspaceError::LayoutNotFound => Self::BadRequest("no such layout".to_owned()),
-            WorkspaceError::PaneCountMismatch {
+            ChartError::Identity(source) => source.into(),
+            ChartError::WorkspaceNotFound => Self::BadRequest("no such workspace".to_owned()),
+            ChartError::LayoutNotFound => Self::BadRequest("no such layout".to_owned()),
+            ChartError::PaneItemNotFound => Self::BadRequest("no such pane item".to_owned()),
+            ChartError::PaneCountMismatch {
                 preset,
                 expected,
                 actual,
             } => Self::BadRequest(format!(
                 "layout preset {preset} requires exactly {expected} panes, got {actual}"
             )),
-            WorkspaceError::InvalidIndicatorParams(reason) => Self::BadRequest(format!(
-                "indicator layer parameters are not valid JSON: {reason}"
+            ChartError::InvalidIndicatorParams(reason) => Self::BadRequest(format!(
+                "indicator item parameters are not valid JSON: {reason}"
             )),
-            WorkspaceError::InvalidDrawingStyle(reason) => {
+            ChartError::InvalidDrawingStyle(reason) => {
                 Self::BadRequest(format!("invalid drawing style: {reason}"))
             }
-            WorkspaceError::Database(source) => {
-                tracing::error!(%source, "workspace store: database error");
+            ChartError::ItemSourceMismatch => Self::BadRequest(
+                "cannot change a pane item's kind through this endpoint".to_owned(),
+            ),
+            ChartError::Database(source) => {
+                tracing::error!(%source, "chart store: database error");
                 Self::Internal
             }
             // `CorruptInstrumentId`/`CorruptTimeframe`/`CorruptPreset`/
-            // `CorruptLayer`, plus any future `#[non_exhaustive]` variant:
-            // a stored row this build cannot even parse back is this
-            // crate's own bug or a hand-edited database, never something a
-            // caller's request could have caused.
+            // `CorruptPaneItem`/`CorruptDrawing`, plus any future
+            // `#[non_exhaustive]` variant: a stored row this build cannot
+            // even parse back is this crate's own bug or a hand-edited
+            // database, never something a caller's request could have
+            // caused.
             other => {
-                tracing::error!(?other, "workspace store: unmapped error variant");
+                tracing::error!(?other, "chart store: unmapped error variant");
                 Self::Internal
             }
         }
@@ -162,7 +167,7 @@ impl From<senken_workspace::WorkspaceError> for HandlerError {
 }
 
 /// `alert_handlers`' translation from `senken_alerts::AlertStore`'s error
-/// type, mirroring [`From<senken_workspace::WorkspaceError>`]
+/// type, mirroring [`From<senken_chart::ChartError>`]
 /// exactly — the same guarded-store shape, the same "the store's `Identity`
 /// error reuses this crate's own `IdentityError` mapping" reasoning.
 impl From<senken_alerts::AlertError> for HandlerError {

@@ -38,15 +38,16 @@ const ALL_ACTIONS: [Action; 5] = [
 
 /// Every `Resource` this crate knows about, for the same seeding purpose as
 /// [`ALL_ACTIONS`].
-const ALL_RESOURCES: [Resource; 8] = [
-    Resource::Workspace,
-    Resource::Layout,
+const ALL_RESOURCES: [Resource; 9] = [
+    Resource::ChartWorkspace,
+    Resource::ChartLayout,
     Resource::Alert,
     Resource::Strategy,
     Resource::Account,
     Resource::Adapter,
     Resource::User,
     Resource::Role,
+    Resource::Indicator,
 ];
 
 /// Idle session lifetime: 30 days, refreshed on every use.
@@ -149,13 +150,13 @@ impl IdentityStore {
 
     /// Returns a handle to the **same** SQLite connection this store uses.
     ///
-    /// Workspaces reference users, so `senken-workspace`'s
+    /// Workspaces reference users, so `senken-chart`'s
     /// tables live in this same file, under `.data/accounts/`,
     /// rather than a second database — but two crates each opening their
     /// own connection and independently stamping `user_version` on one file
     /// is exactly the mess this arrangement avoids. This crate stays
     /// the file's single owner of that sequence (see `schema.rs`'s v3 doc
-    /// comment); `senken-workspace` calls this instead of
+    /// comment); `senken-chart` calls this instead of
     /// [`open`](Self::open) so it never opens a second connection to the
     /// same file or manages a schema version of its own. See that crate's
     /// module docs for the full reasoning.

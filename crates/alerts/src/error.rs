@@ -4,32 +4,14 @@
 /// Why building a concrete indicator from a stored `(name, params)` pair
 /// failed, or why an [`crate::IndicatorField`](crate::condition::IndicatorField)
 /// does not apply to the indicator it was asked to read from.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum IndicatorSpecError {
-    /// `name` did not match any of the ten built-ins.
-    #[error("unknown indicator {0:?}")]
-    UnknownIndicator(String),
-    /// `params` was not valid JSON, or was valid JSON missing a field the
-    /// named indicator requires.
-    #[error("invalid parameters for {indicator}: {reason}")]
-    InvalidParams {
-        /// The indicator whose parameters could not be read.
-        indicator: String,
-        /// Why the parameters were rejected.
-        reason: String,
-    },
-    /// The requested [`crate::condition::IndicatorField`] is not one this
-    /// indicator reports (e.g. asking an `Sma` for
-    /// [`crate::condition::IndicatorField::MacdLine`]).
-    #[error("{indicator} does not report field {field:?}")]
-    FieldNotReported {
-        /// The indicator that was asked.
-        indicator: &'static str,
-        /// The field it does not report.
-        field: crate::condition::IndicatorField,
-    },
-}
+///
+/// This crate keeps the name it has always used here, but the type itself
+/// now lives in `senken-indicators` — the same dynamic build-and-read
+/// contract a live indicator session (`senken-subscription`) needs, and
+/// which must not depend on this crate (an alert already leases its series
+/// through `senken-subscription`, so the reverse dependency would be a
+/// cycle).
+pub use senken_indicators::DynamicIndicatorError as IndicatorSpecError;
 
 /// Why an alert-store operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -40,7 +22,7 @@ pub enum AlertError {
     Database(#[from] rusqlite::Error),
     /// The permission check itself — reused from `senken-identity` so a
     /// caller sees the exact same error that crate's and
-    /// `senken-workspace`'s own guarded queries produce for the same
+    /// `senken-chart`'s own guarded queries produce for the same
     /// reasons.
     #[error(transparent)]
     Identity(#[from] senken_identity::IdentityError),

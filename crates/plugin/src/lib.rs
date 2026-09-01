@@ -4,19 +4,16 @@
 //! [`PluginManifest`] and, on [`activate`](Plugin::activate), registers the
 //! capabilities it provides into an [`ActivationContext`]. The runtime owns
 //! the lifecycle; a plugin never talks to other plugins directly. The
-//! context also provisions shared infrastructure — today one
-//! [HTTP client](ActivationContext::http_client) — so plugins do not each
-//! build their own.
+//! context also provisions shared infrastructure — today one HTTP client —
+//! so plugins do not each build their own.
 //!
 //! Two capabilities exist today: [`MarketDataSource`] (instruments) and
 //! [`BarSource`] (bars). A plugin registering both for one venue
-//! must share a single [`LimitGroup`] between them (call
-//! [`limit_group`](ActivationContext::limit_group) once) — instrument and
+//! must share a single [`LimitGroup`] between them (obtain it once from an
+//! [`HttpActivationContext`]) — instrument and
 //! bar traffic drawing independent budgets against one real venue quota is
-//! exactly the failure design record D15 introduced limit groups to
-//! prevent, reappearing a level up (fixed by
-//! [`limit_group`](ActivationContext::limit_group) caching its handle by
-//! name).
+//! not safe. The context caches each named handle so the two sources use the
+//! same budget.
 //!
 //! Library consumers who only want, say, a market data source do not need
 //! this crate: every capability a plugin registers is an ordinary type from
@@ -41,9 +38,8 @@
 //!
 //! # Cargo features
 //!
-//! * `http` *(default)* — [`ActivationContext::limit_group`] and
-//!   [`ActivationContext::venue_client`] (and, deprecated,
-//!   [`ActivationContext::http_client`]), and with them `reqwest`,
+//! * `http` *(default)* — [`HttpActivationContext::limit_group`] and
+//!   [`HttpActivationContext::venue_client`], and with them `reqwest`,
 //!   `senken-venue` and a TLS stack. A plugin that talks to no network — one
 //!   reading local files, say — should take this crate with
 //!   `default-features = false`; a venue plugin should ask for
@@ -168,6 +164,45 @@ pub struct ActivationContext {
     plugin_permissions: Vec<PluginPermissionName>,
 }
 
+/// Activation context for a module that explicitly declares HTTP access.
+///
+/// Network methods live only on this type. A module activated through
+/// [`Plugin::activate_without_io`] receives [`ActivationContext`] instead,
+/// so attempting to use HTTP there is a compile-time error.
+pub struct HttpActivationContext<'a> {
+    inner: &'a mut ActivationContext,
+}
+
+impl fmt::Debug for HttpActivationContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpActivationContext")
+            .finish_non_exhaustive()
+    }
+}
+
+impl HttpActivationContext<'_> {
+    /// Contributes a market data source.
+    pub fn register_marketdata_source(&mut self, source: Arc<dyn MarketDataSource>) {
+        self.inner.register_marketdata_source(source);
+    }
+
+    /// Contributes a bar source.
+    pub fn register_bar_source(&mut self, source: Arc<dyn BarSource>) {
+        self.inner.register_bar_source(source);
+    }
+
+    /// Registers a permission in the namespace bound by the runtime.
+    ///
+    /// # Errors
+    /// See [`ActivationContext::register_plugin_permission`].
+    pub fn register_plugin_permission(
+        &mut self,
+        name: PluginPermissionName,
+    ) -> Result<(), PluginPermissionRegistrationError> {
+        self.inner.register_plugin_permission(name)
+    }
+}
+
 impl ActivationContext {
     /// An empty context.
     #[must_use]
@@ -254,26 +289,16 @@ impl ActivationContext {
         self.current_namespace = None;
         std::mem::take(&mut self.plugin_permissions)
     }
+}
 
-    /// An HTTP client shared by every plugin activated against this
-    /// context: one connection pool, sensible timeouts, and a
-    /// `senken/<version>` user agent taken from this crate. Built lazily on
-    /// first use; cloning a [`reqwest::Client`] shares the pool.
+impl HttpActivationContext<'_> {
+    /// An HTTP client shared by every HTTP-capable module.
     ///
     /// # Errors
-    /// [`PluginError`] when the client cannot be built, which only happens
-    /// when the TLS backend fails to initialise.
+    /// [`PluginError`] when the TLS backend cannot initialise.
     #[cfg(feature = "http")]
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `venue_client`, which shares this same client but also \
-                shares a venue's rate/concurrency/failure budget across its \
-                sources; a source built \
-                straight on `http_client` spends no quota it shares with \
-                anything else"
-    )]
     pub fn http_client(&mut self) -> Result<reqwest::Client, PluginError> {
-        self.shared_http_client()
+        self.inner.shared_http_client()
     }
 
     /// A [`LimitGroup`] named `name`, holding the rate, concurrency and
@@ -308,7 +333,8 @@ impl ActivationContext {
     #[cfg(feature = "http")]
     #[must_use]
     pub fn limit_group(&mut self, name: &str) -> LimitGroup {
-        self.limit_groups
+        self.inner
+            .limit_groups
             .entry(name.to_owned())
             .or_insert_with(|| LimitGroup::new(name))
             .clone()
@@ -322,10 +348,12 @@ impl ActivationContext {
     /// see [`http_client`](Self::http_client).
     #[cfg(feature = "http")]
     pub fn venue_client(&mut self, group: &LimitGroup) -> Result<VenueClient, PluginError> {
-        let http = self.shared_http_client()?;
+        let http = self.inner.shared_http_client()?;
         Ok(VenueClient::new(http, group.clone()))
     }
+}
 
+impl ActivationContext {
     /// The lazily-built, cached [`reqwest::Client`] every HTTP-capable
     /// method on this context shares.
     #[cfg(feature = "http")]
@@ -357,7 +385,41 @@ pub trait Plugin: Send + Sync {
     ///
     /// # Errors
     /// Any [`PluginError`]; the runtime treats it as fatal to startup.
-    fn activate(&self, context: &mut ActivationContext) -> Result<(), PluginError>;
+    fn activate(&self, context: &mut ActivationContext) -> Result<(), PluginError> {
+        #[cfg(feature = "http")]
+        if self.requires_http() {
+            return self.activate_with_http(&mut HttpActivationContext { inner: context });
+        }
+        self.activate_without_io(context)
+    }
+
+    /// Whether this module declares the HTTP capability.
+    #[must_use]
+    fn requires_http(&self) -> bool {
+        false
+    }
+
+    /// Activates a deterministic module with no I/O capability.
+    ///
+    /// # Errors
+    /// Any [`PluginError`]; the runtime treats it as fatal to startup.
+    fn activate_without_io(&self, _context: &mut ActivationContext) -> Result<(), PluginError> {
+        Err(PluginError::msg("plugin has no activation implementation"))
+    }
+
+    /// Activates a module that declared HTTP access.
+    ///
+    /// # Errors
+    /// Any [`PluginError`]; the runtime treats it as fatal to startup.
+    #[cfg(feature = "http")]
+    fn activate_with_http(
+        &self,
+        _context: &mut HttpActivationContext<'_>,
+    ) -> Result<(), PluginError> {
+        Err(PluginError::msg(
+            "plugin declares HTTP but has no HTTP activation implementation",
+        ))
+    }
 
     /// Releases anything held since activation. Called once, in reverse
     /// activation order, during runtime shutdown. The default does nothing.
@@ -379,12 +441,20 @@ impl fmt::Debug for dyn Plugin {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "http")]
+    use super::HttpActivationContext;
     use super::{ActivationContext, Arc, BarSource, MarketDataSource, PluginManifest};
     use crate::error::PluginPermissionRegistrationError;
     use senken_acl::{PluginNamespace, PluginPermissionName};
     use senken_core::TimeRange;
     use senken_marketdata::{Instrument, SourceError, SourceSymbol};
     use senken_series::{Bar, BarSpec};
+    #[cfg(feature = "http")]
+    use std::time::Duration;
+    #[cfg(feature = "http")]
+    use wiremock::matchers::method;
+    #[cfg(feature = "http")]
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     struct Stub;
 
@@ -476,7 +546,10 @@ mod tests {
     #[test]
     fn a_limit_group_configures_windows_and_concurrency_by_chaining() {
         let mut context = ActivationContext::new();
-        let group = context
+        let mut http = HttpActivationContext {
+            inner: &mut context,
+        };
+        let group = http
             .limit_group("test-venue")
             .per_window(std::time::Duration::from_secs(1), 10)
             .max_concurrent(2);
@@ -487,12 +560,79 @@ mod tests {
     #[test]
     fn a_venue_client_is_built_from_the_shared_http_client_and_a_group() {
         let mut context = ActivationContext::new();
-        let group = context.limit_group("test-venue");
-        let client = context.venue_client(&group).unwrap();
+        let mut http = HttpActivationContext {
+            inner: &mut context,
+        };
+        let group = http.limit_group("test-venue");
+        let client = http.venue_client(&group).unwrap();
         drop(client);
         assert!(
             context.http_client.is_some(),
             "venue_client must reuse the same cached http client"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn two_limit_group_calls_with_the_same_name_share_one_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let mut context = ActivationContext::new();
+        let mut http = HttpActivationContext {
+            inner: &mut context,
+        };
+        let instrument_group = http
+            .limit_group("shared-venue")
+            .per_window(Duration::from_mins(1), 2);
+        let bar_group = http.limit_group("shared-venue");
+        let instrument_client = http.venue_client(&instrument_group).unwrap();
+        let bar_client = http.venue_client(&bar_group).unwrap();
+
+        instrument_client.get(&server.uri(), 1).await.unwrap();
+        bar_client.get(&server.uri(), 1).await.unwrap();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                instrument_client.get(&server.uri(), 1),
+            )
+            .await
+            .is_err(),
+            "limit groups with the same name must share one budget"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn limit_group_calls_with_different_names_stay_independent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let mut context = ActivationContext::new();
+        let mut http = HttpActivationContext {
+            inner: &mut context,
+        };
+        let a = http
+            .limit_group("venue-a")
+            .per_window(Duration::from_mins(1), 1);
+        let b = http
+            .limit_group("venue-b")
+            .per_window(Duration::from_mins(1), 1);
+        let client_a = http.venue_client(&a).unwrap();
+        let client_b = http.venue_client(&b).unwrap();
+
+        client_a.get(&server.uri(), 1).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), client_b.get(&server.uri(), 1))
+                .await
+                .is_ok(),
+            "differently named venues must not share a budget"
         );
     }
 

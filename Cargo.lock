@@ -4054,7 +4054,6 @@ dependencies = [
  "senken-series",
  "senken-subscription",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "time",
@@ -4075,9 +4074,11 @@ dependencies = [
  "rust-embed",
  "senken-acl",
  "senken-alerts",
+ "senken-chart",
  "senken-core",
  "senken-feed",
  "senken-identity",
+ "senken-indicators",
  "senken-loader",
  "senken-marketdata",
  "senken-plugin",
@@ -4085,7 +4086,6 @@ dependencies = [
  "senken-series",
  "senken-subscription",
  "senken-venue",
- "senken-workspace",
  "serde",
  "serde_json",
  "tempfile",
@@ -4117,6 +4117,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "senken-chart"
+version = "0.0.3"
+dependencies = [
+ "rusqlite",
+ "senken-acl",
+ "senken-core",
+ "senken-identity",
+ "senken-indicators",
+ "senken-marketdata",
+ "senken-series",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "senken-cli"
 version = "0.0.3"
 dependencies = [
@@ -4124,6 +4142,7 @@ dependencies = [
  "chrono",
  "clap",
  "senken-core",
+ "senken-identity",
  "senken-loader",
  "senken-marketdata",
  "senken-plugin-binance",
@@ -4166,8 +4185,10 @@ version = "0.0.3"
 dependencies = [
  "async-trait",
  "futures",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
+ "senken-series",
  "senken-subscription",
  "senken-venue",
  "serde",
@@ -4175,6 +4196,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -4200,6 +4222,9 @@ version = "0.0.3"
 dependencies = [
  "senken-core",
  "senken-series",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4574,7 +4599,9 @@ name = "senken-runtime"
 version = "0.0.3"
 dependencies = [
  "async-trait",
+ "senken-acl",
  "senken-core",
+ "senken-identity",
  "senken-loader",
  "senken-marketdata",
  "senken-plugin",
@@ -4628,7 +4655,9 @@ version = "0.0.3"
 dependencies = [
  "async-trait",
  "senken-core",
+ "senken-indicators",
  "senken-marketdata",
+ "senken-series",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -4647,23 +4676,6 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
-]
-
-[[package]]
-name = "senken-workspace"
-version = "0.0.3"
-dependencies = [
- "rusqlite",
- "senken-acl",
- "senken-core",
- "senken-identity",
- "senken-marketdata",
- "senken-series",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "time",
- "uuid",
 ]
 
 [[package]]

@@ -28,8 +28,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use senken_identity::IdentityStore;
 use senken_marketdata::MarketData;
-use senken_plugin::{ActivationContext, BarSource, Plugin, PluginManifest};
+use senken_plugin::{
+    ActivationContext, BarSource, Plugin, PluginError, PluginManifest, reconcile_plugin_permissions,
+};
 use senken_storage::Storage;
 use senken_store::Store;
 
@@ -78,6 +81,7 @@ pub struct RuntimeBuilder {
     storage: Storage,
     cache_ttl: Option<Duration>,
     plugins: Vec<Box<dyn Plugin>>,
+    identity: Option<Arc<IdentityStore>>,
 }
 
 impl RuntimeBuilder {
@@ -86,6 +90,7 @@ impl RuntimeBuilder {
             storage: Storage::new(DEFAULT_DATA_DIR),
             cache_ttl: None,
             plugins: Vec::new(),
+            identity: None,
         }
     }
 
@@ -115,6 +120,13 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn plugin(mut self, plugin: impl Plugin + 'static) -> Self {
         self.plugins.push(Box::new(plugin));
+        self
+    }
+
+    /// Uses this identity store to reconcile plugin permissions at startup.
+    #[must_use]
+    pub fn identity_store(mut self, identity: Arc<IdentityStore>) -> Self {
+        self.identity = Some(identity);
         self
     }
 
@@ -153,6 +165,7 @@ impl RuntimeBuilder {
                 &mut marketdata,
                 &mut bar_sources,
                 &mut seen,
+                self.identity.as_deref(),
             ) {
                 // The activation failure is the one worth returning; unwind
                 // problems are already logged by `deactivate_all`.
@@ -199,10 +212,27 @@ fn activate(
     marketdata: &mut MarketData,
     bar_sources: &mut Vec<Arc<dyn BarSource>>,
     seen: &mut HashSet<String>,
+    identity: Option<&IdentityStore>,
 ) -> Result<(), RuntimeError> {
     if !seen.insert(manifest.id.clone()) {
         return Err(RuntimeError::DuplicatePlugin(manifest.id.clone()));
     }
+
+    manifest
+        .validate_permissions()
+        .map_err(PluginError::other)
+        .map_err(|source| RuntimeError::PluginActivation {
+            plugin: manifest.id.clone(),
+            source,
+        })?;
+    let namespace = manifest
+        .permission_namespace()
+        .map_err(PluginError::other)
+        .map_err(|source| RuntimeError::PluginActivation {
+            plugin: manifest.id.clone(),
+            source,
+        })?;
+    context.bind_permission_namespace(namespace);
 
     if let Err(source) = plugin.activate(context) {
         // A plugin that failed part-way may have registered something
@@ -213,6 +243,26 @@ fn activate(
             plugin: manifest.id.clone(),
             source,
         });
+    }
+
+    let mut permissions = manifest.permissions.clone();
+    permissions.extend(context.take_plugin_permissions());
+    if let Some(identity) = identity {
+        let previous = identity
+            .load_plugin_permissions(&manifest.id)
+            .map_err(PluginError::other)
+            .map_err(|source| RuntimeError::PluginActivation {
+                plugin: manifest.id.clone(),
+                source,
+            })?;
+        let reconciled = reconcile_plugin_permissions(&previous, &permissions);
+        identity
+            .save_plugin_permissions(&manifest.id, &reconciled)
+            .map_err(PluginError::other)
+            .map_err(|source| RuntimeError::PluginActivation {
+                plugin: manifest.id.clone(),
+                source,
+            })?;
     }
 
     for source in context.take_marketdata_sources() {
@@ -327,6 +377,8 @@ impl Drop for Runtime {
 #[cfg(test)]
 mod tests {
     use super::{Runtime, RuntimeError};
+    use senken_acl::PluginPermissionName;
+    use senken_identity::IdentityStore;
     use senken_plugin::{ActivationContext, Plugin, PluginError, PluginManifest};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -404,6 +456,46 @@ mod tests {
             .build()
             .unwrap_err();
         assert!(matches!(err, RuntimeError::DuplicatePlugin(ref id) if id == "same"));
+    }
+
+    #[test]
+    fn startup_reconciles_a_plugins_declared_permissions() {
+        struct PermissionPlugin;
+
+        impl Plugin for PermissionPlugin {
+            fn manifest(&self) -> PluginManifest {
+                PluginManifest {
+                    id: "test-plugin".to_owned(),
+                    name: "Test plugin".to_owned(),
+                    version: "0".to_owned(),
+                    description: String::new(),
+                    permissions: Vec::new(),
+                }
+            }
+
+            fn activate(&self, context: &mut ActivationContext) -> Result<(), PluginError> {
+                context
+                    .register_plugin_permission(
+                        PluginPermissionName::parse("test-plugin.chart:view").unwrap(),
+                    )
+                    .map_err(PluginError::other)?;
+                Ok(())
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let identity = Arc::new(IdentityStore::open(dir.path().join("accounts.db")).unwrap());
+        let runtime = Runtime::builder()
+            .data_dir(dir.path())
+            .identity_store(Arc::clone(&identity))
+            .plugin(PermissionPlugin)
+            .build()
+            .unwrap();
+
+        let records = identity.load_plugin_permissions("test-plugin").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name().as_str(), "test-plugin.chart:view");
+        runtime.shutdown().unwrap();
     }
 
     #[test]

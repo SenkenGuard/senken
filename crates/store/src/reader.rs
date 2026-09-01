@@ -5,11 +5,11 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::path::PathBuf;
 
-use arrow::array::{Array, Int64Array, RecordBatch, UInt32Array};
+use arrow::array::{Array, Int64Array, RecordBatch, UInt8Array, UInt32Array};
 use arrow::datatypes::SchemaRef;
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use senken_core::{TimeRange, UnixNanos};
-use senken_series::{Anchor, Bar, SeriesKey};
+use senken_series::{Anchor, Bar, SeriesKey, Volume};
 
 use crate::error::StoreError;
 use crate::schema::{SeriesMetadata, schema_with_metadata};
@@ -109,7 +109,7 @@ impl Iterator for RangeReader {
                     Ok(metadata) => metadata,
                     Err(e) => return Some(Err(StoreError::from(e))),
                 };
-            self.current_schema = Some(schema_with_metadata(metadata.to_kv_metadata()));
+            self.current_schema = Some(schema_with_metadata(&metadata));
             match builder.build() {
                 Ok(reader) => self.current = Some(reader),
                 Err(e) => return Some(Err(StoreError::from(e))),
@@ -165,6 +165,16 @@ pub fn bars_from_batch(batch: &RecordBatch) -> Result<Vec<Bar>, StoreError> {
             ))
         })?;
     let taker_buy_volume = i64_column(batch, 8, "taker_buy_volume")?;
+    let volume_kind = batch
+        .column_by_name("volume_kind")
+        .map(|column| {
+            column.as_any().downcast_ref::<UInt8Array>().ok_or_else(|| {
+                StoreError::from(arrow::error::ArrowError::SchemaError(
+                    "column volume_kind is not UInt8".to_owned(),
+                ))
+            })
+        })
+        .transpose()?;
 
     Ok((0..batch.num_rows())
         .map(|row| Bar {
@@ -173,7 +183,11 @@ pub fn bars_from_batch(batch: &RecordBatch) -> Result<Vec<Bar>, StoreError> {
             high: high.value(row),
             low: low.value(row),
             close: close.value(row),
-            volume: volume.value(row),
+            volume: match volume_kind.map(|kind| kind.value(row)) {
+                None | Some(0) => Volume::Real(volume.value(row)),
+                Some(1) => u32::try_from(volume.value(row)).map_or(Volume::Absent, Volume::Tick),
+                Some(_) => Volume::Absent,
+            },
             quote_volume: (!quote_volume.is_null(row)).then(|| quote_volume.value(row)),
             trade_count: (!trade_count.is_null(row)).then(|| trade_count.value(row)),
             taker_buy_volume: (!taker_buy_volume.is_null(row)).then(|| taker_buy_volume.value(row)),
@@ -197,7 +211,7 @@ mod tests {
             high: 110,
             low: 90,
             close: 105,
-            volume: 1_000,
+            volume: Volume::Real(1_000),
             quote_volume: Some(50_000),
             trade_count: Some(7),
             taker_buy_volume: Some(400),

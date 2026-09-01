@@ -21,7 +21,9 @@ workspace = true
 # `senken-core` (`TimeRange`), `senken-series` (`BarSpec`, `SystemClock`'s
 # `Clock` trait) and `senken-store`/`senken-loader` themselves.
 async-trait = { workspace = true }
+senken-acl = { workspace = true }
 senken-core = { workspace = true }
+senken-identity = { workspace = true }
 senken-loader = { workspace = true }
 senken-marketdata = { workspace = true }
 # The runtime only orchestrates activation; the HTTP client is a plugin's

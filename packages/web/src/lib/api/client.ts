@@ -27,6 +27,8 @@ import type {
 	DefaultWorkspaceResponse,
 	LayoutSummaryDto,
 	LayoutDetailDto,
+	LayerInputDto,
+	DrawingInputDto,
 	ReplaceLayoutRequest,
 	BarsRequirementDto,
 	BarRangeResponse,
@@ -390,6 +392,33 @@ class ApiClient {
 			body: JSON.stringify(body)
 		});
 	}
+
+	/** `PATCH /api/layers/{id}`. */
+	async updateLayer(layerId: string, body: LayerInputDto): Promise<void> {
+		await this.request<void>(`/api/layers/${encodeURIComponent(layerId)}`, {
+			method: 'PATCH',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `DELETE /api/layers/{id}`. */
+	async deleteLayer(layerId: string): Promise<void> {
+		await this.request<void>(`/api/layers/${encodeURIComponent(layerId)}`, { method: 'DELETE' });
+	}
+
+	/** `PATCH /api/drawings/{id}`. */
+	async updateDrawing(drawingId: string, body: DrawingInputDto): Promise<void> {
+		await this.request<void>(`/api/drawings/${encodeURIComponent(drawingId)}`, {
+			method: 'PATCH',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `DELETE /api/drawings/{id}`. */
+	async deleteDrawing(drawingId: string): Promise<void> {
+		await this.request<void>(`/api/drawings/${encodeURIComponent(drawingId)}`, { method: 'DELETE' });
+	}
+
 
 	// ------------------------------------------------------------------
 	// Bars.
