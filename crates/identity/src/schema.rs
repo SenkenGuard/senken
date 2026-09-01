@@ -84,6 +84,15 @@
 //!      including `chart_pane_items`' own, correctly pointed; only the
 //!      indexes need re-creating under their new `<table>_<column>` names,
 //!      since SQLite has no `ALTER INDEX RENAME`.
+//! - **v9**: `chart_workspaces.settings` (a workspace-level counterpart to
+//!   the pane-level `chart_panes.settings` v6 already added — display
+//!   preferences that belong to the whole workspace rather than one pane),
+//!   plus two new user-owned domains: `watchlist_groups`/
+//!   `watchlist_members` and `notes`. Same single-schema-owner reasoning as
+//!   v3/v4/v5: created here because they reference `users(id)`, queried
+//!   only by `senken-watchlist`/`senken-notes`, which share this connection
+//!   via [`crate::IdentityStore::shared_connection`] rather than opening
+//!   their own.
 
 use std::path::Path;
 use std::time::Duration;
@@ -96,7 +105,7 @@ use crate::error::IdentityError;
 /// this and extend the schema (or add a migration step) when the shape
 /// changes — there is deliberately no migration crate, not schema
 /// evolution itself.
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
 
 /// `CREATE TABLE` statements for every table assigned to this
 /// milestone: users, roles and the grants attached to either, plus
@@ -468,6 +477,68 @@ UPDATE user_grants SET resource = 'chart_layout' WHERE resource = 'layout';
 COMMIT;
 ";
 
+/// Statements added in schema v9: `chart_workspaces.settings` (opaque
+/// JSON-object text, the same shape and same non-interpretation rule as
+/// `chart_panes.settings` from v6 — see `senken-chart`'s own
+/// `ChartWorkspaceStore::update_workspace_settings`), plus the tables for
+/// two new user-owned domains, `senken-watchlist` and `senken-notes`.
+///
+/// `watchlist_members` carries no `owner_id` of its own — a member's owner
+/// is read through its group, the same way a `chart_pane`'s owner is read
+/// through its workspace — so deleting a group cascades its members
+/// without a second, redundant ownership column to keep in sync.
+/// `(group_id, instrument)` is unique so adding an instrument a group
+/// already holds is a lookup, not a constraint violation the caller has to
+/// handle.
+///
+/// `ALTER TABLE … ADD COLUMN … DEFAULT '{}'` is allowed here (unlike a
+/// non-constant default) because `'{}'` is a literal, not an expression —
+/// SQLite only refuses `ADD COLUMN` defaults it cannot fold into every
+/// existing row at add-time.
+///
+/// Wrapped in one transaction, like v8 and unlike the smaller steps before
+/// it. `user_version` is only stamped once every step has run, so a batch
+/// that failed halfway would leave some of these tables created against a
+/// database still calling itself v8 — and the next start would re-run this
+/// step and die on a table that already exists, needing a hand to repair.
+/// Atomic, it either all lands or none of it does.
+const SCHEMA_SQL_V9: &str = r"
+BEGIN IMMEDIATE;
+
+ALTER TABLE chart_workspaces ADD COLUMN settings TEXT NOT NULL DEFAULT '{}';
+
+CREATE TABLE watchlist_groups (
+    id          TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+) STRICT;
+CREATE INDEX watchlist_groups_owner_id ON watchlist_groups(owner_id);
+
+CREATE TABLE watchlist_members (
+    id          TEXT PRIMARY KEY,
+    group_id    TEXT NOT NULL REFERENCES watchlist_groups(id) ON DELETE CASCADE,
+    instrument  TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    UNIQUE (group_id, instrument)
+) STRICT;
+CREATE INDEX watchlist_members_group_id ON watchlist_members(group_id);
+
+CREATE TABLE notes (
+    id          TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+) STRICT;
+CREATE INDEX notes_owner_id ON notes(owner_id);
+
+COMMIT;
+";
+
 /// Opens (creating if absent) the SQLite database at `path`, applies the
 /// the pragmas this database requires, and creates or checks the schema.
 ///
@@ -506,9 +577,11 @@ pub(crate) fn open(path: &Path) -> Result<Connection, IdentityError> {
 /// tables, v2 adds v3's workspace tables, v3 adds v4's alerts table, v4 adds
 /// v5's drawings table, v5 adds v6's `panes.settings` column, v6 adds v7's
 /// `layers.style` column, v7 merges `layers`/`drawings` into
-/// `chart_pane_items` and renames the chart tables to `chart_*`), since
-/// there is no migration crate but not migrating by hand. A database newer
-/// than this crate knows about is reported, never guessed at.
+/// `chart_pane_items` and renames the chart tables to `chart_*`, v8 adds
+/// v9's `chart_workspaces.settings` column plus the watchlist and notes
+/// tables), since there is no migration crate but not migrating by hand.
+/// A database newer than this crate knows about is reported, never guessed
+/// at.
 fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
     let found: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if found == SCHEMA_VERSION {
@@ -553,6 +626,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
     if version == 7 {
         conn.execute_batch(SCHEMA_SQL_V8)?;
         version = 8;
+    }
+    if version == 8 {
+        conn.execute_batch(SCHEMA_SQL_V9)?;
+        version = 9;
     }
     debug_assert_eq!(
         version, SCHEMA_VERSION,
@@ -599,6 +676,9 @@ mod tests {
             "chart_panes",
             "chart_pane_items",
             "alerts",
+            "watchlist_groups",
+            "watchlist_members",
+            "notes",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -656,6 +736,9 @@ mod tests {
             "chart_panes",
             "chart_pane_items",
             "alerts",
+            "watchlist_groups",
+            "watchlist_members",
+            "notes",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -1157,6 +1240,134 @@ mod tests {
         assert!((t1_price1 - 100.0).abs() < f64::EPSILON);
         assert_eq!(t1_time2, 1_700_003_600_000_000_000);
         assert!((t1_price2 - 101.5).abs() < f64::EPSILON);
+    }
+
+    /// Builds a genuine v8 database at `path` (the real v1..v8 SQL this
+    /// crate has actually shipped) with one pre-existing chart workspace,
+    /// so the v9 migration tests below can assert that row survives the
+    /// `ALTER TABLE … ADD COLUMN` untouched.
+    fn seed_v8_workspace_fixture(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V2).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V3).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V4).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V5).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V6).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V7).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V8).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, display_name, created_at) VALUES ('user-v8', 'v8@example.com', 'V8 User', 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO chart_workspaces (id, owner_id, name, created_at, updated_at) VALUES ('ws-v8', 'user-v8', 'Pre-existing', 0, 0)",
+            [],
+        ).unwrap();
+        conn.pragma_update(None, "user_version", 8).unwrap();
+    }
+
+    #[test]
+    fn a_v8_database_migrates_to_v9_with_the_three_new_tables_and_settings_column() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v8_workspace_fixture(&path);
+
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 9);
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        for table in ["watchlist_groups", "watchlist_members", "notes"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            assert!(
+                exists,
+                "table `{table}` was not created by the v9 migration"
+            );
+        }
+
+        let column_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('chart_workspaces') WHERE name = 'settings'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(
+            column_exists,
+            "chart_workspaces.settings must exist after the v9 migration"
+        );
+    }
+
+    #[test]
+    fn a_pre_existing_chart_workspace_survives_the_v9_migration_with_empty_settings() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v8_workspace_fixture(&path);
+
+        let conn = open(&path).unwrap();
+        let (name, settings): (String, String) = conn
+            .query_row(
+                "SELECT name, settings FROM chart_workspaces WHERE id = 'ws-v8'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            name, "Pre-existing",
+            "the migration must not touch existing columns"
+        );
+        assert_eq!(
+            settings, "{}",
+            "a workspace written before this column existed must default to an empty settings object, not NULL"
+        );
+    }
+
+    #[test]
+    fn a_v9_database_can_insert_into_every_new_table() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        let conn = open(&path).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, display_name, created_at) VALUES ('user-v9', 'v9@example.com', 'V9 User', 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO watchlist_groups (id, owner_id, name, position, created_at, updated_at) VALUES ('grp-1', 'user-v9', 'Majors', 0, 0, 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO watchlist_members (id, group_id, instrument, position) VALUES ('mem-1', 'grp-1', 'okx-spot:BTCUSDT', 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO notes (id, owner_id, title, body, created_at, updated_at) VALUES ('note-1', 'user-v9', 'Title', 'Body', 0, 0)",
+            [],
+        ).unwrap();
+
+        // Cascade: deleting the owning group must remove its member row,
+        // the same `ON DELETE CASCADE` `chart_workspaces` already relies on.
+        conn.execute("DELETE FROM watchlist_groups WHERE id = 'grp-1'", [])
+            .unwrap();
+        let member_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watchlist_members", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            member_count, 0,
+            "a watchlist member must be cascade-deleted with its group"
+        );
     }
 
     #[test]
