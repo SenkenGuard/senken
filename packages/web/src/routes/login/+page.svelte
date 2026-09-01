@@ -12,7 +12,7 @@
 	import { getErrorMessage } from '$lib/api/errors';
 	import { MIN_PASSWORD_LENGTH } from '$lib/api/constants';
 	import ServerPicker from './server-picker.svelte';
-	import * as Tabs from '$lib/components/ui/tabs/index.js';
+	import { isDesktopShell } from '$lib/shell';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -31,52 +31,32 @@
 	const DEFAULT_ADMIN_EMAIL = 'admin@mail.com';
 
 	/**
-	 * Which tab opens by default. the fresh-install experience is
-	 * "show set a password, not log in".
+	 * Whether this server's default administrator still has no password, and
+	 * so needs setting up rather than logging into.
 	 *
-	 * Q5 originally had no server-side way to ask "is this account fenced?"
-	 * without submitting a real request — `crates/api/src/identity_handlers.rs`'s
-	 * anonymous `set-password` path was the only anonymous read of fence
-	 * state, and it requires a candidate password to even attempt, because a
-	 * fenced and an already-set-up account must look identical to anyone who
-	 * doesn't already hold a session (the same account-enumeration defence
-	 * B15 already applies to `login`). Probing it with a throwaway password
-	 * and inferring the answer from *which* of its two 400 messages comes
-	 * back would have worked, but Q5 declined it as fragile — coupled to
-	 * exact server wording that carries no compatibility guarantee — and
-	 * used a client-side `localStorage` heuristic ("has this browser ever
-	 * completed a login against this server?") instead, recommending
-	 * exactly the endpoint below as the real fix.
+	 * `GET /api/health`'s `needs_setup` reports that account's real state,
+	 * unauthenticated, without accepting or checking a password — no
+	 * account-enumeration surface, because it always names the one fixed,
+	 * already-public default admin rather than a caller-supplied account.
 	 *
-	 * Q8 then added that endpoint: `GET /api/health`'s `needs_setup` field
-	 * (`loadNeedsSetup`, below) reports the seeded default admin's real fence
-	 * state directly, unauthenticated, without accepting or checking a
-	 * password — no enumeration surface, because it always names the one
-	 * fixed, already-public default admin account rather than a
-	 * caller-supplied one. This page is wired to that field,
-	 * replacing the heuristic: unlike `localStorage`, it is not wrong on a
-	 * second browser or after clearing site data, because it asks the
-	 * server instead of guessing from this browser's own history.
-	 *
-	 * Both tabs stay manually reachable regardless of what `needsSetup`
-	 * says, and the fence itself is still enforced entirely server-side
-	 * : picking the "wrong" tab does not grant anything, it just
-	 * surfaces the server's own error message (`getErrorMessage`, below)
-	 * instead of guessing right on the first try.
+	 * `null` means the answer has not arrived: either the request is still
+	 * in flight, or it failed and never will. Those need different
+	 * treatment, so `healthChecked` below distinguishes them — showing the
+	 * log-in form while the answer is still coming would flip it to the
+	 * setup form a moment later on a fresh install, which reads as the page
+	 * breaking rather than as it loading.
 	 */
-	let manualTab = $state<'login' | 'setup' | null>(null);
-	/** `null` until the first `GET /api/health` for the active server
-	 * resolves (or forever, if it never does — a briefly unreachable server
-	 * is already surfaced elsewhere, by the connection indicator and
-	 * heartbeat, so this falls back to `'login'` rather than adding a second,
-	 * uncoordinated opinion about the same failure). */
 	let needsSetup = $state<boolean | null>(null);
+	/** `true` once the health request has settled, either way. An
+	 * unreachable server falls back to the log-in form: the setup form
+	 * cannot be the safer default, since offering to set a password on a
+	 * server that already has one is the more alarming of the two guesses. */
+	let healthChecked = $state(false);
 	let lastServerId = activeServer().id;
 
-	/** Fetches `needsSetup` for `serverId` from the server itself
-	 * See `tab`'s doc above for why this replaced a `localStorage`
-	 * heuristic. `GET /api/health` needs no credential, so
-	 * this can run before any session exists at all. */
+	/** Fetches `needsSetup` for `serverId` from the server itself. `GET
+	 * /api/health` needs no credential, so this can run before any session
+	 * exists at all. */
 	async function loadNeedsSetup(serverId: string): Promise<void> {
 		try {
 			const health = await apiClient.health();
@@ -84,6 +64,8 @@
 			needsSetup = health.needs_setup;
 		} catch {
 			// Leave `needsSetup` as `null` — see its own doc above.
+		} finally {
+			if (activeServer().id === serverId) healthChecked = true;
 		}
 	}
 
@@ -91,12 +73,18 @@
 		const id = activeServer().id;
 		if (id !== lastServerId) {
 			lastServerId = id;
-			manualTab = null;
 			needsSetup = null;
+			healthChecked = false;
 		}
 		void loadNeedsSetup(id);
 	});
-	const tab = $derived(manualTab ?? (needsSetup === true ? 'setup' : 'login'));
+
+	/** Exactly one of the two forms, never a choice between them. Which one
+	 * is a fact about the server, not a preference: an account that has a
+	 * password cannot be set up again (the server refuses it), and one that
+	 * has none cannot be logged into. Offering both as tabs asked the user
+	 * to guess something the server already knows. */
+	const form = $derived(needsSetup === true ? 'setup' : 'login');
 
 	// B15: "the client must warn when the chosen server is neither loopback
 	// nor `https`... in the UI, not just a log line" — and per the brief,
@@ -181,7 +169,12 @@
 			</div>
 		</div>
 
-		<ServerPicker />
+		<!-- Only the desktop app can point itself at a different server. A
+		     browser tab was served *by* one, and switching would mean navigating
+		     away from the page doing the switching. -->
+		{#if isDesktopShell()}
+			<ServerPicker />
+		{/if}
 
 		{#if insecure}
 			<div
@@ -197,88 +190,24 @@
 		{/if}
 
 		<div class="border border-ink/16 bg-chrome">
-			<Tabs.Root value={tab} onValueChange={(v) => (manualTab = v === 'setup' ? 'setup' : 'login')}>
-				<!-- `!bg-foreground`/`!text-inv`/`!shadow-none` on the two triggers below are load-bearing,
-				     not decorative emphasis. `ui/tabs/tabs-trigger.svelte`'s own base classes already set
-				     `dark:data-[state=active]:bg-input/30` and `dark:data-[state=active]:text-foreground` —
-				     a *different* modifier chain (`dark:data-[state=active]:…` vs this file's plain
-				     `data-[state=active]:…`), which is exactly the case `ui/dialog/dialog-content.svelte`'s
-				     own comment already documents tailwind-merge failing to dedupe ("different modifier
-				     chain... the desktop shell is always past the `sm` breakpoint" — same mechanism here,
-				     with `dark:` instead of `sm:`). Verified with `getComputedStyle` before adding the `!`:
-				     the active tab's background computed to a translucent `bg-input/30` overlay and its
-				     text stayed `--fg` (light), not the intended solid `--foreground` background with
-				     `--inv` (dark) text — the classes were present in the DOM but doing nothing, the same
-				     failure mode as this project's three previously-found dead-class bugs. -->
-				<Tabs.List class="w-full rounded-none border-b border-ink/12 bg-transparent p-0">
-					<Tabs.Trigger
-						value="login"
-						class="flex-1 rounded-none border-0 border-r border-ink/12 py-2.5 font-mono text-[10px] tracking-[0.16em] data-[state=active]:!bg-foreground data-[state=active]:!text-inv data-[state=active]:!shadow-none"
-					>
-						LOG IN
-					</Tabs.Trigger>
-					<Tabs.Trigger
-						value="setup"
-						class="flex-1 rounded-none border-0 py-2.5 font-mono text-[10px] tracking-[0.16em] data-[state=active]:!bg-foreground data-[state=active]:!text-inv data-[state=active]:!shadow-none"
-					>
-						FIRST-TIME SETUP
-					</Tabs.Trigger>
-				</Tabs.List>
+			{#if healthChecked}
+				<div class="border-b border-ink/12 px-4 py-2.5">
+					<span class="font-mono text-[10px] tracking-[0.16em] text-foreground">
+						{form === 'setup' ? 'FIRST-TIME SETUP' : 'LOG IN'}
+					</span>
+				</div>
+			{/if}
 
-				<Tabs.Content value="login" class="p-4">
-					<form class="flex flex-col gap-3" onsubmit={submitLogin}>
-						<div class="flex flex-col gap-1.5">
-							<Label for="login-email" class="font-mono text-[9px] tracking-[0.16em] text-dim2">EMAIL</Label>
-							<Input
-								id="login-email"
-								type="email"
-								autocomplete="username"
-								required
-								bind:value={loginEmail}
-								class="h-9 rounded-none border-ink/16 font-mono text-[12px]"
-							/>
-						</div>
-						<div class="flex flex-col gap-1.5">
-							<Label for="login-password" class="font-mono text-[9px] tracking-[0.16em] text-dim2">
-								PASSWORD
-							</Label>
-							<Input
-								id="login-password"
-								type="password"
-								autocomplete="current-password"
-								required
-								bind:value={loginPassword}
-								class="h-9 rounded-none border-ink/16 font-mono text-[12px]"
-							/>
-						</div>
-						{#if loginError}
-							<p data-testid="login-error" class="font-mono text-[10.5px] text-loss">{loginError}</p>
-						{/if}
-						<Button
-							type="submit"
-							variant="default"
-							class="mt-1 h-9 rounded-none font-mono text-[10.5px] tracking-[0.16em]"
-							disabled={loginBusy}
-						>
-							{#if loginBusy}
-								<Spinner class="size-3.5" />
-							{/if}
-							LOG IN
-						</Button>
-						<p class="text-center font-mono text-[9.5px] tracking-[0.04em] text-dim2">
-							First time setting up this server?
-							<button
-								type="button"
-								class="text-foreground underline underline-offset-2"
-								onclick={() => (manualTab = 'setup')}
-							>
-								Set the admin password
-							</button>
-						</p>
-					</form>
-				</Tabs.Content>
-
-				<Tabs.Content value="setup" class="p-4">
+			{#if !healthChecked}
+				<!-- Which form belongs here is the server's answer, not a guess.
+				     Rendering one and swapping it a moment later reads as the page
+				     breaking, so nothing is offered until the answer arrives. -->
+				<div class="flex items-center justify-center gap-2 p-8">
+					<Spinner class="size-3.5" />
+					<span class="font-mono text-[10px] tracking-[0.16em] text-dim2">CHECKING SERVER…</span>
+				</div>
+			{:else if form === 'setup'}
+				<div class="p-4">
 					<form class="flex flex-col gap-3" onsubmit={submitSetup}>
 						<p class="font-mono text-[10px] leading-relaxed tracking-[0.02em] text-dim2">
 							This server has a default administrator account with no password set. Choose one below
@@ -345,19 +274,52 @@
 							{/if}
 							SET PASSWORD & CONTINUE
 						</Button>
-						<p class="text-center font-mono text-[9.5px] tracking-[0.04em] text-dim2">
-							Already set up?
-							<button
-								type="button"
-								class="text-foreground underline underline-offset-2"
-								onclick={() => (manualTab = 'login')}
-							>
-								Log in instead
-							</button>
-						</p>
 					</form>
-				</Tabs.Content>
-			</Tabs.Root>
+				</div>
+			{:else}
+				<div class="p-4">
+					<form class="flex flex-col gap-3" onsubmit={submitLogin}>
+						<div class="flex flex-col gap-1.5">
+							<Label for="login-email" class="font-mono text-[9px] tracking-[0.16em] text-dim2">EMAIL</Label>
+							<Input
+								id="login-email"
+								type="email"
+								autocomplete="username"
+								required
+								bind:value={loginEmail}
+								class="h-9 rounded-none border-ink/16 font-mono text-[12px]"
+							/>
+						</div>
+						<div class="flex flex-col gap-1.5">
+							<Label for="login-password" class="font-mono text-[9px] tracking-[0.16em] text-dim2">
+								PASSWORD
+							</Label>
+							<Input
+								id="login-password"
+								type="password"
+								autocomplete="current-password"
+								required
+								bind:value={loginPassword}
+								class="h-9 rounded-none border-ink/16 font-mono text-[12px]"
+							/>
+						</div>
+						{#if loginError}
+							<p data-testid="login-error" class="font-mono text-[10.5px] text-loss">{loginError}</p>
+						{/if}
+						<Button
+							type="submit"
+							variant="default"
+							class="mt-1 h-9 rounded-none font-mono text-[10.5px] tracking-[0.16em]"
+							disabled={loginBusy}
+						>
+							{#if loginBusy}
+								<Spinner class="size-3.5" />
+							{/if}
+							LOG IN
+						</Button>
+					</form>
+				</div>
+			{/if}
 		</div>
 	</div>
 </div>
