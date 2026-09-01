@@ -284,7 +284,10 @@ fn sql_to_action(text: &str) -> Result<Action, IdentityError> {
     })
 }
 
-fn resource_to_sql(resource: Resource) -> &'static str {
+/// `pub(crate)` (not private) so [`crate::store::IdentityStore`]'s
+/// resource-backfill can name a resource's on-disk token without a
+/// throwaway [`Grant`] to extract it from.
+pub(crate) fn resource_to_sql(resource: Resource) -> &'static str {
     match resource {
         // Schema v8 renames these two tokens from `workspace`/`layout` to
         // match `Resource::ChartWorkspace`/`Resource::ChartLayout` — see
@@ -303,6 +306,7 @@ fn resource_to_sql(resource: Resource) -> &'static str {
         Resource::Indicator => "indicator",
         Resource::Watchlist => "watchlist",
         Resource::Note => "note",
+        Resource::Storage => "storage",
     }
 }
 
@@ -319,6 +323,7 @@ fn sql_to_resource(text: &str) -> Result<Resource, IdentityError> {
         "indicator" => Resource::Indicator,
         "watchlist" => Resource::Watchlist,
         "note" => Resource::Note,
+        "storage" => Resource::Storage,
         other => {
             return Err(IdentityError::CorruptGrant(format!(
                 "unknown resource `{other}`"

@@ -608,13 +608,10 @@
 				textColor: T.axis,
 				fontFamily: "'IBM Plex Mono', monospace",
 				fontSize: 9,
-				// The chart's own attribution logo is off because the same
-				// requirement is met elsewhere: lightweight-charts is Apache-2.0
-				// and its licence obliges us to name TradingView as the creator
-				// and link to tradingview.com somewhere users can reach. The
-				// About section in Settings carries both. If that row is ever
-				// removed this must go back to `true` — one of the two has to
-				// be there.
+				// Re-asserted on every theme change: `applyOptions` replaces the
+				// `layout` block it is given, so omitting this here would let
+				// the library's default come back. See the same option at chart
+				// creation for why it is allowed to be off at all.
 				attributionLogo: false,
 				panes: { separatorColor: T.border, separatorHoverColor: T.cross, enableResize: true }
 			},
@@ -661,6 +658,20 @@
 				textColor: T.axis,
 				fontFamily: "'IBM Plex Mono', monospace",
 				fontSize: 9,
+				// Off here as well as in `applyTheme`, not only there. That
+				// function runs when the theme changes, so setting it only in
+				// it left the library's default (`true`) standing from mount
+				// until the reader happened to switch light and dark — the
+				// logo was on for the whole first visit.
+				//
+				// Switching it off is only allowed because the obligation it
+				// exists to satisfy is met elsewhere: lightweight-charts is
+				// Apache-2.0 and its licence requires naming TradingView as
+				// the creator and linking to tradingview.com somewhere users
+				// can reach. The About section in Settings carries both. If
+				// that row is ever removed, this must go back to `true` in
+				// both places — one of the two has to be there.
+				attributionLogo: false,
 				panes: { separatorColor: T.border, separatorHoverColor: T.cross, enableResize: true }
 			},
 			grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },

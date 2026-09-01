@@ -301,6 +301,40 @@ mod tests {
         handle.shutdown().await.unwrap();
     }
 
+    // Both are 401 and both are correct, but they are answers to different
+    // questions: one is "sign in again", the other is "those details are
+    // wrong". Sharing one body left a mistyped password telling the user
+    // their session had expired, when they had never had one.
+    #[tokio::test]
+    async fn a_rejected_login_and_a_dead_session_do_not_send_the_same_401_body() {
+        let (handle, _dir) = serve_unfenced().await;
+        let addr = handle.local_addr();
+
+        let rejected = login(addr, DEFAULT_ADMIN_EMAIL, "not the right password").await;
+        assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let rejected_body = body_json(rejected).await;
+
+        let no_session = reqwest::Client::new()
+            .get(format!("http://{addr}/api/me"))
+            .header("authorization", "Bearer not-a-real-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(no_session.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let no_session_body = body_json(no_session).await;
+
+        assert_ne!(rejected_body, no_session_body);
+        let message = rejected_body["error"].as_str().unwrap();
+        // Says what went wrong without saying which half — an account that
+        // exists and one that does not stay indistinguishable.
+        assert!(
+            message.contains("email") && message.contains("password"),
+            "a rejected login should name what did not match, got {message:?}"
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn repeated_login_attempts_for_the_same_account_are_eventually_rate_limited() {
         let (handle, _dir) = serve_unfenced().await;

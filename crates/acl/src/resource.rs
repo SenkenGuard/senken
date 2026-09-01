@@ -44,6 +44,10 @@ pub enum Resource {
     Watchlist,
     /// A user-authored freeform note.
     Note,
+    /// Administering what the server keeps on disk — usage reporting and
+    /// reclamation — distinct from the market data itself, which has no
+    /// owner to check a grant against.
+    Storage,
 }
 
 #[cfg(test)]

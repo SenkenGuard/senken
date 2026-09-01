@@ -31,6 +31,7 @@
 		addServer,
 		removeServer,
 		resolveBaseUrl,
+		serverAddressLabel,
 		isSecureConnection,
 		EMBEDDED_SERVER,
 		type ServerConfig
@@ -63,7 +64,7 @@
 	};
 
 	function displayUrl(server: ServerConfig): string {
-		return server.baseUrl === '' ? `${resolveBaseUrl(server)} (this device)` : server.baseUrl;
+		return serverAddressLabel(server);
 	}
 
 	function pick(server: ServerConfig) {

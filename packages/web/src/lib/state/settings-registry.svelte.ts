@@ -15,6 +15,13 @@
 // (core sections today, a plugin's activation code later) access with no
 // prop-drilling and no "used outside provider" risk.
 import type { Component, Snippet } from 'svelte';
+import { isSettingsSectionVisible, type SettingsVisibilityContext } from './settings-visibility';
+
+export {
+	isSettingsSectionVisible,
+	type SettingsVisibilityContext,
+	type SettingsSectionVisibility
+} from './settings-visibility';
 
 /** One row inside a settings group: label + description on the left,
  * a control on the right, and — per its "reset-to-default affordance on
@@ -81,13 +88,21 @@ export interface SettingsSection {
 	 * need to reflect live values — search finds a *setting by name*, not
 	 * by its current value. */
 	searchIndex: SettingsSearchEntry[];
-	/** hiding a section is cosmetic only, never access
-	 * control — the admin-only sections' own content is what must enforce
-	 * a real check against the API and handle a `403` gracefully. This
-	 * flag exists purely so the nav does not clutter every user's view
-	 * with controls they cannot use; it must never be the only thing
-	 * standing between a user and an admin action. */
-	adminOnly?: boolean;
+	/** The `Resource` names this section administers; it is shown when the
+	 * caller holds a grant on any of them.
+	 *
+	 * Hiding a section is cosmetic only, never access control — the
+	 * section's own content is what must enforce a real check against the
+	 * API and handle a `403` gracefully. This exists purely so the nav does
+	 * not clutter every user's view with controls they cannot use; it must
+	 * never be the only thing standing between a user and an admin action. */
+	requiresAnyResource?: readonly string[];
+	/** Hides the section outside the desktop app. Unlike
+	 * `requiresAnyResource` this is not a permission at all: the settings it holds are meaningless in
+	 * a browser tab, which is served *by* one server and cannot be pointed
+	 * at another without navigating away from it. Nothing is being withheld
+	 * — there is simply no choice to offer. */
+	desktopOnly?: boolean;
 	/** Lower sorts first. Core sections use small integers with gaps so a
 	 * plugin section can slot in between without renumbering everything
 	 * else; unset sorts after every explicitly ordered section. */
@@ -149,11 +164,14 @@ export interface SettingsSearchResult {
  * row's label, description and parent group heading — deliberately simple:
  * the point B10 makes is that search must reach *every* section, not that
  * it needs fuzzy ranking. */
-export function searchSettings(query: string): SettingsSearchResult[] {
+export function searchSettings(
+	query: string,
+	context: SettingsVisibilityContext
+): SettingsSearchResult[] {
 	const q = query.trim().toLowerCase();
 	if (q === '') return [];
 	const results: SettingsSearchResult[] = [];
-	for (const section of settingsRegistry.sections) {
+	for (const section of listSettingsSections().filter((s) => isSettingsSectionVisible(s, context))) {
 		for (const entry of section.searchIndex) {
 			const haystack = `${entry.groupHeading} ${entry.rowLabel} ${entry.rowDescription}`.toLowerCase();
 			if (haystack.includes(q)) {

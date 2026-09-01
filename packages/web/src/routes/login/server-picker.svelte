@@ -12,7 +12,7 @@
 	// which server the app talks to. This component adds no new state of
 	// its own beyond the popover's open flag and the add-server form's
 	// draft fields.
-	import { serversStore, activeServer, addServer, removeServer, isSecureConnection } from '$lib/api/servers.svelte';
+	import { serversStore, activeServer, addServer, removeServer, isSecureConnection, serverAddressLabel } from '$lib/api/servers.svelte';
 	import { switchServer } from '$lib/api/client';
 	import { cn } from '$lib/utils.js';
 	import * as Popover from '$lib/components/ui/popover/index.js';
@@ -120,7 +120,7 @@
 								{server.label}
 							</span>
 							<span class="block truncate font-mono text-[9px] text-dim2">
-								{server.baseUrl || 'this device'}
+								{serverAddressLabel(server)}
 							</span>
 						</span>
 						<span

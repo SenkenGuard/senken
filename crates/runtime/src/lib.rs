@@ -201,6 +201,7 @@ impl RuntimeBuilder {
             plugins: records,
             marketdata,
             series,
+            series_store,
         })
     }
 }
@@ -320,6 +321,12 @@ pub struct Runtime {
     plugins: Vec<PluginRecord>,
     marketdata: Arc<MarketData>,
     series: SeriesData,
+    /// The same [`Store`] every [`SeriesData`] loader was built against —
+    /// kept here too so a caller that needs to inspect or reclaim what is
+    /// on disk (a Settings "storage usage" report, say) reuses this
+    /// instance rather than constructing a second `Store` pointed at the
+    /// same directory. Cheap to clone (a path plus an `Arc`'d lock table).
+    series_store: Store,
 }
 
 impl Runtime {
@@ -354,6 +361,15 @@ impl Runtime {
     #[must_use]
     pub fn series(&self) -> &SeriesData {
         &self.series
+    }
+
+    /// The [`Store`] every registered source's [`senken_loader::SeriesLoader`]
+    /// reads and writes through — the same instance, not a second one
+    /// pointed at the same directory, so a caller inspecting or reclaiming
+    /// on-disk usage never races a loader's own compaction lock.
+    #[must_use]
+    pub fn store(&self) -> &Store {
+        &self.series_store
     }
 
     /// Deactivates every plugin in reverse order and consumes the runtime.

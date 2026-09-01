@@ -13,6 +13,7 @@ import PaletteIcon from '@lucide/svelte/icons/palette';
 import ServerIcon from '@lucide/svelte/icons/server';
 import PuzzleIcon from '@lucide/svelte/icons/puzzle';
 import ShieldIcon from '@lucide/svelte/icons/shield';
+import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 import InfoIcon from '@lucide/svelte/icons/info';
 
 import { registerSettingsSection } from '$lib/state/settings-registry.svelte';
@@ -23,6 +24,7 @@ import ConnectionSection, { searchIndex as connectionSearchIndex } from './secti
 import PluginsSection, { searchIndex as pluginsSearchIndex } from './sections/plugins-section.svelte';
 import AccessSection, { searchIndex as accessSearchIndex } from './sections/access-section.svelte';
 import AboutSection, { searchIndex as aboutSearchIndex } from './sections/about-section.svelte';
+import StorageSection, { searchIndex as storageSearchIndex } from './sections/storage-section.svelte';
 
 registerSettingsSection({
 	id: 'account',
@@ -48,6 +50,12 @@ registerSettingsSection({
 	icon: ServerIcon,
 	component: ConnectionSection,
 	searchIndex: connectionSearchIndex,
+	// Choosing which server to talk to is a desktop-app question. A browser
+	// tab was served by exactly one server and cannot move to another
+	// without navigating away from it, so this section would offer a choice
+	// the page cannot honour. The connection's *state* is still visible
+	// there, on the top bar's own indicator.
+	desktopOnly: true,
 	order: 30
 });
 
@@ -61,12 +69,26 @@ registerSettingsSection({
 });
 
 registerSettingsSection({
+	id: 'storage',
+	label: 'Storage',
+	icon: HardDriveIcon,
+	component: StorageSection,
+	searchIndex: storageSearchIndex,
+	// Shown to an account granted storage administration, which is not the
+	// same set as the accounts that administer users. Hiding it is still
+	// only cosmetic — the endpoints behind it check a real grant on every
+	// request.
+	requiresAnyResource: ['Storage'],
+	order: 45
+});
+
+registerSettingsSection({
 	id: 'access',
 	label: 'Users & Roles',
 	icon: ShieldIcon,
 	component: AccessSection,
 	searchIndex: accessSearchIndex,
-	adminOnly: true,
+	requiresAnyResource: ['User', 'Role'],
 	order: 50
 });
 
