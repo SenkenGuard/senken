@@ -301,6 +301,8 @@ fn resource_to_sql(resource: Resource) -> &'static str {
         Resource::User => "user",
         Resource::Role => "role",
         Resource::Indicator => "indicator",
+        Resource::Watchlist => "watchlist",
+        Resource::Note => "note",
     }
 }
 
@@ -315,6 +317,8 @@ fn sql_to_resource(text: &str) -> Result<Resource, IdentityError> {
         "user" => Resource::User,
         "role" => Resource::Role,
         "indicator" => Resource::Indicator,
+        "watchlist" => Resource::Watchlist,
+        "note" => Resource::Note,
         other => {
             return Err(IdentityError::CorruptGrant(format!(
                 "unknown resource `{other}`"

@@ -29,6 +29,7 @@ senken-core = { path = "crates/core", version = "0.0.3" }
 senken-identity = { path = "crates/identity", version = "0.0.3" }
 senken-indicators = { path = "crates/indicators", version = "0.0.3" }
 senken-marketdata = { path = "crates/marketdata", version = "0.0.3" }
+senken-notes = { path = "crates/notes", version = "0.0.3" }
 # Lean by default inside this workspace: only the venue plugins ask for
 # `features = ["http"]`. External users get the HTTP client by default.
 senken-plugin = { path = "crates/plugin", version = "0.0.3", default-features = false }
@@ -60,6 +61,7 @@ senken-series = { path = "crates/series", version = "0.0.3" }
 senken-storage = { path = "crates/storage", version = "0.0.3" }
 senken-store = { path = "crates/store", version = "0.0.3" }
 senken-subscription = { path = "crates/subscription", version = "0.0.3" }
+senken-watchlist = { path = "crates/watchlist", version = "0.0.3" }
 # The venue half of implements `senken-subscription`'s
 # `VenueConnection`/`VenueConnector` ports against a real venue WebSocket.
 senken-feed = { path = "crates/feed", version = "0.0.3" }

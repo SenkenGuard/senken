@@ -42,7 +42,13 @@
 	import { loadBars, loadIndicatorSeries, type BarLoadProgress } from '$lib/charts/bars';
 	import { objectDrawablesFromIndicatorDisplay } from '$lib/charts/indicator-display';
 	import { GenerationGuard } from '$lib/charts/generation-guard';
-	import { indicatorFieldScale, plotsForLayer, LINE_STYLE_MAP } from '$lib/charts/layer-style';
+	import { indicatorFieldScale, plotsForLayer, LINE_STYLE_MAP, OVERLAY_INSTRUMENT_PLOT } from '$lib/charts/layer-style';
+	import {
+		overlayInstrumentCloseSeries,
+		overlayInstrumentSignature,
+		overlaySeriesKeysToRemove,
+		planOverlayInstrumentSeries
+	} from '$lib/charts/overlay-instrument';
 	import { DRAWING_KIND_FOR_TOOL, TOOL_ANCHOR_COUNT, type DrawingRuntime, type LayerRuntime } from '$lib/charts/pane-runtime';
 	import { formatMeasureLabel, measureStats } from '$lib/charts/measure';
 	import { DrawingsPrimitive } from '$lib/charts/drawing-primitive';
@@ -50,6 +56,9 @@
 	import {
 		indicatorRange,
 		initialBarWindow,
+		defaultFrame,
+		indexOfTime,
+		logicalRangeShift,
 		historyLoadPriority,
 		HISTORY_PAGE_BARS,
 		MAX_HISTORY_BARS,
@@ -65,9 +74,10 @@
 	import HistoryEdgeStatus from './history-edge-status.svelte';
 	import { HistoryMarksPrimitive } from '$lib/charts/history-marks-primitive';
 	import { nativePaneData } from '$lib/charts/native-panes';
+	import { statusVolumeFromDto, type StatusBar } from '$lib/charts/status-line';
 	import { shouldFramePriceScale } from '$lib/charts/pane-settings';
 	import { LastPriceBadgePrimitive, type PriceDirection } from '$lib/charts/price-badge-primitive';
-	import { deriveLiveState, overlayMessage, priceLineColorFor, showCountdown } from '$lib/charts/live-state';
+	import { deriveLiveState, liveChipLabel, overlayMessage, priceLineColorFor, showCountdown } from '$lib/charts/live-state';
 	import type { MarketStatus } from '$lib/charts/live-state';
 	import { chartPaneThemeColors, isDarkTheme } from './chart-theme';
 	import { defaultChartSettings, type ChartSettings } from '$lib/mock/chart-settings';
@@ -101,7 +111,7 @@
 		subPaneLayers = [],
 		drawings,
 		selectedDrawingId,
-		onCrosshair,
+		onStatusBar,
 		onNarrow,
 		onLastClose,
 		onLiveNotice,
@@ -132,8 +142,7 @@
 		 * (applyReplay, line 2088). */
 		replayIdx: number | null;
 		/** Incrementing counter — bumping it clears every drawing in the
-		 * layout (`clearAllDrawings`, mirroring the reference's own
-		 * `clearDrawings`, line 2126). */
+		 * pane (`clearPaneDrawings`). */
 		clearToken: number;
 		/** Indicator layers placed over the price chart.
 		 * Excludes any `indicator_sub_pane` layer; the caller (pane-cell.svelte)
@@ -149,9 +158,13 @@
 		 * (`pane-cell.svelte`) since selecting a drawing opens a properties
 		 * panel outside this component. */
 		selectedDrawingId: string | null;
-		/** Fires the crosshair's formatted OHLC/close text for the pane header
-		 * status line (subscribeCrosshairMove, line 1757). */
-		onCrosshair?: (text: string) => void;
+		/** Fires with the bar the status line should describe: the one under
+		 * the crosshair while the pointer is over the plot, and the newest
+		 * loaded bar otherwise. The numbers, not a formatted string — which
+		 * of them a reader wants to see is six stored settings the header
+		 * applies (`$lib/charts/status-line.ts`), and this component has no
+		 * business deciding that. `null` only while the pane has no bars. */
+		onStatusBar?: (bar: StatusBar | null) => void;
 		/** Fires whenever the container crosses the 330px width the reference
 		 * uses to hide the venue prefix (paneNarrow, line 1794). */
 		onNarrow?: (narrow: boolean) => void;
@@ -159,7 +172,12 @@
 		 * (re)load — the order ticket's `mid` price comes from here now,
 		 * instead of a mock candle series. */
 		onLastClose?: (price: number) => void;
-		onLiveNotice?: (notice: string | null) => void;
+		/** Fires with the pane's live-state chip: a short label and the
+		 * sentence behind it, or `null` while the venue is streaming
+		 * normally. Both, because "MARKET CLOSED" and "NO LIVE FEED" are
+		 * different facts and a header that prints one of them for the other
+		 * is simply wrong. */
+		onLiveNotice?: (notice: { label: string; message: string } | null) => void;
 		/** Fires with `price_scale` whenever bars (re)load. */
 		onPriceScale?: (scale: number) => void;
 		/** Fires with the live last-traded price, or `null`
@@ -193,8 +211,7 @@
 		 * empty chart space (`null`, clearing the selection). */
 		onSelectDrawing?: (id: string | null) => void;
 		/** Fires once a drawing finishes, so the toolbar returns to the cursor
-		 * tool (the owner's own acceptance point: "after drawing a line the
-		 * tool returns to the cursor"). */
+		 * tool: after drawing a line the tool returns to the cursor. */
 		onToolConsumed?: () => void;
 		/** A right-click on this pane, with the pointer position and which
 		 * region it landed in. The pane does not own the menu — the page
@@ -263,8 +280,25 @@
 	// changes on an add/remove/edit that already re-renders this component.
 	const overlaySeries = new Map<string, ISeriesApi<'Line'> | ISeriesApi<'Histogram'>>();
 	const subPaneSeries = new Map<string, ISeriesApi<'Line'> | ISeriesApi<'Histogram'>>();
+	// One line series per `overlay_instrument` layer, keyed by layer id — kept
+	// apart from `overlaySeries` above (which is keyed by `layerId:field` for
+	// indicator plots) so the two reconciliation effects never collide over
+	// the same map, even though nothing stops a pane from carrying both kinds
+	// of layer at once.
+	const overlayInstrumentSeries = new Map<string, ISeriesApi<'Line'>>();
 
-	let bars = $state<{ ts_open: number; open: number; high: number; low: number; close: number }[]>([]);
+	/** One loaded bar. `volume` is carried because the status line can be
+	 * asked to show it and there is nowhere else to get it from — the
+	 * candlestick series itself never sees it. */
+	type LoadedBar = {
+		ts_open: number;
+		open: number;
+		high: number;
+		low: number;
+		close: number;
+		volume: StatusBar['volume'];
+	};
+	let bars = $state<LoadedBar[]>([]);
 
 	// The range every indicator path must cover: exactly the bars this pane is
 	// holding right now, never the window it first asked for. Paging older
@@ -310,6 +344,11 @@
 	/** Bumped when a bar closes, so the loader is asked for the finished bar
 	 * the venue actually recorded. */
 	let barEpoch = $state(0);
+	/** The bar a catch-up reload has already been asked for. A venue that
+	 * simply has not printed a bar for a while would otherwise get one
+	 * request per tick, forever, since every one of them finds the same
+	 * still-missing bar. */
+	let catchUpRequestedFor = 0;
 	/** The `instrument|spec` the loaded bars belong to. */
 	let loadedIdentity = '';
 	// Set once this pane's subscribed topic gets back an explicit
@@ -318,6 +357,9 @@
 	// cache) is the other, checked before a subscribe even goes out.
 	let unsupported = $state(false);
 	let progress = $state<BarLoadProgress>({ phase: 'checking' });
+	/** Bumped by `applyTheme` so the data effect repaints bars whose colour is
+	 * baked into the data itself. */
+	let themeEpoch = $state(0);
 	// A left-edge request is deliberately independent from the primary load
 	// generation. Panning into history must not cancel the bars currently on
 	// screen, and its `prefetch` priority leaves visible work ahead of it.
@@ -342,6 +384,13 @@
 	// still-resolving indicator fetch can be told apart from the current one.
 	const indicatorGeneration = new GenerationGuard();
 	const subPaneGeneration = new GenerationGuard();
+	// The overlay-instrument reconciliation effect's own generation guard —
+	// same reasoning as `indicatorGeneration` just above: a layer
+	// hidden/shown/added/removed begins a new generation here without
+	// touching the indicator effect's guard at all, so a stale, still-
+	// resolving `loadBars` call for a removed overlay instrument can be told
+	// apart from the current one.
+	const overlayInstrumentGeneration = new GenerationGuard();
 	// Set once this component's `onMount` cleanup runs. Both async effects
 	// below (bars, overlay indicators) resolve well after they start, and
 	// `pane-cell.svelte`'s `{#if split.sub.length === 0}`/`{:else}` branch
@@ -423,13 +472,14 @@
 					open: bar.open / 10 ** resolved.priceScale,
 					high: bar.high / 10 ** resolved.priceScale,
 					low: bar.low / 10 ** resolved.priceScale,
-					close: bar.close / 10 ** resolved.priceScale
+					close: bar.close / 10 ** resolved.priceScale,
+					volume: statusVolumeFromDto(bar.volume, resolved.qtyScale)
 				}));
 				const present = new Set(bars.map((bar) => bar.ts_open));
 				const appended = older.filter((bar) => !present.has(bar.ts_open));
 				if (appended.length > 0) {
 					bars = [...appended, ...bars];
-					// The upper bound on this pane's memory (B11a) — trimmed from
+					// The upper bound on this pane's memory — trimmed from
 					// the far side of the window the reader is actually looking
 					// at, so paging into history can never itself evict the page
 					// it just loaded. `retainedHistoryStart`/`MAX_HISTORY_BARS`
@@ -488,6 +538,59 @@
 		};
 	}
 
+	/** Reports the bar whose open is `timeSeconds`, with the close of the one
+	 * before it so the header can state a change. Found by binary search:
+	 * this runs on every crosshair move, over a window that can hold tens of
+	 * thousands of bars. */
+	function reportStatusBarAt(timeSeconds: number): void {
+		if (!onStatusBar) return;
+		const index = indexOfTime(renderedTimes, timeSeconds);
+		if (index < 0) {
+			crosshairActive = false;
+			reportLatestStatusBar();
+			return;
+		}
+		const bar = bars[index];
+		if (!bar) return;
+		onStatusBar({
+			open: bar.open,
+			high: bar.high,
+			low: bar.low,
+			close: bar.close,
+			previousClose: index > 0 ? (bars[index - 1]?.close ?? null) : null,
+			volume: bar.volume
+		});
+	}
+
+	/** Whether the pointer is currently over the plot. While it is, the
+	 * status line describes the bar under it and a live tick must not
+	 * overwrite that with the newest bar. */
+	let crosshairActive = false;
+
+	/** Reports the newest loaded bar — what the status line shows whenever
+	 * the pointer is not over the plot. Its close is the live price when one
+	 * has arrived: the fetched close is a minute old the moment the bar
+	 * starts forming, and a header that shows it while the badge on the same
+	 * chart shows the live one is two prices for one instrument. */
+	function reportLatestStatusBar(): void {
+		if (!onStatusBar || crosshairActive) return;
+		const index = bars.length - 1;
+		const bar = bars[index];
+		if (!bar) {
+			onStatusBar(null);
+			return;
+		}
+		const close = livePrice ?? bar.close;
+		onStatusBar({
+			open: bar.open,
+			high: Math.max(bar.high, close),
+			low: Math.min(bar.low, close),
+			close,
+			previousClose: index > 0 ? (bars[index - 1]?.close ?? null) : null,
+			volume: bar.volume
+		});
+	}
+
 	function themeColors(dark: boolean) {
 		return chartPaneThemeColors(dark);
 	}
@@ -517,13 +620,23 @@
 			},
 			grid: { vertLines: { color: T.grid }, horzLines: { color: T.grid } },
 			rightPriceScale: { borderColor: T.border },
-			timeScale: { borderColor: T.border, rightOffset: 6 },
+			// Colours only. `rightOffset` used to be re-applied here as well, which
+			// meant every theme change threw away where the reader had scrolled to
+			// and snapped the chart back to the newest bar — overriding the pane's
+			// own margin setting on the way past. The settings effect below owns
+			// that value.
+			timeScale: { borderColor: T.border },
 			crosshair: {
 				mode: 0,
 				vertLine: { color: T.cross, width: 1, style: 2, labelBackgroundColor: T.label },
 				horzLine: { color: T.cross, width: 1, style: 2, labelBackgroundColor: T.label }
 			}
 		});
+		// A candle's colour can be baked into its own data point ("colour bars
+		// based on previous close"), and the data effect is what writes that —
+		// so a light/dark switch has to ask it for a repaint, or the previous
+		// palette stays on the bars.
+		themeEpoch += 1;
 		series.applyOptions({
 			upColor: T.up,
 			downColor: T.downFill,
@@ -641,22 +754,17 @@
 		priceBadge.setColors(badgeColors(T));
 
 		chart.subscribeCrosshairMove((param) => {
-			if (onCrosshair && series) {
-				if (!param.point || !param.seriesData) {
-					onCrosshair('');
-				} else {
-					const bar = param.seriesData.get(series) as { open: number; high: number; low: number; close: number } | undefined;
-					if (!bar) {
-						onCrosshair('');
-					} else {
-						const wide = (container?.clientWidth ?? 0) >= 420;
-						onCrosshair(
-							wide
-								? `O ${bar.open.toFixed(4)} H ${bar.high.toFixed(4)} L ${bar.low.toFixed(4)} C ${bar.close.toFixed(4)}`
-								: bar.close.toFixed(4)
-						);
-					}
-				}
+			// The bar under the pointer, reported as numbers for the header to
+			// format. Off the plot, the header falls back to the newest bar
+			// (`reportLatestStatusBar`) rather than emptying — a status line
+			// that blanks whenever the pointer leaves is a line nobody can
+			// read at rest.
+			if (param.point && param.time !== undefined) {
+				crosshairActive = true;
+				reportStatusBarAt(Number(param.time));
+			} else {
+				crosshairActive = false;
+				reportLatestStatusBar();
 			}
 			// Rubber-band preview of a two-anchor tool's second point while the
 			// first is already placed — every tool in `TOOL_ANCHOR_COUNT` with
@@ -718,6 +826,11 @@
 						start: point,
 						text: DEFAULT_TEXT_NOTE_TEXT,
 						anchor: DEFAULT_TEXT_NOTE_ANCHOR,
+						// Recorded at the moment it is drawn, by the pane that knows
+						// what it was drawn on. Reading it back off the pane later
+						// would be reading whatever the pane has been switched to
+						// since, which is a different fact.
+						instrument,
 						...DEFAULT_DRAWING_STYLE
 					});
 				}
@@ -734,7 +847,7 @@
 			}
 			const kind = DRAWING_KIND_FOR_TOOL[tool];
 			if (kind) {
-				onCreateDrawing?.({ kind, start: pendingStart, end: point, ...DEFAULT_DRAWING_STYLE });
+				onCreateDrawing?.({ kind, start: pendingStart, end: point, instrument, ...DEFAULT_DRAWING_STYLE });
 				pendingStart = null;
 				drawingsPrimitive?.setPending(null, null);
 				onToolConsumed?.();
@@ -780,6 +893,7 @@
 			paneRo?.disconnect();
 			mo?.disconnect();
 			overlaySeries.clear();
+			overlayInstrumentSeries.clear();
 			if (onPointerDown) container?.removeEventListener('mousedown', onPointerDown);
 			if (onPointerMove) window.removeEventListener('mousemove', onPointerMove);
 			if (onPointerUp) window.removeEventListener('mouseup', onPointerUp);
@@ -804,7 +918,7 @@
 	});
 
 	// A new instrument/timeframe (or the eraser button bumping `clearToken`,
-	// which persists an empty drawing list — see `clearAllDrawings`) means a
+	// which persists an empty drawing list — see `clearPaneDrawings`) means a
 	// trend line/rectangle mid-draw no longer applies. Kept separate from the
 	// data effect below so replay ticks (which change `replayIdx` on the same
 	// instrument) don't cancel an in-progress drawing every 220ms.
@@ -1048,7 +1162,8 @@
 					open: b.open / 10 ** resolved.priceScale,
 					high: b.high / 10 ** resolved.priceScale,
 					low: b.low / 10 ** resolved.priceScale,
-					close: b.close / 10 ** resolved.priceScale
+					close: b.close / 10 ** resolved.priceScale,
+					volume: statusVolumeFromDto(b.volume, resolved.qtyScale)
 				}));
 				if (bars.length > 0) onLastClose?.(bars[bars.length - 1].close);
 			})
@@ -1061,7 +1176,7 @@
 	// A "go to date" request. Unlike paging left (which extends the loaded
 	// range), a jump can land anywhere and must not fold onto what was
 	// there before — two time-disconnected ranges drawn as one series is
-	// exactly the lie B11a exists to prevent, so `applyHistoryJump` below
+	// two time-disconnected ranges drawn as one series, so `applyHistoryJump` below
 	// replaces the window rather than merging into it.
 	//
 	// `jumpTarget` is the only thing this effect may track, same reasoning
@@ -1103,7 +1218,8 @@
 						open: b.open / 10 ** resolved.priceScale,
 						high: b.high / 10 ** resolved.priceScale,
 						low: b.low / 10 ** resolved.priceScale,
-						close: b.close / 10 ** resolved.priceScale
+						close: b.close / 10 ** resolved.priceScale,
+						volume: statusVolumeFromDto(b.volume, resolved.qtyScale)
 					}));
 					bars = applyHistoryJump(bars, jumped);
 					// A landing before the venue's known left edge is still
@@ -1118,7 +1234,10 @@
 					// A jump is a deliberate change of viewport — unlike paging
 					// left (which preserves it), the reader asked to look
 					// somewhere else, so the frame should actually move there.
-					chart?.timeScale().fitContent();
+					// Cleared rather than framed here: the bars have only just
+					// been assigned, and the data effect frames the window it
+					// actually renders, one step later.
+					framedFor = '';
 				})
 				.catch(() => {
 					// `progress` already carries the error phase/message.
@@ -1276,6 +1395,12 @@
 			.join('|')
 	);
 
+	/** Same reasoning as `overlaySignature` above, for `overlay_instrument`
+	 * layers — `$lib/charts/overlay-instrument.ts`'s own value, so the
+	 * decision of what counts as "changed" lives in one tested place instead
+	 * of being re-derived here by hand. */
+	const instrumentOverlaySignature = $derived(overlayInstrumentSignature(overlayLayers));
+
 	/** The last set reported upward. Reporting is a write into the parent,
 	 * and the parent re-render hands this effect a fresh `overlayLayers`
 	 * array — so an unconditional report re-runs the effect that made it, and
@@ -1367,7 +1492,15 @@
 	export function resetView(): void {
 		if (!chart || !series) return;
 		series.priceScale().applyOptions({ autoScale: true });
-		chart.timeScale().fitContent();
+		// The margin to the right of the newest bar is part of the default view,
+		// and a chart the reader has dragged can be sitting anywhere relative to
+		// it — so it is re-applied here, not only framed below, which is what
+		// keeps it once new bars start auto-scrolling the chart again.
+		const offset = paneSettings.marginRight;
+		if (chart.timeScale().options().rightOffset !== offset) {
+			chart.timeScale().applyOptions({ rightOffset: offset });
+		}
+		frameDefaultView();
 		// Reported, not just applied: the axis shortcut and the menu's tick
 		// both read the stored setting, and a reset that only moved the chart
 		// would leave them describing the state it was in before.
@@ -1398,6 +1531,37 @@
 	 * re-running the effect below must not make every sub-pane re-draw. */
 	let publishedBarTimes = '';
 
+	/** The bar times currently handed to the series, in ascending order. Read
+	 * back on the next update to work out how far the bars moved
+	 * (`logicalRangeShift`) and how many there are to frame. */
+	let renderedTimes: number[] = [];
+	/** Everything the drawn candles depend on. `setData` is not free — it
+	 * re-lays out the whole series — and this effect re-runs whenever the
+	 * pane's settings object is *replaced*, which happens on every layout
+	 * reload even when not one value inside it differs. */
+	let renderedDataKey = '';
+	/** The replay position the series was last drawn at, or `null` outside
+	 * replay. Replay reveals bars by moving the window's *right* edge, which
+	 * the ordinary "hold the reader's frame still" rule would leave off
+	 * screen. */
+	let renderedCut: number | null = null;
+
+	/** Frames the pane on its default view: the most recent bars, with the
+	 * pane's own margin still clear to the right of the newest one.
+	 *
+	 * `timeScale().width()` is the plot's own width — the container minus the
+	 * price axis — so the bar width this computes fills exactly the space
+	 * bars are drawn in. Before the chart has been laid out it reports `0`,
+	 * and `defaultFrame` returns nothing rather than dividing by it. */
+	function frameDefaultView(): void {
+		if (!chart) return;
+		const timeScale = chart.timeScale();
+		const frame = defaultFrame(renderedTimes.length, paneSettings.marginRight, timeScale.width());
+		if (!frame) return;
+		timeScale.applyOptions({ barSpacing: frame.barSpacing });
+		timeScale.scrollToPosition(frame.scrollPosition, false);
+	}
+
 	// Re-set data whenever the resolved bars or the replay position change.
 	$effect(() => {
 		if (!series || !chart) return;
@@ -1408,37 +1572,64 @@
 		const up = pick(cs.bodyUp, T.up);
 		const down = pick(cs.bodyDown, T.downFill);
 		const window = bars.slice(0, cut);
-		// Wrapped because a page of older history renumbers every bar: without
-		// holding the visible *times* across the update, the chart jumps back by
-		// the size of the page the moment it lands. This is the main series; the
-		// sub-pane indicators below were already wrapped, which is why only the
-		// candles lurched.
-		preserveVisibleRange(chart.timeScale(), () => {
-			series?.setData(
-				window.map((b, i) => {
-					const base = {
-						time: Math.floor(b.ts_open / 1_000_000_000) as UTCTimestamp,
-						open: b.open,
-						high: b.high,
-						low: b.low,
-						close: b.close
-					};
-					if (!cs.colorPrevClose) return base;
-					// Against the previous bar's close rather than this bar's own
-					// open — the whole point of the setting.
-					const previous = i > 0 ? window[i - 1].close : b.open;
-					const rising = b.close >= previous;
-					return {
-						...base,
-						color: rising ? up : down,
-						borderColor: rising ? up : down,
-						wickColor: rising ? up : down
-					};
-				})
-			);
-		});
 		const barTimes = window.map((b) => Math.floor(b.ts_open / 1_000_000_000) as UTCTimestamp);
 		const timesKey = `${barTimes.length}|${barTimes[0] ?? ''}|${barTimes[barTimes.length - 1] ?? ''}`;
+		// Everything a drawn candle depends on. Without this guard the series
+		// is re-laid-out on every settings *replacement* — and the pane's
+		// settings object is replaced wholesale on every layout reload, so
+		// creating a drawing or dragging the price axis re-set three hundred
+		// candles that had not changed at all.
+		const dataKey = `${identity}|${timesKey}|${cut}|${themeEpoch}|${cs.colorPrevClose}|${up}|${down}`;
+		if (dataKey !== renderedDataKey) {
+			renderedDataKey = dataKey;
+			// Wrapped because a page of older history renumbers every bar:
+			// without shifting the visible range by as far as they moved, the
+			// chart jumps back by the size of the page the moment it lands. A
+			// window sharing no bar with its predecessor reports no shift at
+			// all, and is framed below instead.
+			preserveVisibleRange(
+				chart.timeScale(),
+				() => {
+					series?.setData(
+						window.map((b, i) => {
+							const base = {
+								time: Math.floor(b.ts_open / 1_000_000_000) as UTCTimestamp,
+								open: b.open,
+								high: b.high,
+								low: b.low,
+								close: b.close
+							};
+							if (!cs.colorPrevClose) return base;
+							// Against the previous bar's close rather than this bar's own
+							// open — the whole point of the setting.
+							const previous = i > 0 ? window[i - 1].close : b.open;
+							const rising = b.close >= previous;
+							return {
+								...base,
+								color: rising ? up : down,
+								borderColor: rising ? up : down,
+								wickColor: rising ? up : down
+							};
+						})
+					);
+				},
+				logicalRangeShift(renderedTimes, barTimes)
+			);
+			renderedTimes = barTimes;
+			// The status line reads the newest bar whenever the pointer is not
+			// over the plot, so a new window has to refresh it — otherwise the
+			// header keeps describing bars the pane no longer shows.
+			reportLatestStatusBar();
+			// Replay moved to a different bar: follow the revealed edge,
+			// keeping the reader's own zoom. Holding the frame completely
+			// still here would be the wrong reading of the same rule that is
+			// right for a page of older history — there the bars the reader is
+			// watching stay put, here the whole point is that the edge moves.
+			if (replayIdx != null && cut !== renderedCut) {
+				chart.timeScale().scrollToPosition(Math.max(0, cs.marginRight), false);
+			}
+			renderedCut = replayIdx == null ? null : cut;
+		}
 		if (timesKey !== publishedBarTimes) {
 			publishedBarTimes = timesKey;
 			onBarTimes?.(barTimes);
@@ -1450,7 +1641,7 @@
 		});
 		if (bars.length === 0 || framedFor === identity) return;
 		framedFor = identity;
-		chart.timeScale().fitContent();
+		frameDefaultView();
 		// The time axis is only half of framing a new series. A stored
 		// `autoScale: false` was applied to this scale while it still had no
 		// bars, which freezes it on an empty chart — the bars then land
@@ -1530,18 +1721,50 @@
 			// not at UTC midnight. Without this the newest candle simply grew
 			// forever: every tick folded into the same fetched bar and a bar
 			// closing never started a new one.
+			//
+			// Computed, not stepped. Advancing one bar at a time held fine
+			// while the pane was always showing "now" and fell apart the
+			// moment it was not: a pane jumped back to a date years ago spun
+			// that loop millions of times on the very first tick to arrive.
 			let bucketOpen = last.ts_open;
+			const nowNanos = Date.now() * 1_000_000;
 			if (nextBarOpenAt != null) {
-				bucketOpen = nextBarOpenAt - stepNanos;
-				const nowNanos = Date.now() * 1_000_000;
-				while (nowNanos >= bucketOpen + stepNanos) bucketOpen += stepNanos;
-				if (bucketOpen + stepNanos !== nextBarOpenAt) {
-					nextBarOpenAt = bucketOpen + stepNanos;
-					// A bar closed. Re-read it from the loader so the candle
-					// left behind is the venue's own, not one assembled from
-					// whatever ticks this client happened to see.
+				const anchor = nextBarOpenAt - stepNanos;
+				const steps = Math.max(0, Math.floor((nowNanos - anchor) / stepNanos));
+				bucketOpen = anchor + steps * stepNanos;
+			}
+
+			// A live tick only belongs on this chart while the pane is
+			// actually showing the live edge. After a jump to an older date it
+			// is not, and folding "now" in anyway appends a candle years past
+			// the loaded window — which stretches the time axis across the
+			// whole gap and leaves the bars the reader asked for squeezed
+			// against the left edge of what then reads as an empty chart.
+			//
+			// A pane that has merely fallen a few bars behind is a different
+			// case with a different answer: ask the loader for the bars it is
+			// missing, once per bar, rather than either drawing over the hole
+			// or going quiet for good.
+			// A boundary older than the newest bar already drawn means the
+			// server's `next_bar_open_at` and the bars it served disagree.
+			// `series.update` refuses a point older than the last one, so
+			// there is nothing to do here but leave the candle alone.
+			if (bucketOpen < last.ts_open) return;
+			if (bucketOpen > last.ts_open + stepNanos) {
+				const missingBars = (bucketOpen - last.ts_open) / stepNanos;
+				if (missingBars <= HISTORY_PAGE_BARS && catchUpRequestedFor !== bucketOpen) {
+					catchUpRequestedFor = bucketOpen;
 					barEpoch += 1;
 				}
+				return;
+			}
+
+			if (nextBarOpenAt != null && bucketOpen + stepNanos !== nextBarOpenAt) {
+				nextBarOpenAt = bucketOpen + stepNanos;
+				// A bar closed. Re-read it from the loader so the candle
+				// left behind is the venue's own, not one assembled from
+				// whatever ticks this client happened to see.
+				barEpoch += 1;
 			}
 
 			if (liveCandle == null || liveCandle.ts_open !== bucketOpen) {
@@ -1574,6 +1797,10 @@
 				close: liveCandle.close
 			});
 			onLastClose?.(price);
+			// The header reads the newest bar while the pointer is away, so a
+			// tick has to reach it too — otherwise the status line sits on the
+			// last *fetched* close while the badge beside it moves.
+			reportLatestStatusBar();
 		});
 	});
 
@@ -1764,6 +1991,91 @@
 			});
 	});
 
+	// A second instrument overlaid on this pane (`addInstrumentOverlay` ->
+	// an `overlay_instrument` layer): one line series per such layer, drawn
+	// from that instrument's own bars over the pane's currently loaded range
+	// — never the mock candle series, and never the main instrument's price
+	// scale (an overlay instrument's prices are unrelated to the main one's;
+	// see `overlayInstrumentCloseSeries`'s own doc). Reconciled the same way
+	// as the indicator-overlay effect just above: a `GenerationGuard` so two
+	// rapid adds/removes cannot race over the shared series map, a
+	// `destroyed` check before touching `chart`/`series` in the `.then()`,
+	// and a hidden layer keeping its series (just flipped `visible: false`)
+	// rather than being torn down and rebuilt.
+	$effect(() => {
+		if (!chart || bars.length === 0) return;
+		const currentSpec = spec;
+		// Tracked by value; `overlayLayers` itself is read untracked below —
+		// same reasoning as `overlaySignature`/`signature` just above.
+		const signature = instrumentOverlaySignature;
+		const token = overlayInstrumentGeneration.begin();
+		const plan = untrack(() => planOverlayInstrumentSeries(overlayLayers));
+		const range = loadedRange;
+		if (!range) return;
+		const { from, to } = range;
+		void signature;
+
+		Promise.all(
+			plan.map(async (item) => {
+				const resolved = await loadBars(item.instrument, currentSpec, from, to, undefined, () => !destroyed);
+				return { item, resolved };
+			})
+		)
+			.then((results) => {
+				if (destroyed || !chart || !overlayInstrumentGeneration.isCurrent(token)) return;
+				for (const { item, resolved } of results) {
+					// The overlay instrument's *own* price scale, from its *own*
+					// `loadBars` response — never `priceScale` (the main pane's
+					// state variable), which is what `overlayInstrumentCloseSeries`
+					// exists to make impossible to mix up by accident.
+					const points = overlayInstrumentCloseSeries(resolved.bars, resolved.priceScale);
+					let handle = overlayInstrumentSeries.get(item.layerId);
+					if (!handle) {
+						handle = chart!.addSeries(LineSeries, {
+							priceScaleId: item.priceScaleId,
+							priceLineVisible: false,
+							lastValueVisible: false
+						});
+						overlayInstrumentSeries.set(item.layerId, handle);
+						// A dedicated, unlabelled scale per overlay instrument: it
+						// exists only so this series autoscales independently of the
+						// candles (see `overlayInstrumentPriceScaleId`'s doc) and must
+						// never surface as a second visible axis.
+						chart!.priceScale(item.priceScaleId).applyOptions({ visible: false });
+					}
+					const [plot] = plotsForLayer(item.layerId, OVERLAY_INSTRUMENT_PLOT);
+					if (plot) {
+						handle.applyOptions({
+							color: plot.color,
+							lineWidth: plot.width as 1 | 2 | 3 | 4,
+							lineStyle: LINE_STYLE_MAP[plot.style],
+							visible: item.visible && plot.visible
+						});
+					}
+					// Deliberately not wrapped in `preserveVisibleRange` — same as
+					// the indicator-overlay effect above: an added overlay series
+					// must not move the reader's own viewport.
+					handle.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+				}
+				for (const key of overlaySeriesKeysToRemove(plan, overlayInstrumentSeries.keys())) {
+					const handle = overlayInstrumentSeries.get(key);
+					if (handle) {
+						try {
+							chart!.removeSeries(handle);
+						} catch {
+							// chart already torn down
+						}
+					}
+					overlayInstrumentSeries.delete(key);
+				}
+			})
+			.catch(() => {
+				// A failed overlay-instrument fetch should not take the
+				// candlesticks down with it; the layer simply shows nothing
+				// until it succeeds.
+			});
+	});
+
 	/** Every overlay/sub-pane layer currently plotting an indicator,
 	 * combined — one live indicator session per layer. As a joined string
 	 * rather than the raw arrays, for the same reason `overlaySignature`
@@ -1934,9 +2246,16 @@
 	// Reported to the pane header rather than drawn over the chart: this is
 	// a standing fact about the pane, not a passing event, and the chart's
 	// top-left corner already belongs to the layer chips.
-	const liveOverlayMessage = $derived(overlayMessage(liveState));
+	/** The header's live-state chip: its short label and the sentence behind
+	 * it. `null` while the venue streams — the common case must not put a
+	 * permanent badge in the header. */
+	const liveChip = $derived.by(() => {
+		const label = liveChipLabel(liveState);
+		const message = overlayMessage(liveState);
+		return label && message ? { label, message } : null;
+	});
 	$effect(() => {
-		onLiveNotice?.(liveOverlayMessage);
+		onLiveNotice?.(liveChip);
 	});
 
 	// One source for "this pane is fetching bars": the load progress the pane

@@ -22,16 +22,37 @@ import { defaultChartSettings, type ChartSettings } from '$lib/mock/chart-settin
  * than throwing or handing back a partially-`undefined` object. */
 export function parsePaneSettings(json: string): ChartSettings {
 	const base = defaultChartSettings();
+	let parsed: unknown;
 	try {
-		const parsed: unknown = JSON.parse(json);
-		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-			return { ...base, ...(parsed as Partial<ChartSettings>) };
-		}
+		parsed = JSON.parse(json);
 	} catch {
 		// Malformed settings text — the pane's chart still renders with
 		// every default rather than being lost along with the bad value.
+		return base;
 	}
-	return base;
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return base;
+	const stored = parsed as Record<string, unknown>;
+	const merged: Record<string, unknown> = { ...base };
+	// Field by field, and only the fields this build has. A blanket spread
+	// took the stored text at its word twice over: a key this build no
+	// longer has (a setting that was removed because nothing read it) rode
+	// along in the object and was written straight back out on the next
+	// save, and a value of the wrong type — `marginRight: "6"`, a boolean
+	// where a colour belongs — reached the chart as-is. Neither is
+	// hypothetical for text that has been through older builds of this app.
+	for (const key of Object.keys(base)) {
+		const value = stored[key];
+		if (value === undefined) continue;
+		const expected = merged[key];
+		if (Array.isArray(expected)) {
+			if (Array.isArray(value) && value.every((entry) => typeof entry === 'number')) {
+				merged[key] = value;
+			}
+			continue;
+		}
+		if (typeof value === typeof expected) merged[key] = value;
+	}
+	return merged as unknown as ChartSettings;
 }
 
 /** The inverse of `parsePaneSettings` — plain `JSON.stringify`, kept as its

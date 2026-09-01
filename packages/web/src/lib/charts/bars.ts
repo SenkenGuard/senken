@@ -3,7 +3,7 @@
 // or anywhere downstream of this module.
 //
 // `plan()` runs before `ensure()` whenever a range is not already covered
-// (the brief): `onProgress` reports the plan's
+// `onProgress` reports the plan's
 // `missing`/`estimate_secs` immediately, so a caller can render "fetching
 // ~12s of history" instead of a chart that just sits blank while a job
 // runs. `ensure()`'s job is then polled until `"done"` (or a safety

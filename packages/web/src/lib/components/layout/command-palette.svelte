@@ -117,8 +117,14 @@
 				{#each rows as r (r.title + r.sub)}
 					<Command.Item
 						value={r.title + ' ' + r.sub}
-						onSelect={r.onPick}
-						class="flex cursor-pointer items-center gap-3 rounded-none border-b border-ink/5 px-[15px] py-[11px] data-selected:bg-ink/7"
+						disabled={r.disabled}
+						onSelect={() => {
+							if (!r.disabled) r.onPick();
+						}}
+						class={cn(
+							'flex items-center gap-3 rounded-none border-b border-ink/5 px-[15px] py-[11px] data-selected:bg-ink/7',
+							r.disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'
+						)}
 					>
 						<r.icon class="size-[15px] flex-none text-dim2" />
 						<div class="flex min-w-0 flex-1 flex-col gap-0.5">

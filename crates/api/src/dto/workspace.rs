@@ -25,6 +25,10 @@ pub(crate) struct WorkspaceDto {
     pub created_at: i64,
     /// Unix timestamp of the last change to the workspace's own fields.
     pub updated_at: i64,
+    /// Display settings for the workspace as a whole, as opaque JSON-object
+    /// text. The server stores and returns it without interpreting it; the
+    /// chart front end owns what these settings mean.
+    pub settings: String,
 }
 
 impl From<ChartWorkspaceSummary> for WorkspaceDto {
@@ -35,6 +39,7 @@ impl From<ChartWorkspaceSummary> for WorkspaceDto {
             name: summary.name,
             created_at: summary.created_at,
             updated_at: summary.updated_at,
+            settings: summary.settings,
         }
     }
 }
@@ -60,6 +65,16 @@ pub(crate) struct CreateWorkspaceRequest {
 pub(crate) struct RenameWorkspaceRequest {
     /// The workspace's new display name.
     pub name: String,
+}
+
+/// `PATCH /api/workspaces/{id}/settings` request body. `settings` is opaque
+/// JSON-object text, validated only as "is a JSON object" — the same
+/// contract `senken_chart::ChartWorkspaceStore::update_workspace_settings`
+/// documents for itself; this crate does not interpret it beyond that.
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct UpdateWorkspaceSettingsRequest {
+    /// The workspace's new display settings, as JSON-object text.
+    pub settings: String,
 }
 
 /// `GET /api/workspaces/default` response body ("default-on- first-open belongs on the server, not in the client, so it holds for any client that ever connects").
@@ -419,6 +434,14 @@ pub(crate) struct DrawingDto {
     pub width: u8,
     /// The drawing's line style.
     pub line_style: DrawingLineStyleDto,
+    /// The instrument this drawing was drawn against, `source:symbol`.
+    ///
+    /// A drawing's anchors are prices and instants on one particular
+    /// market, so a client shows a pane only the drawings belonging to
+    /// whatever instrument that pane is currently displaying. `null` for a
+    /// drawing stored before this field existed — its instrument is
+    /// genuinely unknown, not a default.
+    pub instrument: Option<String>,
 }
 
 impl DrawingDto {
@@ -430,7 +453,7 @@ impl DrawingDto {
     /// rather than making this conversion — and therefore `GET
     /// /api/layouts/{id}` — fallible over one corrupt row.
     fn from_item(item: &PaneItemRecord, position: u32) -> Option<Self> {
-        let ItemSource::Anchored { kind } = &item.source else {
+        let ItemSource::Anchored { kind, instrument } = &item.source else {
             return None;
         };
         let style = DrawingStyle::from_json(&item.style).unwrap_or_else(|error| {
@@ -453,6 +476,7 @@ impl DrawingDto {
             color: style.color,
             width: style.width,
             line_style: style.line_style.into(),
+            instrument: instrument.as_ref().map(|id| id.as_str().to_owned()),
         })
     }
 }
@@ -475,6 +499,13 @@ pub(crate) struct DrawingInputDto {
     pub width: u8,
     /// The drawing's line style.
     pub line_style: DrawingLineStyleDto,
+    /// The instrument this drawing was drawn against, `source:symbol`.
+    /// Omitted means "belongs to no instrument in particular", which is
+    /// what a request from before this field existed carries — the server
+    /// does not invent one from the pane's own instrument, because a
+    /// client that never sent it never made that claim.
+    #[serde(default)]
+    pub instrument: Option<String>,
 }
 
 /// One pane, as read back from a layout.

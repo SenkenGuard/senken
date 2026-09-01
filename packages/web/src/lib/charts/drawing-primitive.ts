@@ -106,7 +106,7 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
 	 * draggable. Empty today: `POST /api/indicators/compute`'s response
 	 * carries only `series` drawables until `crates/api/src/dto/indicators.rs`
 	 * widens `IndicatorDrawableDto` to the rest of `senken_indicators::Drawable`
-	 * (see this track's report). The field and `setIndicatorObjects` exist
+	 * The field and `setIndicatorObjects` exist
 	 * now so wiring that response through costs one call site, not a second
 	 * renderer. */
 	private indicatorObjects: ObjectDrawable[] = [];
@@ -176,9 +176,17 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
 	 * `ObjectDrawable` shape (`drawablesFromDrawingRuntime`) — the only place
 	 * a `DrawingRuntime` is read at all past this call. `flatMap`, not `map`:
 	 * a `fib_retracement` drawing fans out to six `Level`s (see that
-	 * function's own doc); every other kind still contributes exactly one. */
+	 * function's own doc); every other kind still contributes exactly one.
+	 *
+	 * A drawing whose `visible` is `false` is dropped here rather than
+	 * carried through and hidden at paint time — the object tree's eye
+	 * toggle must mean the object is actually gone from the canvas (and from
+	 * hit-testing/dragging), not merely invisible while still clickable.
+	 * `drawings`' own order is kept as given: the caller passes them in
+	 * `position` order, and later entries are painted, and hit-tested, on
+	 * top of earlier ones (see `hitTestDetailed`'s reverse walk). */
 	setDrawings(drawings: DrawingRuntime[]): void {
-		this.persisted = drawings.flatMap(drawablesFromDrawingRuntime);
+		this.persisted = drawings.filter((d) => d.visible).flatMap(drawablesFromDrawingRuntime);
 		this.requestUpdate?.();
 	}
 

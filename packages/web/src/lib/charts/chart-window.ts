@@ -72,7 +72,7 @@ export function historyWindowAround(target: number, barWidth: number): HistoryWi
 }
 
 /** The window a date-jump control actually requests, honest about the three
- * ways a jump can land relative to what the venue has (B11a):
+ * ways a jump can land relative to what the venue has:
  *
  * - Past the newest bar: there is nothing to centre on, so this resolves to
  *   the same trailing window the pane opens with — the reader lands where
@@ -134,34 +134,147 @@ export function historyIsFull(loadedBars: number): boolean {
 	return loadedBars >= MAX_HISTORY_BARS;
 }
 
+/** How far every logical index moved when a pane's bar array was replaced.
+ *
+ * Prepending a page of history renumbers every bar: the one that was logical
+ * 0 becomes logical 300. Putting the same logical numbers back after such an
+ * update therefore leaves the viewport pointing at three hundred different
+ * bars, and the chart lurches backwards the instant a page lands.
+ *
+ * Anchored on the first bar the previous window held, falling back to its
+ * last — a page prepended in front of it moves the first anchor, a bar
+ * appended after it moves neither, and only a window that shares no bar at
+ * all with its predecessor (a date jump, a new instrument) has no anchor,
+ * which is reported as `null`: there is nothing to hold still, and the
+ * caller should frame the new window instead of pretending to preserve
+ * something.
+ *
+ * Both arrays are the pane's own bar times in ascending order, so the anchor
+ * is found by binary search rather than a scan — this runs on every re-set of
+ * the series, against a window that may hold tens of thousands of bars.
+ *
+ * One limit, stated rather than hidden: the chart numbers the *union* of
+ * every series' time points, so on a pane carrying an overlay instrument
+ * whose bars do not line up with the main one's, a prepended page can move
+ * the union by more than it moves this series. The frame then drifts by that
+ * difference — bounded by the overlay's own missing bars, and only while
+ * paging, where it used to lurch by a whole page. */
+export function logicalRangeShift(
+	previous: readonly number[],
+	next: readonly number[]
+): number | null {
+	if (previous.length === 0 || next.length === 0) return null;
+	const firstIndex = indexOfTime(next, previous[0]);
+	if (firstIndex >= 0) return firstIndex;
+	const lastIndex = indexOfTime(next, previous[previous.length - 1]);
+	if (lastIndex >= 0) return lastIndex - (previous.length - 1);
+	return null;
+}
+
+/** The index of `time` in an ascending array of bar times, or `-1`.
+ *
+ * Exported because the pane needs the same answer on every crosshair move —
+ * to find the bar under the pointer, and the one before it, in a window that
+ * may hold tens of thousands of bars. A scan there is a scan per mouse
+ * move. */
+export function indexOfTime(times: readonly number[], time: number): number {
+	let low = 0;
+	let high = times.length - 1;
+	while (low <= high) {
+		const mid = Math.floor((low + high) / 2);
+		const value = times[mid];
+		if (value === time) return mid;
+		if (value < time) low = mid + 1;
+		else high = mid - 1;
+	}
+	return -1;
+}
+
 /** Runs a structural renderer update without moving what the reader is
  * looking at.
  *
- * Restores the visible range **by time**, not by logical index, and the
- * difference is the whole point. Prepending a page of history renumbers every
- * bar: the bar that was logical 0 becomes logical 300. Capturing and putting
- * back the same logical numbers therefore leaves the viewport pointing at
- * three hundred different bars — the chart lurches backwards the instant a
- * page lands, which is exactly what paging felt like. A time range means the
- * same instants before and after, so the bars under the reader's eyes stay
- * under them.
+ * The viewport is captured and restored as a **logical** range, shifted by
+ * however far the update renumbered the bars (`logicalRangeShift`).
  *
- * Falls back to the logical range only when the series has no time range yet
- * (an empty chart), where there is nothing to hold still anyway. */
-export function preserveVisibleRange<T>(
+ * Restoring a *time* range instead — which is what this used to do — looks
+ * equivalent and is not. `getVisibleRange()` reports only the part of the
+ * viewport that actually has bars in it: the empty margin a reader keeps to
+ * the right of the newest bar is not in it, and neither is any blank space
+ * at the left. Putting that clipped range back stretches the bars it does
+ * cover across the whole pane, so every re-set of the series zooms in by
+ * exactly the margin it dropped and pulls the newest bar flush against the
+ * price scale. Repeat that often enough — and a chart re-sets its series on
+ * every reload, settings write and replay step — and the pane ends up zoomed
+ * into a handful of bars for no reason the reader can see. Worse, when the
+ * update *shortens* the series, both ends of the captured time range clamp
+ * onto the same last bar, and a viewport of zero width is what leaves a pane
+ * apparently blank with one candle stranded at its edge.
+ *
+ * A logical range has none of that: it is measured in bars, blank space
+ * included, so the zoom level and both margins survive exactly.
+ *
+ * `shift` of `null` means "do not restore" — the caller is replacing the
+ * window outright and will frame it itself. */
+export function preserveVisibleRange(
 	timeScale: {
-		getVisibleRange(): { from: T; to: T } | null;
-		setVisibleRange(range: { from: T; to: T }): void;
 		getVisibleLogicalRange(): LogicalRange | null;
 		setVisibleLogicalRange(range: LogicalRange): void;
 	},
-	update: () => void
+	update: () => void,
+	shift: number | null = 0
 ): void {
-	const times = timeScale.getVisibleRange();
-	const logical = times ? null : timeScale.getVisibleLogicalRange();
+	const logical = shift === null ? null : timeScale.getVisibleLogicalRange();
 	update();
-	if (times) timeScale.setVisibleRange(times);
-	else if (logical) timeScale.setVisibleLogicalRange(logical);
+	if (logical === null) return;
+	const moved = shift ?? 0;
+	timeScale.setVisibleLogicalRange(
+		moved === 0
+			? logical
+			: ({ from: logical.from + moved, to: logical.to + moved } as unknown as LogicalRange)
+	);
+}
+
+/** How a pane's default view is expressed to the chart: how wide one bar is
+ * drawn, and how far the right edge sits past the newest bar. */
+export interface DefaultFrame {
+	/** Pixels per bar. */
+	barSpacing: number;
+	/** Bars of empty space kept between the newest bar and the right edge. */
+	scrollPosition: number;
+}
+
+/** The frame a pane opens on, and the one "reset chart view" returns to: the
+ * most recent `visibleBars` bars, with `rightOffset` bars of empty space
+ * still kept clear to the right of the newest one.
+ *
+ * Deliberately not `fitContent()`, which is two wrong answers at once. It
+ * pulls the newest bar hard against the price scale, leaving the live candle
+ * nowhere to move into and no room to read the last-price badge — every
+ * charting tool leaves that margin, and a reader who resets the view expects
+ * to get it back, not to lose it. And it fits *everything loaded*: once a
+ * reader has paged history in, "reset" would frame tens of thousands of bars
+ * at a spacing nothing can be read at. A fixed recent window is the same
+ * answer whether the pane holds one page or thirty.
+ *
+ * Expressed as a bar width plus a scroll position rather than a pair of
+ * logical indices, because a logical index is not a property of one series:
+ * the chart numbers the *union* of every series' time points, so a pane
+ * carrying an overlay instrument whose bars do not line up exactly with the
+ * main one's — a thin market missing minutes a liquid one has — numbers its
+ * bars differently from how many bars the pane holds. A scroll position is
+ * measured from the newest bar itself and cannot drift that way.
+ *
+ * `null` when there is nothing to frame. */
+export function defaultFrame(
+	barCount: number,
+	rightOffset: number,
+	plotWidthPx: number,
+	visibleBars: number = HISTORY_PAGE_BARS
+): DefaultFrame | null {
+	if (barCount <= 0 || plotWidthPx <= 0) return null;
+	const span = Math.max(1, Math.min(visibleBars, barCount));
+	const offset = Math.max(0, rightOffset);
+	return { barSpacing: plotWidthPx / (span + offset), scrollPosition: offset };
 }
 
 /** The range every indicator path must cover: exactly the bars a pane is

@@ -68,7 +68,19 @@
 	/** Mirrors `crates/acl/src/action.rs::Action` exactly. */
 	const ACTIONS = ['View', 'Create', 'Edit', 'Delete', 'Share'] as const;
 	/** Mirrors `crates/acl/src/resource.rs::Resource` exactly. */
-	const RESOURCES = ['ChartWorkspace', 'ChartLayout', 'Alert', 'Strategy', 'Account', 'Adapter', 'User', 'Role'] as const;
+	const RESOURCES = [
+		'ChartWorkspace',
+		'ChartLayout',
+		'Alert',
+		'Strategy',
+		'Account',
+		'Adapter',
+		'User',
+		'Role',
+		'Indicator',
+		'Watchlist',
+		'Note'
+	] as const;
 	/** Mirrors `crates/acl/src/scope.rs::Scope` exactly. */
 	const SCOPES = ['Own', 'All'] as const;
 

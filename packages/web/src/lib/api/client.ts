@@ -39,7 +39,15 @@ import type {
 	ComputeIndicatorRequest,
 	ComputeIndicatorResponse,
 	InstrumentsPage,
-	SourcesResponse
+	SourcesResponse,
+	WatchlistGroupsPage,
+	CreateWatchlistGroupRequest,
+	WatchlistMemberDto,
+	AddWatchlistMemberRequest,
+	NotesPage,
+	NoteDto,
+	CreateNoteRequest,
+	UpdateNoteRequest
 } from './types';
 
 export type SessionExpiredHandler = () => void;
@@ -367,6 +375,16 @@ class ApiClient {
 		await this.request<void>(`/api/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
 	}
 
+	/** `PATCH /api/workspaces/{id}/settings`. `settings` is opaque JSON-object
+	 * text this client never interprets — the server validates only that it
+	 * parses as a JSON object. */
+	async updateWorkspaceSettings(id: string, settings: string): Promise<void> {
+		await this.request<void>(`/api/workspaces/${encodeURIComponent(id)}/settings`, {
+			method: 'PATCH',
+			body: JSON.stringify({ settings })
+		});
+	}
+
 	/** `GET /api/workspaces/{id}/layouts`. */
 	async listLayouts(workspaceId: string): Promise<LayoutSummaryDto[]> {
 		return this.request<LayoutSummaryDto[]>(`/api/workspaces/${encodeURIComponent(workspaceId)}/layouts`);
@@ -477,6 +495,105 @@ class ApiClient {
 			method: 'POST',
 			body: JSON.stringify(body)
 		});
+	}
+
+	// ------------------------------------------------------------------
+	// Watchlists: a user-owned group of watched instruments and its
+	// membership. `senken_watchlist::WatchlistStore` performs its own
+	// per-account scoping the same way `listWorkspaces`/`listAlerts` do.
+	// ------------------------------------------------------------------
+
+	/** `GET /api/watchlists`. */
+	async listWatchlistGroups(limit: number, offset: number): Promise<WatchlistGroupsPage> {
+		return this.request<WatchlistGroupsPage>(`/api/watchlists?limit=${limit}&offset=${offset}`);
+	}
+
+	/** `POST /api/watchlists`. */
+	async createWatchlistGroup(body: CreateWatchlistGroupRequest): Promise<IdResponse> {
+		return this.request<IdResponse>('/api/watchlists', { method: 'POST', body: JSON.stringify(body) });
+	}
+
+	/** `PATCH /api/watchlists/{id}`. */
+	async renameWatchlistGroup(id: string, name: string): Promise<void> {
+		await this.request<void>(`/api/watchlists/${encodeURIComponent(id)}`, {
+			method: 'PATCH',
+			body: JSON.stringify({ name })
+		});
+	}
+
+	/** `DELETE /api/watchlists/{id}`. */
+	async deleteWatchlistGroup(id: string): Promise<void> {
+		await this.request<void>(`/api/watchlists/${encodeURIComponent(id)}`, { method: 'DELETE' });
+	}
+
+	/** `POST /api/watchlists/reorder`: `ids[0]` becomes the first group,
+	 * `ids[1]` the second, and so on. */
+	async reorderWatchlistGroups(ids: string[]): Promise<void> {
+		await this.request<void>('/api/watchlists/reorder', { method: 'POST', body: JSON.stringify({ ids }) });
+	}
+
+	/** `GET /api/watchlists/{id}/members`. */
+	async listWatchlistMembers(groupId: string): Promise<WatchlistMemberDto[]> {
+		return this.request<WatchlistMemberDto[]>(`/api/watchlists/${encodeURIComponent(groupId)}/members`);
+	}
+
+	/** `POST /api/watchlists/{id}/members`. Adding an instrument the group
+	 * already holds is idempotent server-side — this always resolves with
+	 * that member's id, never a conflict. */
+	async addWatchlistMember(groupId: string, body: AddWatchlistMemberRequest): Promise<IdResponse> {
+		return this.request<IdResponse>(`/api/watchlists/${encodeURIComponent(groupId)}/members`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `DELETE /api/watchlist-members/{id}` — a member's own id already
+	 * uniquely identifies it, so this is not nested under its group's path. */
+	async removeWatchlistMember(memberId: string): Promise<void> {
+		await this.request<void>(`/api/watchlist-members/${encodeURIComponent(memberId)}`, { method: 'DELETE' });
+	}
+
+	/** `POST /api/watchlists/{id}/members/reorder`. */
+	async reorderWatchlistMembers(groupId: string, ids: string[]): Promise<void> {
+		await this.request<void>(`/api/watchlists/${encodeURIComponent(groupId)}/members/reorder`, {
+			method: 'POST',
+			body: JSON.stringify({ ids })
+		});
+	}
+
+	// ------------------------------------------------------------------
+	// Notes: a user-owned freeform note. `senken_notes::NoteStore`
+	// performs its own per-account scoping the same way the stores above
+	// do. `listNotes` never carries a note's body (`NoteSummaryDto`) — only
+	// `getNote` (`NoteDto`) does.
+	// ------------------------------------------------------------------
+
+	/** `GET /api/notes`. */
+	async listNotes(limit: number, offset: number): Promise<NotesPage> {
+		return this.request<NotesPage>(`/api/notes?limit=${limit}&offset=${offset}`);
+	}
+
+	/** `POST /api/notes`. */
+	async createNote(body: CreateNoteRequest): Promise<IdResponse> {
+		return this.request<IdResponse>('/api/notes', { method: 'POST', body: JSON.stringify(body) });
+	}
+
+	/** `GET /api/notes/{id}`: the full note, body included. */
+	async getNote(id: string): Promise<NoteDto> {
+		return this.request<NoteDto>(`/api/notes/${encodeURIComponent(id)}`);
+	}
+
+	/** `PUT /api/notes/{id}`: replaces both title and body. */
+	async updateNote(id: string, body: UpdateNoteRequest): Promise<void> {
+		await this.request<void>(`/api/notes/${encodeURIComponent(id)}`, {
+			method: 'PUT',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `DELETE /api/notes/{id}`. */
+	async deleteNote(id: string): Promise<void> {
+		await this.request<void>(`/api/notes/${encodeURIComponent(id)}`, { method: 'DELETE' });
 	}
 
 	/**

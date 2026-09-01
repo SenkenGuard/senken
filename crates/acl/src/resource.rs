@@ -37,6 +37,13 @@ pub enum Resource {
     Role,
     /// An indicator definition or instance.
     Indicator,
+    /// A user-authored group of watched instruments, and its membership —
+    /// a saved artifact like a chart workspace, so it takes the same
+    /// ordinary scope-limited grants rather than a special rule of its
+    /// own.
+    Watchlist,
+    /// A user-authored freeform note.
+    Note,
 }
 
 #[cfg(test)]

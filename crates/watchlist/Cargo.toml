@@ -1,0 +1,35 @@
+[package]
+name = "senken-watchlist"
+description = "Watchlist persistence for Senken: user-owned groups of watched instruments, as SQLite records sharing senken-identity's accounts database rather than a second one"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+senken-acl = { workspace = true }
+senken-identity = { workspace = true }
+# Only `InstrumentId` is needed (a watched instrument, reused rather than
+# re-declared — the same reasoning `senken-chart` documents for its own
+# pane instruments). This crate would rather take it with
+# `default-features = false` for the same reason `senken-chart` would, but
+# a workspace member cannot override features on an inherited workspace
+# dependency — see that crate's own `Cargo.toml` comment, verified there by
+# trying it.
+senken-marketdata = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

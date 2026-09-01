@@ -20,9 +20,16 @@ import { LAYOUTS, type LayoutId } from '$lib/components/terminal/chart-config';
 import { clearLayerStyle } from './layer-style';
 import { defaultChartSettings, type ChartSettings } from '$lib/mock/chart-settings';
 import {
+	defaultWorkspaceSettings,
+	parseWorkspaceSettings,
+	workspaceSettingsToJson,
+	type ChartWorkspaceSettings
+} from './workspace-settings';
+import {
 	paneFromDto,
 	drawingToInput,
 	layerToInput,
+	swapById,
 	toReplaceLayoutRequest,
 	type DrawingRuntime,
 	type LayerRuntime,
@@ -34,8 +41,8 @@ import {
 // but a client-side convenience so "reopen the app" lands back on the tab
 // the user left rather than always resetting to `GET
 // /api/workspaces/default`'s one fixed answer. `senken_workspace` has no
-// field for "this account's last-selected workspace" and B1 does not ask
-// for one, so this follows the same convention `$lib/api/servers.svelte.ts`
+// field for "this account's last-selected workspace", so this follows the
+// same convention `$lib/api/servers.svelte.ts`
 // already uses for "which server is active" — `localStorage`, guarded
 // against being unavailable, never treated as a source of truth for
 // anything the server itself owns.
@@ -74,6 +81,12 @@ export interface LoadedLayout {
 class ChartWorkspaceStore {
 	workspaces = $state<WorkspaceDto[]>([]);
 	activeWorkspaceId = $state<string | null>(null);
+	/** The active workspace's own `settings` text, already parsed — which
+	 * watchlist groups and notes its WATCHLIST/NOTES panels show. Kept in
+	 * step with `activeWorkspaceId`/`workspaces` by `syncActiveWorkspaceSettings`
+	 * rather than re-parsed by every reader, the same reason `layout` itself
+	 * is held pre-shaped instead of derived from a raw DTO on each read. */
+	workspaceSettings = $state<ChartWorkspaceSettings>(defaultWorkspaceSettings());
 	layout = $state<LoadedLayout | null>(null);
 	/** True only while the very first load (workspace list + default
 	 * workspace/layout) is in flight — individual mutations set
@@ -97,6 +110,21 @@ function presetOf(raw: string): LayoutId {
 async function refreshWorkspaceList(): Promise<void> {
 	const page = await apiClient.listWorkspaces(200, 0);
 	chartWorkspaceStore.workspaces = page.rows;
+}
+
+/** Re-derives `workspaceSettings` from whichever `WorkspaceDto` in
+ * `workspaces` matches the current `activeWorkspaceId` — called every time
+ * either one changes, so a reader of `workspaceSettings` never has to guess
+ * whether it still matches the workspace actually on screen. No workspace
+ * resolves (nothing loaded yet, or the id was just cleared) falls back to
+ * `defaultWorkspaceSettings()`, same as an unconfigured workspace's own
+ * `"{}"` would. */
+function syncActiveWorkspaceSettings(): void {
+	const id = chartWorkspaceStore.activeWorkspaceId;
+	const workspace = id ? chartWorkspaceStore.workspaces.find((w) => w.id === id) : undefined;
+	chartWorkspaceStore.workspaceSettings = workspace
+		? parseWorkspaceSettings(workspace.settings)
+		: defaultWorkspaceSettings();
 }
 
 async function firstLayoutId(workspaceId: string): Promise<string> {
@@ -129,6 +157,7 @@ export async function selectWorkspace(workspaceId: string, layoutId?: string): P
 		await loadLayoutInto(workspaceId, resolvedLayoutId);
 		chartWorkspaceStore.activeWorkspaceId = workspaceId;
 		rememberWorkspaceId(workspaceId);
+		syncActiveWorkspaceSettings();
 	} catch (error) {
 		chartWorkspaceStore.error = getErrorMessage(error, 'Could not open that workspace.');
 	}
@@ -156,6 +185,7 @@ export async function initChartWorkspaces(): Promise<void> {
 		if (target === def.workspace_id) {
 			await loadLayoutInto(def.workspace_id, def.layout_id);
 			chartWorkspaceStore.activeWorkspaceId = def.workspace_id;
+			syncActiveWorkspaceSettings();
 		} else {
 			await selectWorkspace(target);
 		}
@@ -206,6 +236,7 @@ export async function deleteWorkspace(workspaceId: string): Promise<void> {
 			await loadLayoutInto(def.workspace_id, def.layout_id);
 			chartWorkspaceStore.activeWorkspaceId = def.workspace_id;
 			rememberWorkspaceId(def.workspace_id);
+			syncActiveWorkspaceSettings();
 		}
 	} catch (error) {
 		chartWorkspaceStore.error = getErrorMessage(error, 'Could not delete that workspace.');
@@ -339,8 +370,7 @@ export async function setLayoutPreset(preset: LayoutId): Promise<void> {
 	await persistAndReload();
 }
 
-/** Changes one pane's main instrument (the acceptance point 5:
- * "change instrument ... persisted per user"). */
+/** Changes one pane's main instrument, persisted per user. */
 export async function setPaneInstrument(paneIndex: number, instrument: string): Promise<void> {
 	const layout = chartWorkspaceStore.layout;
 	if (!layout || !layout.panes[paneIndex]) return;
@@ -350,11 +380,31 @@ export async function setPaneInstrument(paneIndex: number, instrument: string): 
 }
 
 /** Changes every pane's timeframe at once — the toolbar's timeframe strip
- * applies to the whole layout, matching the former mock UI's `pickTf`. */
+ * applies to the whole layout, matching the former mock UI's `pickTf`. Used
+ * when the layout menu's INTERVAL sync toggle is on. */
 export async function setAllPanesTimeframe(timeframe: string): Promise<void> {
 	const layout = chartWorkspaceStore.layout;
 	if (!layout) return;
 	chartWorkspaceStore.layout = { ...layout, panes: layout.panes.map((p) => ({ ...p, timeframe })) };
+	await persistAndReload();
+}
+
+/** Changes one pane's timeframe only — the layout menu's INTERVAL sync
+ * toggle, off. Mirrors `setPaneInstrument`'s single-pane shape. */
+export async function setPaneTimeframe(paneIndex: number, timeframe: string): Promise<void> {
+	const layout = chartWorkspaceStore.layout;
+	if (!layout || !layout.panes[paneIndex]) return;
+	const panes = layout.panes.map((p, i) => (i === paneIndex ? { ...p, timeframe } : p));
+	chartWorkspaceStore.layout = { ...layout, panes };
+	await persistAndReload();
+}
+
+/** Changes every pane's main instrument at once — the layout menu's SYMBOL
+ * sync toggle, on. Mirrors `setAllPanesTimeframe`'s all-panes shape. */
+export async function setAllPanesInstrument(instrument: string): Promise<void> {
+	const layout = chartWorkspaceStore.layout;
+	if (!layout) return;
+	chartWorkspaceStore.layout = { ...layout, panes: layout.panes.map((p) => ({ ...p, instrument })) };
 	await persistAndReload();
 }
 
@@ -367,6 +417,28 @@ export async function toggleLayerVisible(paneIndex: number, layerId: string): Pr
 	chartWorkspaceStore.layout = { ...layout, panes };
 	const layer = panes[paneIndex]?.layers.find((candidate) => candidate.id === layerId);
 	if (layer) void persistLayer(layer);
+}
+
+/** Swaps two named layers — `aId` and `bId` — in this pane's stacking
+ * order, renumbering every layer's `position` to match. Takes the two ids
+ * directly rather than a layer plus a direction: the OBJECT TREE panel
+ * groups a pane's layers into INSTRUMENTS/INDICATORS, and "move up"/"move
+ * down" in the panel must swap within that group, never across it — the
+ * panel is the one that knows its own group's ordered ids
+ * (`neighborInGroup` in `pane-runtime.ts`), so it names both ids and this
+ * function just swaps them in the pane's whole `layers` array, wherever
+ * they happen to sit. This has to go through `persistAndReload` rather
+ * than `persistLayer`: `crates/chart/src/store.rs`'s `update_pane_item`
+ * documents that it ignores `position` entirely (only
+ * `replace_layout`'s structural rewrite can move an item), so the
+ * cheap per-item PATCH `persistLayer` uses would silently drop the reorder. */
+export async function swapLayerOrder(paneIndex: number, aId: string, bId: string): Promise<void> {
+	const layout = chartWorkspaceStore.layout;
+	if (!layout || !layout.panes[paneIndex]) return;
+	const reordered = swapById(layout.panes[paneIndex].layers, aId, bId);
+	const panes = layout.panes.map((p, i) => (i !== paneIndex ? p : { ...p, layers: reordered }));
+	chartWorkspaceStore.layout = { ...layout, panes };
+	await persistAndReload();
 }
 
 /** Patches an indicator layer's construction parameters (period, fast/
@@ -415,7 +487,8 @@ export async function updatePaneSettings(paneIndex: number, patch: Partial<Chart
 	await persistOnly();
 }
 
-/** Adds an instrument overlay or indicator layer to `paneIndex` (the acceptance point 6: add, overlay/sub-pane). */
+/** Adds an instrument overlay or indicator layer to `paneIndex`, placed as
+ * an overlay or in its own sub-pane. */
 export async function addInstrumentOverlay(paneIndex: number, instrument: string): Promise<void> {
 	const layout = chartWorkspaceStore.layout;
 	if (!layout || !layout.panes[paneIndex]) return;
@@ -494,6 +567,21 @@ export async function updateDrawingStyle(
 	if (drawing) await persistDrawing(drawing);
 }
 
+/** Edits a `text_note` drawing's label — the one property a note has besides
+ * the style `updateDrawingStyle` already covers. Persisted the same cheap
+ * per-item way: `text` is a field `update_pane_item` actually applies, same
+ * as `updateDrawingStyle`'s color/width/line-style. */
+export async function updateDrawingText(paneIndex: number, drawingId: string, text: string): Promise<void> {
+	const layout = chartWorkspaceStore.layout;
+	if (!layout || !layout.panes[paneIndex]) return;
+	const panes = layout.panes.map((p, i) =>
+		i !== paneIndex ? p : { ...p, drawings: p.drawings.map((d) => (d.id === drawingId ? { ...d, text } : d)) }
+	);
+	chartWorkspaceStore.layout = { ...layout, panes };
+	const drawing = panes[paneIndex]?.drawings.find((candidate) => candidate.id === drawingId);
+	if (drawing) await persistDrawing(drawing);
+}
+
 /** Moves a drawing: a new anchor price for a horizontal line, or new
  * endpoints for a trend line or rectangle. Separate from
  * `updateDrawingStyle` because the two are edited by different gestures —
@@ -516,6 +604,39 @@ export async function updateDrawingGeometry(
 	if (drawing) await persistDrawing(drawing);
 }
 
+/** Toggles a drawing's `visible` flag — the object tree's eye/eye-off
+ * button, and the floating `DrawingToolbar`'s own show/hide toggle for
+ * whichever drawing is selected. Mirrors `toggleLayerVisible` exactly, on
+ * `DrawingDto.visible` instead of a layer's, and persists through
+ * `persistDrawing`: a per-item PATCH is enough here because `visible`
+ * (unlike `position`, see `swapDrawingOrder` below) is a field
+ * `update_pane_item` actually applies. */
+export async function toggleDrawingVisible(paneIndex: number, drawingId: string): Promise<void> {
+	const layout = chartWorkspaceStore.layout;
+	if (!layout || !layout.panes[paneIndex]) return;
+	const panes = layout.panes.map((p, i) =>
+		i !== paneIndex ? p : { ...p, drawings: p.drawings.map((d) => (d.id === drawingId ? { ...d, visible: !d.visible } : d)) }
+	);
+	chartWorkspaceStore.layout = { ...layout, panes };
+	const drawing = panes[paneIndex]?.drawings.find((candidate) => candidate.id === drawingId);
+	if (drawing) void persistDrawing(drawing);
+}
+
+/** Swaps two named drawings — `aId` and `bId` — in this pane's stacking
+ * order, the same way `swapLayerOrder` does for a layer (see its doc for
+ * why this takes two ids rather than a direction), and, like
+ * `swapLayerOrder`, through `persistAndReload` rather than `persistDrawing`,
+ * since a `position` change does not survive `update_pane_item`'s per-item
+ * PATCH (`crates/chart/src/store.rs`'s own doc on that method). */
+export async function swapDrawingOrder(paneIndex: number, aId: string, bId: string): Promise<void> {
+	const layout = chartWorkspaceStore.layout;
+	if (!layout || !layout.panes[paneIndex]) return;
+	const reordered = swapById(layout.panes[paneIndex].drawings, aId, bId);
+	const panes = layout.panes.map((p, i) => (i !== paneIndex ? p : { ...p, drawings: reordered }));
+	chartWorkspaceStore.layout = { ...layout, panes };
+	await persistAndReload();
+}
+
 /** Deletes one drawing. */
 export async function removeDrawing(paneIndex: number, drawingId: string): Promise<void> {
 	const layout = chartWorkspaceStore.layout;
@@ -533,14 +654,39 @@ export async function removeDrawing(paneIndex: number, drawingId: string): Promi
 	}
 }
 
-/** Clears every drawing in every pane of the active layout — the draw
- * toolbar's eraser button, matching the reference's own `clearDrawings`
- * (which tears down and rebuilds every chart in the workspace, not just the
- * active pane's). */
-export async function clearAllDrawings(): Promise<void> {
+/** Patches the active workspace's display settings — which watchlist groups
+ * and notes its WATCHLIST/NOTES panels show — merging `patch` onto the
+ * in-memory copy the same way `updatePaneSettings` merges a chart-settings
+ * patch. Unlike a pane's settings, this has no `replaceLayout` to ride
+ * along with: it writes straight through `updateWorkspaceSettings`, and
+ * `workspaces` (the one cache of the workspace list) is patched in place so
+ * a later `syncActiveWorkspaceSettings` — from a rename, a delete elsewhere,
+ * or a fresh `refreshWorkspaceList` — reads the same text back rather than
+ * a stale copy from before this write. */
+export async function updateWorkspaceSettings(patch: Partial<ChartWorkspaceSettings>): Promise<void> {
+	const workspaceId = chartWorkspaceStore.activeWorkspaceId;
+	if (!workspaceId) return;
+	const next: ChartWorkspaceSettings = { ...chartWorkspaceStore.workspaceSettings, ...patch };
+	const nextJson = workspaceSettingsToJson(next);
+	chartWorkspaceStore.error = null;
+	try {
+		await apiClient.updateWorkspaceSettings(workspaceId, nextJson);
+		chartWorkspaceStore.workspaceSettings = next;
+		chartWorkspaceStore.workspaces = chartWorkspaceStore.workspaces.map((w) =>
+			w.id === workspaceId ? { ...w, settings: nextJson } : w
+		);
+	} catch (error) {
+		chartWorkspaceStore.error = layoutMutationErrorMessage(error);
+	}
+}
+
+/** Clears every drawing in `paneIndex` only — the draw toolbar's eraser
+ * button sits in the per-chart drawing rail, and a click on one pane's rail
+ * must not erase the other panes in the same layout. */
+export async function clearPaneDrawings(paneIndex: number): Promise<void> {
 	const layout = chartWorkspaceStore.layout;
-	if (!layout) return;
-	const panes = layout.panes.map((p) => ({ ...p, drawings: [] }));
+	if (!layout || !layout.panes[paneIndex]) return;
+	const panes = layout.panes.map((p, i) => (i !== paneIndex ? p : { ...p, drawings: [] }));
 	chartWorkspaceStore.layout = { ...layout, panes };
 	await persistAndReload();
 }

@@ -36,21 +36,20 @@ export interface DrawablePoint {
 }
 
 /** The style a `Segment`/`Level` draws with — one shared scheme for both,
- * per the plan's own style table ("stroke: colour, width, line style"). */
+ * one scheme for both: stroke colour, width and line style. */
 export interface StrokeStyle {
 	color: string;
 	width: number;
 	lineStyle: LineStyle;
 }
 
-/** `Box`'s style: a stroke plus a translucent fill, per the plan's style
- * table ("stroke + fill (colour + opacity)"). */
+/** `Box`'s style: a stroke plus a translucent fill. */
 export interface BoxStyle extends StrokeStyle {
 	fillOpacity: number;
 }
 
 /** `Label`'s style: text colour, background, size — no stroke at all, per
- * the plan's style table. */
+ * a label has no stroke of its own. */
 export interface LabelStyle {
 	textColor: string;
 	background: string;
@@ -98,8 +97,8 @@ export type ObjectDrawable =
 	| { kind: 'label'; ownerId: string; at: DrawablePoint; text: string; anchor: LabelAnchor; style: LabelStyle };
 
 /** The six standard Fibonacci retracement ratios (0%, 23.6%, 38.2%, 50%,
- * 61.8%, 100%) — neither `015-drawable-model.md` nor
- * `crates/chart/src/store.rs::DrawingKind::FibRetracement`'s own doc names
+ * 61.8%, 100%) — `crates/chart/src/store.rs::DrawingKind::FibRetracement`'s
+ * own doc names no
  * specific levels (the wire only ever carries the two anchors, `start`/
  * `end`), so this is the one place that picks them: the widely standard
  * six-level set every mainstream charting tool draws between a

@@ -14,11 +14,12 @@
 	import type { MarketStatus } from '$lib/charts/live-state';
 	import type { DrawingRuntime, PaneRuntime } from '$lib/charts/pane-runtime';
 	import type { LayoutId, ToolKey } from './chart-config';
+	import type { IChartApi } from 'lightweight-charts';
 
 	let {
 		panes,
 		marketStatuses = {},
-		reloadToken = 0,
+		reloadTokens = [],
 		resetTokens = [],
 		jumpTargets = [],
 		onMoveDrawing,
@@ -40,15 +41,17 @@
 		onLastClose,
 		onCreateDrawing,
 		onSelectDrawing,
-		onToolConsumed
+		onToolConsumed,
+		onChartApi
 	}: {
 		panes: PaneRuntime[];
 		/** Catalogued session state by instrument. Market data remains outside
 		 * the persisted chart layout, which only owns user preferences. */
 		marketStatuses?: Record<string, MarketStatus>;
-		/** Bumping this reloads every pane's bars — the manual way out of a
-		 * chart that has ended up somewhere the user cannot explain. */
-		reloadToken?: number;
+		/** One reload counter per pane — bumping pane `i`'s entry reloads only
+		 * that pane's bars, the manual way out of a chart that has ended up
+		 * somewhere the user cannot explain without disturbing its siblings. */
+		reloadTokens?: number[];
 		/** One reset counter per pane — a shared counter would reset every
 		 * pane whenever any one of them was asked. */
 		resetTokens?: number[];
@@ -85,6 +88,9 @@
 		onPatchSettings?: (paneIndex: number, patch: Partial<ChartSettings>) => void;
 		onSelectDrawing: (paneIndex: number, id: string | null) => void;
 		onToolConsumed: () => void;
+		/** Reports pane `i`'s `IChartApi` upward — see `pane-cell.svelte`'s
+		 * own doc on the prop this forwards. */
+		onChartApi?: (paneIndex: number, chart: IChartApi | undefined) => void;
 	} = $props();
 </script>
 
@@ -97,7 +103,7 @@
 			layers={panes[i].layers}
 			drawings={panes[i].drawings}
 			settings={panes[i].settings}
-			{reloadToken}
+			reloadToken={reloadTokens[i] ?? 0}
 			resetToken={resetTokens[i] ?? 0}
 			jumpTarget={jumpTargets[i] ?? null}
 			onContextMenu={(e) => onContextMenu?.(i, e)}
@@ -119,6 +125,7 @@
 			onMoveDrawing={(id, patch) => onMoveDrawing?.(i, id, patch)}
 			onPatchSettings={(patch) => onPatchSettings?.(i, patch)}
 			{onToolConsumed}
+			onChartApi={(api) => onChartApi?.(i, api)}
 		/>
 	</Resizable.Pane>
 {/snippet}

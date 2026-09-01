@@ -87,6 +87,14 @@ export interface DrawingRuntime {
 	text?: string;
 	/** `text_note` only. */
 	anchor?: LabelAnchor;
+	/** The instrument this drawing was drawn against, `source:symbol`.
+	 *
+	 * A drawing's anchors are prices and instants on one particular market:
+	 * a trend line across Bitcoin's range says nothing about Ethereum, and
+	 * drawing it over Ethereum's candles because the same pane happens to be
+	 * showing them is a claim nobody made. `undefined` for a drawing stored
+	 * before the server carried this field — see `drawingsForInstrument`. */
+	instrument?: string;
 	color: string;
 	width: number;
 	lineStyle: LineStyle;
@@ -128,6 +136,7 @@ export function drawingFromDto(dto: DrawingDto): DrawingRuntime {
 		id: dto.id,
 		position: dto.position,
 		visible: dto.visible,
+		instrument: dto.instrument ?? undefined,
 		color: dto.color,
 		width: dto.width,
 		lineStyle: dto.line_style
@@ -175,6 +184,7 @@ export function drawingToInput(drawing: DrawingRuntime): DrawingInputDto {
 		position: drawing.position,
 		kind,
 		visible: drawing.visible,
+		instrument: drawing.instrument ?? null,
 		color: drawing.color,
 		width: drawing.width,
 		line_style: drawing.lineStyle
@@ -262,9 +272,33 @@ export function paneToInput(pane: PaneRuntime): PaneInputDto {
 	};
 }
 
-export interface TreeGroup {
+/** What an `ObjectTreeItem` actually is — the object tree panel needs this to
+ * know which store mutation a row's controls should call (`toggleLayerVisible`
+ * vs `toggleDrawingVisible`, `removeLayer` vs `removeDrawing`, …), which the
+ * former nameless `{ name, params, visible }` row could not express at all. */
+export type ObjectTreeKind = 'layer' | 'drawing';
+
+/** One row in the OBJECT TREE panel: identity (`id`/`kind`, so a click can act
+ * on the right underlying layer or drawing), display text, and whether it can
+ * be shown/hidden/reordered/removed and opens a settings dialog. */
+export interface ObjectTreeItem {
+	id: string;
+	kind: ObjectTreeKind;
+	/** Display name, e.g. "EMA", "BINANCE-SPOT:ETHUSDT", "TREND LINE". */
+	name: string;
+	/** Secondary line: params, price, "overlay". */
+	params: string;
+	visible: boolean;
+	/** Whether this row can open a settings dialog — an `overlay_instrument`
+	 * layer has none (there is no dialog for a second instrument, only for an
+	 * indicator's parameters or a drawing's style), so it alone is `false`. */
+	canConfigure: boolean;
+}
+
+export interface ObjectTreeGroup {
+	key: string;
 	title: string;
-	items: { name: string; params: string; visible: boolean }[];
+	items: ObjectTreeItem[];
 }
 
 function layerDisplayName(layer: LayerRuntime): string {
@@ -309,29 +343,71 @@ function drawingParamsLabel(drawing: DrawingRuntime): string {
  * objects, using each drawing's own `visible` flag the same way a layer's
  * is used above — real since schema v8 (`DrawingDto.visible`), not the
  * hardcoded `true` this used to fall back to before a drawing could store
- * one at all. */
-export function objectTree(layers: LayerRuntime[], drawings: DrawingRuntime[] = []): TreeGroup[] {
-	const groups: { kind: LayerKindTag[]; title: string }[] = [
-		{ kind: ['overlay_instrument'], title: 'INSTRUMENTS' },
-		{ kind: ['indicator_overlay', 'indicator_sub_pane'], title: 'INDICATORS' }
+ * one at all. Rows come out in the same `position`-ascending order the chart
+ * draws in (`layers`/`drawings` are already sorted that way by
+ * `paneFromDto`), so "move up"/"move down" in the panel matches what moves
+ * in front of what on the chart. */
+export function objectTree(layers: LayerRuntime[], drawings: DrawingRuntime[] = []): ObjectTreeGroup[] {
+	const groups: { key: string; kind: LayerKindTag[]; title: string }[] = [
+		{ key: 'instruments', kind: ['overlay_instrument'], title: 'INSTRUMENTS' },
+		{ key: 'indicators', kind: ['indicator_overlay', 'indicator_sub_pane'], title: 'INDICATORS' }
 	];
-	return groups
-		.map((g) => ({
-			title: g.title,
-			items: layers
-				.filter((l) => g.kind.includes(l.kind))
-				.map((l) => ({ name: layerDisplayName(l), params: layerParamsLabel(l), visible: l.visible }))
-		}))
-		.concat([
+	const layerGroups: ObjectTreeGroup[] = groups.map((g) => ({
+		key: g.key,
+		title: g.title,
+		items: layers
+			.filter((l) => g.kind.includes(l.kind))
+			.map((l) => ({
+				id: l.id,
+				kind: 'layer' as const,
+				name: layerDisplayName(l),
+				params: layerParamsLabel(l),
+				visible: l.visible,
+				canConfigure: l.kind !== 'overlay_instrument'
+			}))
+	}));
+	return layerGroups.concat([
 			{
+				key: 'drawings',
 				title: 'DRAWINGS',
 				items: drawings.map((d) => ({
+					id: d.id,
+					kind: 'drawing' as const,
 					name: drawingDisplayName(d.kind),
 					params: drawingParamsLabel(d),
-					visible: d.visible
+					visible: d.visible,
+					canConfigure: true
 				}))
 			}
 		]);
+}
+
+/** Which id `id` should swap places with inside `orderedIds` if it moved
+ * `direction` — the OBJECT TREE panel's own group order (INSTRUMENTS/
+ * INDICATORS/DRAWINGS are separate groups; `orderedIds` is always one
+ * group's own ids, never the pane's whole `layers`/`drawings` array), so a
+ * move can never reach past the row at either end of the group. `null` when
+ * `id` is already at that end, or is not in `orderedIds` at all. */
+export function neighborInGroup(orderedIds: string[], id: string, direction: 'up' | 'down'): string | null {
+	const index = orderedIds.indexOf(id);
+	if (index === -1) return null;
+	const neighborIndex = direction === 'up' ? index - 1 : index + 1;
+	return orderedIds[neighborIndex] ?? null;
+}
+
+/** Swaps the two items named `aId`/`bId` and renumbers every item's
+ * `position` to match the new order — the pure part of
+ * `swapLayerOrder`/`swapDrawingOrder` (`workspace-store.svelte.ts`), split
+ * out so it is testable without a live store. `items` need not already be
+ * sorted; the result always is. Returns `items` unchanged if either id is
+ * missing or the two ids are the same (nothing to swap). */
+export function swapById<T extends { id: string; position: number }>(items: T[], aId: string, bId: string): T[] {
+	const sorted = [...items].sort((a, b) => a.position - b.position);
+	const aIndex = sorted.findIndex((item) => item.id === aId);
+	const bIndex = sorted.findIndex((item) => item.id === bId);
+	if (aIndex === -1 || bIndex === -1 || aIndex === bIndex) return items;
+	[sorted[aIndex], sorted[bIndex]] = [sorted[bIndex], sorted[aIndex]];
+	return sorted.map((item, i) => ({ ...item, position: i }));
 }
 
 /** Splits one pane's layers into the ones that render over the main price
@@ -349,4 +425,26 @@ export function splitPaneLayers(layers: LayerRuntime[]): { main: LayerRuntime[];
  * full pane/layer structure in one call. */
 export function toReplaceLayoutRequest(preset: string, panes: PaneRuntime[]): ReplaceLayoutRequest {
 	return { preset, panes: panes.map(paneToInput) };
+}
+
+/** The drawings a pane showing `instrument` should render.
+ *
+ * A pane keeps every drawing ever made on it, across every instrument it has
+ * shown — switching symbol and back brings the old ones straight back, which
+ * is what a reader expects and what every charting tool does. What it must
+ * never do is paint one instrument's levels over another's candles: the
+ * anchors are prices on a market, and a horizontal line at 2450 means
+ * nothing on a market trading at 0.4.
+ *
+ * A drawing with no recorded instrument is shown whatever the pane displays.
+ * That is the honest reading of "nothing ever recorded what this was drawn
+ * against" — hiding it would silently lose work, and attributing it to
+ * whatever happens to be on screen would invent a fact. Only drawings stored
+ * before the server carried the field are in that state; every new one
+ * records it. */
+export function drawingsForInstrument(
+	drawings: DrawingRuntime[],
+	instrument: string
+): DrawingRuntime[] {
+	return drawings.filter((drawing) => !drawing.instrument || drawing.instrument === instrument);
 }

@@ -46,8 +46,8 @@ export function deriveLiveState(
 }
 
 /** Whether a countdown belongs on screen for `state` — `live` only (the
- * acceptance point: "a countdown against a feed that is not running is a
- * lie"). Pulled out as its own function, rather than inlining
+ * a countdown against a feed that is not running is a lie). Pulled out as
+ * its own function, rather than inlining
  * `state.status === 'live'` at each call site, so the "only live" rule is
  * one place to prove instead of several to keep in sync. */
 export function showCountdown(state: LiveState): boolean {

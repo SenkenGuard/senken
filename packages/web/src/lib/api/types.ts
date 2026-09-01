@@ -58,6 +58,7 @@ export type DrawingKindDto = Schemas['DrawingKindDto'];
 export type DrawingPointDto = Schemas['DrawingPointDto'];
 export type DrawingLineStyleDto = Schemas['DrawingLineStyleDto'];
 export type ReplaceLayoutRequest = Schemas['ReplaceLayoutRequest'];
+export type UpdateWorkspaceSettingsRequest = Schemas['UpdateWorkspaceSettingsRequest'];
 
 // Bars.
 export type TimeRangeDto = Schemas['TimeRangeDto'];
@@ -121,10 +122,28 @@ export type CreateAlertRequest = Schemas['CreateAlertRequest'];
 export type SourceCapabilityDto = Schemas['SourceCapabilityDto'];
 export type SourcesResponse = Schemas['SourcesResponse'];
 
-// Instrument search (`GET /api/instruments`) — the catalog-search gap plan
-// 006 B1 left open, closed in S5: `routes/charts/+page.svelte`'s symbol/
-// overlay pickers and `workspace-store.svelte.ts`'s `nextInstrument` all
-// search through `apiClient.searchInstruments` now — the former fixed
-// `INSTRUMENT_CATALOG` in `terminal/chart-config.ts` is gone.
+// Instrument search (`GET /api/instruments`): `routes/charts/+page.svelte`'s
+// symbol/overlay pickers search through `apiClient.searchInstruments` — the
+// former fixed `INSTRUMENT_CATALOG` in `terminal/chart-config.ts` is gone.
 export type InstrumentSummaryDto = Schemas['InstrumentSummaryDto'];
 export type InstrumentsPage = Schemas['InstrumentsPage'];
+
+// Watchlists (`/api/watchlists`, `/api/watchlist-members`) — a user-owned
+// group of watched instruments and its membership.
+export type WatchlistGroupDto = Schemas['WatchlistGroupDto'];
+export type WatchlistGroupsPage = Schemas['WatchlistGroupsPage'];
+export type CreateWatchlistGroupRequest = Schemas['CreateWatchlistGroupRequest'];
+export type RenameWatchlistGroupRequest = Schemas['RenameWatchlistGroupRequest'];
+export type ReorderWatchlistGroupsRequest = Schemas['ReorderWatchlistGroupsRequest'];
+export type WatchlistMemberDto = Schemas['WatchlistMemberDto'];
+export type AddWatchlistMemberRequest = Schemas['AddWatchlistMemberRequest'];
+export type ReorderWatchlistMembersRequest = Schemas['ReorderWatchlistMembersRequest'];
+
+// Notes (`/api/notes`) — a user-owned freeform note. `NoteSummaryDto` (the
+// listing row) never carries a note's body; only `NoteDto` (`GET
+// /api/notes/{id}`) does.
+export type NoteSummaryDto = Schemas['NoteSummaryDto'];
+export type NotesPage = Schemas['NotesPage'];
+export type NoteDto = Schemas['NoteDto'];
+export type CreateNoteRequest = Schemas['CreateNoteRequest'];
+export type UpdateNoteRequest = Schemas['UpdateNoteRequest'];

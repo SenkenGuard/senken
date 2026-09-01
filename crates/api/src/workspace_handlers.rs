@@ -40,7 +40,8 @@ use crate::auth::Authed;
 use crate::dto::{
     CreateWorkspaceRequest, DefaultWorkspaceResponse, DrawingInputDto, DrawingKindDto, IdResponse,
     LayerInputDto, LayerKindDto, LayoutDetailDto, LayoutSummaryDto, PaneInputDto,
-    RenameWorkspaceRequest, ReplaceLayoutRequest, WorkspaceDto, WorkspacesPage,
+    RenameWorkspaceRequest, ReplaceLayoutRequest, UpdateWorkspaceSettingsRequest, WorkspaceDto,
+    WorkspacesPage,
 };
 use crate::pagination::{PaginationQuery, normalize_pagination};
 
@@ -110,8 +111,17 @@ fn drawing_kind_from_dto(dto: DrawingKindDto) -> DrawingKind {
 
 /// Converts one wire [`DrawingInputDto`] into a [`PaneItemInput`], the
 /// same way [`layer_input_from_dto`] does for a layer.
-fn drawing_input_from_dto(dto: DrawingInputDto, position: u32) -> PaneItemInput {
-    PaneItemInput {
+fn drawing_input_from_dto(
+    dto: DrawingInputDto,
+    position: u32,
+) -> Result<PaneItemInput, HandlerError> {
+    let instrument = dto
+        .instrument
+        .as_deref()
+        .map(InstrumentId::parse)
+        .transpose()
+        .map_err(|source| HandlerError::BadRequest(source.to_string()))?;
+    Ok(PaneItemInput {
         position,
         slot: Slot::Main,
         visible: dto.visible,
@@ -123,8 +133,9 @@ fn drawing_input_from_dto(dto: DrawingInputDto, position: u32) -> PaneItemInput 
         .to_json(),
         source: ItemSource::Anchored {
             kind: drawing_kind_from_dto(dto.kind),
+            instrument,
         },
-    }
+    })
 }
 
 /// Builds a pane's unified `items` list from its wire `layers`/`drawings`
@@ -162,7 +173,7 @@ fn pane_input_from_dto(dto: PaneInputDto) -> Result<PaneInput, HandlerError> {
     let base = u32::try_from(items.len()).unwrap_or(u32::MAX);
     for (index, drawing) in drawings.into_iter().enumerate() {
         let position = base.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
-        items.push(drawing_input_from_dto(drawing, position));
+        items.push(drawing_input_from_dto(drawing, position)?);
     }
     Ok(PaneInput {
         position: dto.position,
@@ -289,6 +300,34 @@ pub(crate) async fn delete_workspace(
 ) -> Result<StatusCode, HandlerError> {
     let workspace_id = parse_workspace_id(&workspace_id)?;
     state.workspace.delete_workspace(&ctx.user, workspace_id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /api/workspaces/{workspace_id}/settings`. `settings` is opaque
+/// JSON-object text this crate never interprets — see
+/// [`UpdateWorkspaceSettingsRequest`]'s own docs.
+#[utoipa::path(
+    patch,
+    path = "/api/workspaces/{workspace_id}/settings",
+    request_body = UpdateWorkspaceSettingsRequest,
+    params(("workspace_id" = String, Path)),
+    responses(
+        (status = 204),
+        (status = 400, body = crate::dto::ErrorBody),
+        (status = 401, body = crate::dto::ErrorBody),
+        (status = 403, body = crate::dto::ErrorBody),
+    )
+)]
+pub(crate) async fn update_workspace_settings(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(workspace_id): Path<String>,
+    Json(body): Json<UpdateWorkspaceSettingsRequest>,
+) -> Result<StatusCode, HandlerError> {
+    let workspace_id = parse_workspace_id(&workspace_id)?;
+    state
+        .workspace
+        .update_workspace_settings(&ctx.user, workspace_id, &body.settings)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -431,7 +470,7 @@ pub(crate) async fn update_drawing(
     Json(body): Json<DrawingInputDto>,
 ) -> Result<StatusCode, HandlerError> {
     // Same placeholder-position note as `update_layer`.
-    let input = drawing_input_from_dto(body, 0);
+    let input = drawing_input_from_dto(body, 0)?;
     state
         .workspace
         .update_pane_item(&ctx.user, parse_pane_item_id(&item_id)?, &input)?;
@@ -475,6 +514,24 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned()
+    }
+
+    async fn patch_settings(
+        addr: std::net::SocketAddr,
+        token: &str,
+        workspace_id: &str,
+        settings: &str,
+    ) -> reqwest::Response {
+        reqwest::Client::new()
+            .patch(format!(
+                "http://{addr}/api/workspaces/{workspace_id}/settings"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&serde_json::json!({ "settings": settings })).unwrap())
+            .send()
+            .await
+            .unwrap()
     }
 
     async fn charts_user(
@@ -562,6 +619,154 @@ mod tests {
             response.status(),
             reqwest::StatusCode::FORBIDDEN,
             "403, not 401 -- bob has a valid session, he just may not touch alice's row"
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    // Settings text a client made up is that client's mistake, and must read
+    // as one. Falling through to a 500 would blame the server for it — and a
+    // 500 is what an operator's alerting pages on.
+    #[tokio::test]
+    async fn malformed_pane_settings_are_refused_as_a_bad_request_not_a_server_error() {
+        let (handle, identity, _dir, _runtime_dir) = serve_unfenced_test_server().await;
+        let addr = handle.local_addr();
+        let (_uid, admin_session) = identity
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        let admin = identity
+            .resolve_session(admin_session.reveal())
+            .unwrap()
+            .unwrap();
+        let alice_token = charts_user(
+            addr,
+            &identity,
+            &admin,
+            "alice-bad-pane-settings@example.com",
+        )
+        .await;
+
+        let default = body_json(
+            get_auth(
+                format!("http://{addr}/api/workspaces/default"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let layout_id = default["layout_id"].as_str().unwrap();
+
+        let response = reqwest::Client::new()
+            .put(format!("http://{addr}/api/layouts/{layout_id}"))
+            .header("authorization", format!("Bearer {alice_token}"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({
+                    "preset": "1",
+                    "panes": [{
+                        "position": 0,
+                        "instrument": "binance-spot:BTCUSDT",
+                        "timeframe": "1h",
+                        "layers": [],
+                        "drawings": [],
+                        "settings": "{not valid json"
+                    }]
+                }))
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_settings_accepts_a_json_object_and_rejects_non_objects_over_http() {
+        let (handle, identity, _dir, _runtime_dir) = serve_unfenced_test_server().await;
+        let addr = handle.local_addr();
+        let (_uid, admin_session) = identity
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        let admin = identity
+            .resolve_session(admin_session.reveal())
+            .unwrap()
+            .unwrap();
+        let alice_token = charts_user(addr, &identity, &admin, "alice-settings@example.com").await;
+
+        let default = body_json(
+            get_auth(
+                format!("http://{addr}/api/workspaces/default"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let workspace_id = default["workspace_id"].as_str().unwrap();
+
+        let ok = patch_settings(addr, &alice_token, workspace_id, r#"{"theme":"dark"}"#).await;
+        assert_eq!(ok.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let array = patch_settings(addr, &alice_token, workspace_id, "[1,2,3]").await;
+        assert_eq!(array.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let number = patch_settings(addr, &alice_token, workspace_id, "42").await;
+        assert_eq!(number.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_settings_written_through_patch_are_read_back_from_the_listing() {
+        let (handle, identity, _dir, _runtime_dir) = serve_unfenced_test_server().await;
+        let addr = handle.local_addr();
+        let (_uid, admin_session) = identity
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        let admin = identity
+            .resolve_session(admin_session.reveal())
+            .unwrap()
+            .unwrap();
+        let alice_token = charts_user(
+            addr,
+            &identity,
+            &admin,
+            "alice-settings-roundtrip@example.com",
+        )
+        .await;
+
+        let default = body_json(
+            get_auth(
+                format!("http://{addr}/api/workspaces/default"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let workspace_id = default["workspace_id"].as_str().unwrap();
+
+        // A freshly created workspace starts with empty settings — the
+        // baseline this test's later assertion actually proves something
+        // against, rather than happening to match by coincidence.
+        let before =
+            body_json(get_auth(format!("http://{addr}/api/workspaces"), &alice_token).await).await;
+        assert_eq!(before["rows"][0]["settings"], "{}");
+
+        let patched = patch_settings(
+            addr,
+            &alice_token,
+            workspace_id,
+            r#"{"candleColor":"blue"}"#,
+        )
+        .await;
+        assert_eq!(patched.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let after =
+            body_json(get_auth(format!("http://{addr}/api/workspaces"), &alice_token).await).await;
+        assert_eq!(
+            after["rows"][0]["settings"], r#"{"candleColor":"blue"}"#,
+            "settings written through PATCH must be readable back from GET /api/workspaces"
         );
 
         handle.shutdown().await.unwrap();
@@ -789,6 +994,227 @@ mod tests {
             layout["panes"][0]["drawings"][1]["kind"]["start"]["time"],
             1_700_000_000_000_000_000i64
         );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    // A drawing's anchors are prices and instants on one market. The wire
+    // carries which one, so a pane can show a reader only the drawings that
+    // belong to whatever it is currently displaying instead of painting one
+    // instrument's levels over another's candles.
+    #[tokio::test]
+    async fn a_drawing_keeps_the_instrument_it_was_drawn_against_over_http() {
+        let (handle, identity, _dir, _runtime_dir) = serve_unfenced_test_server().await;
+        let addr = handle.local_addr();
+        let (_uid, admin_session) = identity
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        let admin = identity
+            .resolve_session(admin_session.reveal())
+            .unwrap()
+            .unwrap();
+        let alice_token = charts_user(addr, &identity, &admin, "alice-drawn-on@example.com").await;
+
+        let default = body_json(
+            get_auth(
+                format!("http://{addr}/api/workspaces/default"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let layout_id = default["layout_id"].as_str().unwrap();
+
+        let put = |body: serde_json::Value| {
+            let token = alice_token.clone();
+            async move {
+                reqwest::Client::new()
+                    .put(format!("http://{addr}/api/layouts/{layout_id}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(serde_json::to_vec(&body).unwrap())
+                    .send()
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let drawn_on_eth = serde_json::json!({
+            "position": 0,
+            "kind": { "kind": "horizontal_line", "price": 2450.5 },
+            "color": "#f2f2ef",
+            "width": 2,
+            "line_style": "DASHED",
+            "instrument": "binance-spot:ETHUSDT"
+        });
+        // A second drawing that names no instrument at all — what a client
+        // written before this field existed sends.
+        let unattributed = serde_json::json!({
+            "position": 1,
+            "kind": { "kind": "horizontal_line", "price": 10.0 },
+            "color": "#f2f2ef",
+            "width": 1,
+            "line_style": "SOLID"
+        });
+
+        let response = put(serde_json::json!({
+            "preset": "1",
+            "panes": [{
+                "position": 0,
+                "instrument": "binance-spot:ETHUSDT",
+                "timeframe": "1h",
+                "layers": [],
+                "drawings": [drawn_on_eth.clone(), unattributed]
+            }]
+        }))
+        .await;
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let layout = body_json(
+            get_auth(
+                format!("http://{addr}/api/layouts/{layout_id}"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            layout["panes"][0]["drawings"][0]["instrument"],
+            "binance-spot:ETHUSDT"
+        );
+        assert!(
+            layout["panes"][0]["drawings"][1]["instrument"].is_null(),
+            "a drawing that named no instrument must not be given the pane's"
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    // Which instrument a pane is showing and which one a drawing was made on
+    // are separate facts: moving the pane must not silently re-attribute the
+    // annotation to whatever is now on screen.
+    #[tokio::test]
+    async fn moving_a_pane_to_another_instrument_leaves_its_drawings_attribution_alone() {
+        let (handle, identity, _dir, _runtime_dir) = serve_unfenced_test_server().await;
+        let addr = handle.local_addr();
+        let (_uid, admin_session) = identity
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        let admin = identity
+            .resolve_session(admin_session.reveal())
+            .unwrap()
+            .unwrap();
+        let alice_token =
+            charts_user(addr, &identity, &admin, "alice-moved-pane@example.com").await;
+
+        let default = body_json(
+            get_auth(
+                format!("http://{addr}/api/workspaces/default"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let layout_id = default["layout_id"].as_str().unwrap();
+
+        let response = reqwest::Client::new()
+            .put(format!("http://{addr}/api/layouts/{layout_id}"))
+            .header("authorization", format!("Bearer {alice_token}"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({
+                    "preset": "1",
+                    "panes": [{
+                        "position": 0,
+                        "instrument": "binance-spot:SOLUSDT",
+                        "timeframe": "1h",
+                        "layers": [],
+                        "drawings": [{
+                            "position": 0,
+                            "kind": { "kind": "horizontal_line", "price": 2450.5 },
+                            "color": "#f2f2ef",
+                            "width": 2,
+                            "line_style": "DASHED",
+                            "instrument": "binance-spot:ETHUSDT"
+                        }]
+                    }]
+                }))
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let layout = body_json(
+            get_auth(
+                format!("http://{addr}/api/layouts/{layout_id}"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(layout["panes"][0]["instrument"], "binance-spot:SOLUSDT");
+        assert_eq!(
+            layout["panes"][0]["drawings"][0]["instrument"],
+            "binance-spot:ETHUSDT"
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_drawing_naming_an_unparseable_instrument_is_refused() {
+        let (handle, identity, _dir, _runtime_dir) = serve_unfenced_test_server().await;
+        let addr = handle.local_addr();
+        let (_uid, admin_session) = identity
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        let admin = identity
+            .resolve_session(admin_session.reveal())
+            .unwrap()
+            .unwrap();
+        let alice_token =
+            charts_user(addr, &identity, &admin, "alice-bad-drawn-on@example.com").await;
+
+        let default = body_json(
+            get_auth(
+                format!("http://{addr}/api/workspaces/default"),
+                &alice_token,
+            )
+            .await,
+        )
+        .await;
+        let layout_id = default["layout_id"].as_str().unwrap();
+
+        let response = reqwest::Client::new()
+            .put(format!("http://{addr}/api/layouts/{layout_id}"))
+            .header("authorization", format!("Bearer {alice_token}"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({
+                    "preset": "1",
+                    "panes": [{
+                        "position": 0,
+                        "instrument": "binance-spot:BTCUSDT",
+                        "timeframe": "1h",
+                        "layers": [],
+                        "drawings": [{
+                            "position": 0,
+                            "kind": { "kind": "horizontal_line", "price": 1.0 },
+                            "color": "#f2f2ef",
+                            "width": 1,
+                            "line_style": "SOLID",
+                            "instrument": "not an instrument id"
+                        }]
+                    }]
+                }))
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
 
         handle.shutdown().await.unwrap();
     }

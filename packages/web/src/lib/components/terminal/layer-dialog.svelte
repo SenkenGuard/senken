@@ -10,7 +10,7 @@
 	// "strategy" layer kind, and no per-timeframe visibility field (the
 	// former mock's VISIBILITY tab has nowhere to persist to, so it is
 	// dropped here rather than kept as UI that edits nothing — see this
-	// milestone's report). Two tabs remain:
+	// Two tabs remain:
 	// - INPUTS: one stepper row per key in the layer's `params` (its real,
 	//   persisted construction parameters — the "input settings").
 	// - STYLE: color/width/line-style per plot the indicator reports — kept
@@ -21,7 +21,7 @@
 	import { ColorPicker } from '$lib/components/ui/color-picker/index.js';
 	import { cn } from '$lib/utils.js';
 	import { LAYER_KIND_ICON, parseInstrumentId } from './chart-config';
-	import { plotsForLayer, setPlotStyle, type PlotStyle } from '$lib/charts/layer-style';
+	import { OVERLAY_INSTRUMENT_PLOT, plotsForLayer, setPlotStyle, type PlotStyle } from '$lib/charts/layer-style';
 	import { LINE_STYLES } from '$lib/mock/chart-settings';
 	import type { LayerRuntime } from '$lib/charts/pane-runtime';
 	import CheckIcon from '@lucide/svelte/icons/check';
@@ -45,11 +45,26 @@
 
 	let tab = $state<'INPUTS' | 'STYLE'>('INPUTS');
 
+	/** An `overlay_instrument` layer has no construction parameters — INPUTS
+	 * would edit nothing — so it opens straight on STYLE and never offers the
+	 * INPUTS tab at all (see `availableTabs` below). Every other layer kind
+	 * still opens on INPUTS, which is what someone opening an indicator's
+	 * settings is nearly always after. */
+	function initialTabFor(kind: LayerRuntime['kind']): 'INPUTS' | 'STYLE' {
+		return kind === 'overlay_instrument' ? 'STYLE' : 'INPUTS';
+	}
+
+	/** Which tabs this layer kind actually has something to show on —
+	 * INPUTS is omitted for `overlay_instrument`, which has no parameters. */
+	const availableTabs = $derived<('INPUTS' | 'STYLE')[]>(
+		layer && layer.kind === 'overlay_instrument' ? ['STYLE'] : ['INPUTS', 'STYLE']
+	);
+
 	let lastLayerId = $state<string | null>(null);
 	$effect(() => {
 		if (layer && layer.id !== lastLayerId) {
 			lastLayerId = layer.id;
-			tab = layer.kind === 'overlay_instrument' ? 'INPUTS' : 'STYLE';
+			tab = initialTabFor(layer.kind);
 		}
 	});
 
@@ -82,10 +97,11 @@
 		seededFor = key;
 		draft = layer ? { ...layer.params } : {};
 		editing = Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, String(v)]));
-		// A dialog reopened after a visit to STYLE should still land on the
-		// inputs: that is what someone opening an indicator's settings is
-		// nearly always after.
-		if (layer) tab = 'INPUTS';
+		// A dialog reopened after a visit to STYLE should still land back on
+		// whichever tab this layer kind actually opens on by default — INPUTS
+		// for an indicator, STYLE for an overlay instrument (it has no INPUTS
+		// tab to land on at all).
+		if (layer) tab = initialTabFor(layer.kind);
 	});
 
 	function scheduleCommit() {
@@ -129,15 +145,27 @@
 		}));
 	}
 
+	/** The name `plotsForLayer`/`setPlotStyle` style this layer under: its own
+	 * `indicatorName` for an indicator layer, or `OVERLAY_INSTRUMENT_PLOT` for
+	 * an `overlay_instrument` layer, which has no `indicatorName` of its own
+	 * — see that constant's own doc. */
+	function styleKeyFor(l: LayerRuntime): string | null {
+		if (l.kind === 'overlay_instrument') return OVERLAY_INSTRUMENT_PLOT;
+		return l.indicatorName ?? null;
+	}
+
 	let plots = $state<PlotStyle[]>([]);
 	$effect(() => {
-		plots = layer && layer.indicatorName ? plotsForLayer(layer.id, layer.indicatorName) : [];
+		const styleKey = layer ? styleKeyFor(layer) : null;
+		plots = layer && styleKey ? plotsForLayer(layer.id, styleKey) : [];
 	});
 
 	function patchPlot(field: string, patch: Partial<PlotStyle>) {
-		if (!layer || !layer.indicatorName) return;
-		setPlotStyle(layer.id, layer.indicatorName, field, patch);
-		plots = plotsForLayer(layer.id, layer.indicatorName);
+		if (!layer) return;
+		const styleKey = styleKeyFor(layer);
+		if (!styleKey) return;
+		setPlotStyle(layer.id, styleKey, field, patch);
+		plots = plotsForLayer(layer.id, styleKey);
 		// Styling rides with the layout, so a colour or line width outlives
 		// the session the same way a period does.
 		onStyleChanged?.();
@@ -168,7 +196,7 @@
 
 			<Tabs.Root bind:value={tab} class="flex min-h-0 flex-1 flex-col">
 				<Tabs.List variant="line" class="h-auto flex-none justify-start gap-[18px] rounded-none border-b border-ink/10 bg-transparent px-4 py-0">
-					{#each ['INPUTS', 'STYLE'] as const as t (t)}
+					{#each availableTabs as t (t)}
 						<Tabs.Trigger
 							value={t}
 							class="h-auto flex-none rounded-none border-0 bg-transparent p-0 pb-[9px] font-mono text-[9.5px] tracking-[0.18em] text-dim data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
@@ -180,36 +208,29 @@
 
 				<div class="min-h-0 flex-1 overflow-auto px-4 pt-[14px] pb-4">
 					<Tabs.Content value="INPUTS" class="mt-0 flex flex-col gap-[11px]">
-						{#if layer.kind === 'overlay_instrument'}
+						{#each inputRows() as f (f.key)}
 							<div class="flex items-center justify-between gap-3.5">
-								<span class="font-mono text-[9.5px] tracking-[0.16em] text-dim2">INSTRUMENT</span>
-								<span class="font-mono text-[11px] text-foreground">{parseInstrumentId(layer.instrument ?? '').venue}:{parseInstrumentId(layer.instrument ?? '').ticker}</span>
-							</div>
-						{:else}
-							{#each inputRows() as f (f.key)}
-								<div class="flex items-center justify-between gap-3.5">
-									<span class="font-mono text-[9.5px] tracking-[0.16em] text-dim2">{f.label}</span>
-									<div class="flex items-center gap-1.5">
-										<button type="button" class="flex h-[26px] w-6 cursor-pointer items-center justify-center border border-ink/14 text-dim2" onclick={f.onDec} aria-label="Decrease {f.label}">
-											<MinusIcon class="size-[11px]" />
-										</button>
-										<input
-											type="text"
-											inputmode="decimal"
-											class="h-[26px] min-w-[92px] border border-ink/14 bg-transparent px-2.5 text-center font-mono text-[11px] text-foreground outline-none focus:border-foreground"
-											aria-label={f.label}
-											value={f.text}
-											oninput={(e) => typeParam(f.key, e.currentTarget.value)}
-										/>
-										<button type="button" class="flex h-[26px] w-6 cursor-pointer items-center justify-center border border-ink/14 text-dim2" onclick={f.onInc} aria-label="Increase {f.label}">
-											<PlusIcon class="size-[11px]" />
-										</button>
-									</div>
+								<span class="font-mono text-[9.5px] tracking-[0.16em] text-dim2">{f.label}</span>
+								<div class="flex items-center gap-1.5">
+									<button type="button" class="flex h-[26px] w-6 cursor-pointer items-center justify-center border border-ink/14 text-dim2" onclick={f.onDec} aria-label="Decrease {f.label}">
+										<MinusIcon class="size-[11px]" />
+									</button>
+									<input
+										type="text"
+										inputmode="decimal"
+										class="h-[26px] min-w-[92px] border border-ink/14 bg-transparent px-2.5 text-center font-mono text-[11px] text-foreground outline-none focus:border-foreground"
+										aria-label={f.label}
+										value={f.text}
+										oninput={(e) => typeParam(f.key, e.currentTarget.value)}
+									/>
+									<button type="button" class="flex h-[26px] w-6 cursor-pointer items-center justify-center border border-ink/14 text-dim2" onclick={f.onInc} aria-label="Increase {f.label}">
+										<PlusIcon class="size-[11px]" />
+									</button>
 								</div>
-							{/each}
-							{#if inputRows().length === 0}
-								<p class="font-mono text-[9.5px] text-dim">This indicator takes no parameters.</p>
-							{/if}
+							</div>
+						{/each}
+						{#if inputRows().length === 0}
+							<p class="font-mono text-[9.5px] text-dim">This indicator takes no parameters.</p>
 						{/if}
 					</Tabs.Content>
 
