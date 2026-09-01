@@ -3,8 +3,10 @@ import {
 	describeStorageDeletion,
 	formatBytes,
 	formatFiles,
+	hasStoredData,
 	shareOfTotal,
-	storageNodeKey
+	storageNodeKey,
+	withStoredData
 } from './usage';
 
 describe('rendering a size the way the filesystem reports it', () => {
@@ -145,5 +147,47 @@ describe('how much of the whole a node accounts for', () => {
 	test('a share can never exceed the bar it is drawn in', () => {
 		expect(shareOfTotal(300, 200)).toBe(100);
 		expect(shareOfTotal(-5, 200)).toBe(0);
+	});
+});
+
+describe('which nodes are worth listing', () => {
+	test('a node holding nothing is not listed', () => {
+		// A server registers dozens of sources and fetches from two. The rest
+		// would otherwise fill the panel with `0 B` rows that bury the answer
+		// it exists to give.
+		expect(hasStoredData({ bytes: 0, files: 0 })).toBe(false);
+	});
+
+	test('a node holding anything is listed, by either measure', () => {
+		expect(hasStoredData({ bytes: 1, files: 0 })).toBe(true);
+		// Files that are themselves empty are still real files on disk, and
+		// still worth offering to remove.
+		expect(hasStoredData({ bytes: 0, files: 1 })).toBe(true);
+	});
+
+	test('the same rule serves every level of the tree', () => {
+		const nodes = [
+			{ source_id: 'okx-spot', bytes: 4_000_000, files: 3 },
+			{ source_id: 'never-fetched', bytes: 0, files: 0 },
+			{ source_id: 'bybit-spot', bytes: 120_000, files: 1 }
+		];
+		expect(withStoredData(nodes).map((n) => n.source_id)).toEqual(['okx-spot', 'bybit-spot']);
+	});
+
+	test('filtering keeps the order it was given', () => {
+		// The server sorts biggest-first; a filter that reordered would put
+		// the largest thing somewhere other than the top.
+		const nodes = [
+			{ id: 'a', bytes: 9, files: 1 },
+			{ id: 'b', bytes: 0, files: 0 },
+			{ id: 'c', bytes: 5, files: 1 },
+			{ id: 'd', bytes: 1, files: 1 }
+		];
+		expect(withStoredData(nodes).map((n) => n.id)).toEqual(['a', 'c', 'd']);
+	});
+
+	test('a tree with nothing in it filters down to nothing', () => {
+		expect(withStoredData([{ bytes: 0, files: 0 }])).toEqual([]);
+		expect(withStoredData([])).toEqual([]);
 	});
 });
