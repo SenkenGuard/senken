@@ -258,6 +258,26 @@ best work has consistently done the extra step:
 underlying problem. Change a test only when the task intentionally changes the
 required behaviour, or when you can independently show the test itself is wrong.
 
+### A test must create the state it is about, not wait for it
+
+A test that hopes a race falls its way passes on the machine it was written on
+and fails on the machine that runs it. That is worse than a flake: it reports a
+bug in code that is correct, and invites the next reader to "fix" a sound
+implementation.
+
+The reconnect test proving a lease released while disconnected is not replayed
+released it and hoped the redial had not happened yet. A redial takes no
+backoff before its first attempt, so on a faster machine the socket came back
+first — and replaying an instrument the pool still leased is the *correct*
+answer. It went red on Windows CI having proved nothing about the property it
+names.
+
+Establish the precondition; do not sleep towards it. Hold the fake venue's
+handshake until the release has run, gate on a channel, await the flush that
+makes the state true. A negative assertion — "nothing arrives" — is only worth
+the window it is given *once the state it is about actually exists*, and until
+then it is measuring the scheduler.
+
 ### Fix the class, then sweep for the rest of it
 
 Finding one instance is the beginning of the work, not the end. Before moving

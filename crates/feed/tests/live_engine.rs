@@ -273,10 +273,25 @@ async fn reconnect_never_resubscribes_an_instrument_already_released() {
     let server = FakeServer::bind().await;
     let (_connector, pool) = connector_and_pool(server.ws_url());
 
+    // The disconnected window has to be *made*, not waited for. A redial
+    // takes no backoff before its first attempt, so left to race the client
+    // reconnects and replays before the release below has run — and
+    // replaying an instrument the pool still leases is correct behaviour,
+    // which would make this test fail on timing while proving nothing.
+    //
+    // Withholding the handshake is what holds the window open: the client's
+    // dial waits in the accept backlog, and the pool is not consulted until
+    // the socket is actually up. So the release is guaranteed to have
+    // happened before there is anything to replay onto.
+    let (released, wait_for_release) = tokio::sync::oneshot::channel();
+
     let server_task = tokio::spawn(async move {
         let mut conn = server.accept().await;
         let first_sub = conn.recv_text().await;
         conn.hang_up();
+        wait_for_release
+            .await
+            .expect("the main task signals before it awaits this one");
         let mut second_conn = server.accept().await;
         // Prove nothing at all is replayed: any frame arriving here would
         // be exactly the bug this test exists to catch.
@@ -289,11 +304,11 @@ async fn reconnect_never_resubscribes_an_instrument_already_released() {
     });
 
     let lease = pool.lease(instrument("ETHUSDT")).await.unwrap();
-    // Released before the server (deliberately) brings the second socket
-    // up on its own schedule — by the time reconnect happens, the pool no
-    // longer leases anything at all.
+    // By the time the second socket is allowed up, the pool leases nothing
+    // at all.
     drop(lease);
     pool.flush().await;
+    let _ = released.send(());
 
     let (first_sub, nothing_replayed) = server_task.await.unwrap();
     assert_eq!(first_sub, "SUB ETHUSDT");
