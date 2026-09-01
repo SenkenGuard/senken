@@ -11,6 +11,7 @@ doc-valid-idents = [
   "Deribit",
   "KuCoin",
   "OKX",
+  "MetaTrader",
   "Poloniex",
   "WhiteBIT",
   # Not a venue, but the same problem: a legitimately mixed-case name that

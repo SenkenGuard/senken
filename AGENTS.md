@@ -33,9 +33,9 @@ One binary serves four modes — CLI, `serve` (HTTP + embedded web app), `gui`
 (the same server with a desktop window), and a bare invocation that picks
 between help and GUI by whether a TTY is present.
 
-**Senken is heading toward executing trades, and it already handles broker
-adapter credentials. Hold every change to a standard appropriate to software
-that will touch other people's money.**
+**Senken executes trades, and it holds broker adapter credentials. Hold every
+change to a standard appropriate to software that touches other people's
+money.**
 
 ---
 
@@ -89,6 +89,14 @@ than a convention. Follow the same instinct, and do not weaken these:
   to compile until its authorisation is written**.
 - `senken_subscription::Lease` has no `unsubscribe` method, only `Drop` — a
   leaked subscription is not expressible.
+- `senken_trade::SecretString` serialises as `null`, always: there is no path
+  through `Serialize` that writes a credential, so an API response or a log
+  line cannot leak one even by mistake. Persisting one goes through a
+  separate, explicitly named function the account store is the only caller
+  of.
+- `senken_trade::OrderKind` carries each kind's prices *inside* its variant,
+  so a limit order with no limit price — or a market order carrying one —
+  cannot be constructed at all.
 
 ### Derive from what you hold, not from what you opened with
 
@@ -156,6 +164,7 @@ reverse; the runtime depends on everything and nothing depends on it.
 | `feed` | venue WebSocket implementations behind the pool's ports |
 | `indicators` | ten incremental indicators |
 | `alerts` | standalone alert evaluation |
+| `trade` | the `TradeAdapter` contract, orders/positions/balances, adapter capabilities, dynamic settings schemas, attached accounts |
 | `venue` | HTTP, retry, rate limiting |
 | `plugin` | the plugin contract |
 | `acl` | `Action`, `Resource`, `Scope`, `decide` — no I/O |
@@ -180,7 +189,27 @@ from. Auth *transport* — sessions, tokens, login — is the API's.
 ### Market data is global
 
 Instruments and bars are never tenanted per user. Only user-authored artifacts —
-workspaces, layouts, drawings, alerts, strategies — have owners.
+workspaces, layouts, drawings, alerts, strategies, trading accounts — have
+owners.
+
+### The adapter owns the money; the engine owns the attachment
+
+A broker or exchange already holds the authoritative orders, positions and
+balances for an account. Senken stores none of them — a second copy could
+only ever be one that disagrees, at the moment it mattered. What Senken owns
+is the *attachment*: which adapter, whose account, under what label, with
+which settings. That is `senken-trade`'s `TradeAccountStore`, and it is where
+authorisation lives.
+
+Two rules there are stricter than an ordinary scope-limited grant, because
+that store holds credentials and decides who can spend:
+
+- **A credential is only ever loaded for the account's own owner.**
+  `Scope::All` widens what an operator can *see* about an account, never what
+  they can read inside it.
+- **Trading is owner-only, whatever the role says.** Administering the
+  platform and spending other people's money are different authorities, and
+  no grant merges them.
 
 ---
 

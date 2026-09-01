@@ -2,7 +2,7 @@
 	// Overview view's "EQUITY BY ADAPTER" panel: a header line with the account/adapter counts, then
 	// one proportional bar per adapter the account set touches.
 	import { cn } from '$lib/utils.js';
-	import type { ExposureItem } from '$lib/mock/engine';
+	import type { ExposureItem } from '$lib/trade/view';
 
 	let {
 		items,

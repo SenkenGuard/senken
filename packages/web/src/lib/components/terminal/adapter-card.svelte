@@ -17,7 +17,7 @@
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { LiveDot } from '$lib/components/ui/live-dot/index.js';
 	import PlusIcon from '@lucide/svelte/icons/plus';
-	import type { AdapterCardData } from '$lib/mock/engine';
+	import type { AdapterCardData } from '$lib/trade/view';
 
 	let {
 		adapter,
@@ -43,11 +43,7 @@
 				<Badge
 					class={cn(
 						'h-auto flex-none rounded-none px-[5px] py-[1px] font-mono text-[7.5px] tracking-[0.14em]',
-						adapter.connected
-							? 'bg-gain text-inv'
-							: adapter.status === 'BETA'
-								? 'bg-ink/16 text-dim2'
-								: 'bg-ink/10 text-dim2'
+						adapter.connected ? 'bg-gain text-inv' : 'bg-ink/10 text-dim2'
 					)}
 				>
 					{adapter.status}

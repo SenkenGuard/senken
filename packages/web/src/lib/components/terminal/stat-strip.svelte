@@ -11,7 +11,7 @@
 	// (8px label, 14-15px value) that stat-cell doesn't expose as a prop —
 	// see the P4 implementation report for the full reasoning.
 	import { cn } from '$lib/utils.js';
-	import type { StatItem, Tone } from '$lib/mock/engine';
+	import type { StatItem, Tone } from '$lib/trade/view';
 
 	let { stats, size = 'lg' }: { stats: StatItem[]; size?: 'lg' | 'md' } = $props();
 

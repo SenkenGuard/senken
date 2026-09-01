@@ -48,6 +48,17 @@ pub enum RuntimeError {
         source: MarketDataError,
     },
 
+    /// A plugin contributed a trade adapter the engine rejected — a
+    /// duplicate id, or one that is not a valid slug.
+    #[error("plugin `{plugin}` contributed an unusable trade adapter")]
+    TradeAdapterRegistration {
+        /// The plugin's manifest id.
+        plugin: String,
+        /// Why the engine refused it.
+        #[source]
+        source: senken_trade::TradeError,
+    },
+
     /// The bar-series store directory could not be prepared.
     #[error("series store initialisation failed")]
     SeriesStoreInit {

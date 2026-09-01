@@ -6,7 +6,7 @@
 	import { cn } from '$lib/utils.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
-	import type { AccountCardData } from '$lib/mock/engine';
+	import type { AccountCardData } from '$lib/trade/view';
 
 	let { card, onclick }: { card: AccountCardData; onclick: () => void } = $props();
 </script>

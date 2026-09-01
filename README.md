@@ -59,12 +59,13 @@ Not started: the trade engine.
 | `crates/series` | `senken-series` | yes | `Bar`, `BarSpec`, `Origin`, `Trade`, streaming aggregation, `Clock` — pure computation |
 | `crates/store` | `senken-store` | yes | Parquet-backed series storage; coverage derived from filenames |
 | `crates/venue` | `senken-venue` | yes | Shared venue plumbing: HTTP, retry, rate limiting, decode helpers |
-| `crates/plugin` | `senken-plugin` | with runtime | The plugin contract: manifest, activation context, lifecycle, the `MarketDataSource`/`BarSource` registration surface |
+| `crates/plugin` | `senken-plugin` | with runtime | The plugin contract: manifest, activation context, lifecycle, the `MarketDataSource`/`BarSource`/`TradeAdapter` registration surface |
 | `crates/loader` | `senken-loader` | yes | Resolution, caching and the job model behind chart and backtest loads |
 | `crates/subscription` | `senken-subscription` | yes | The live-data subscription pool: reference-counted, `Drop`-guarded leases on `(source, symbol)`, sharded across a venue's stream cap |
+| `crates/trade` | `senken-trade` | yes | The trade engine: the `TradeAdapter` contract, the order/position/balance vocabulary, adapter capabilities, dynamic settings schemas, and the attached-account store |
 | `crates/api` | `senken-api` | no | HTTP surface over the runtime |
 | `crates/runtime` | `senken-runtime` | no | Assembles storage, domain services and plugins into a running Senken |
-| `plugins/*` | `senken-plugin-*` | source: yes | One crate per venue (see below) |
+| `plugins/*` | `senken-plugin-*` | source: yes | One crate per venue (see below), plus `simulator`, the built-in paper broker |
 | `apps/cli` | `senken-cli` | — | Command line front end |
 
 Dependencies only point downward: a plugin depends on a domain crate, never the
