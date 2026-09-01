@@ -3,7 +3,7 @@
 // `$lib/mock/charts.ts` used to hold two very different kinds of thing under
 // one "mock" name: fixture *data* pretending to be a snapshot of something
 // real (candles, indicator series, a fake workspace list) — which
-// B2/B7 replace with real server calls — and plain UI *vocabulary* that was
+// replaced with real server calls — and plain UI *vocabulary* that was
 // never data at all: which draw tools exist, which pane-grid presets the
 // layout menu offers, which tabs the right panel has. That second kind
 // belongs here instead of disappearing along with the mock module (see
@@ -30,6 +30,7 @@ import CoinsIcon from '@lucide/svelte/icons/coins';
 import SigmaIcon from '@lucide/svelte/icons/sigma';
 import ZapIcon from '@lucide/svelte/icons/zap';
 import ListIcon from '@lucide/svelte/icons/list';
+import BookOpenIcon from '@lucide/svelte/icons/book-open';
 import BellIcon from '@lucide/svelte/icons/bell';
 import LayersIcon from '@lucide/svelte/icons/layers';
 import PenLineIcon from '@lucide/svelte/icons/pen-line';
@@ -125,10 +126,16 @@ export function tfLabel(tf: string): string {
 
 // --- Right panel tabs --------------------------------------------------------
 
-export type ChartPanelKey = 'engine' | 'watch' | 'alerts' | 'objects' | 'notes';
+export type ChartPanelKey = 'engine' | 'depth' | 'watch' | 'alerts' | 'objects' | 'notes';
 
+/** `depth` renders `OrderBook` — a real, live depth snapshot from the
+ * market-data feed (`crates/subscription`'s book source over the
+ * websocket), and works with no broker attached at all. It used to be a
+ * sub-tab inside `engine`, which mis-stated it as part of the (unwired) demo
+ * trade engine; it is market data and gets its own tab. */
 export const PANEL_TABS: { key: ChartPanelKey; icon: Component; label: string }[] = [
 	{ key: 'engine', icon: ZapIcon, label: 'TRADE ENGINE' },
+	{ key: 'depth', icon: BookOpenIcon, label: 'ORDER BOOK' },
 	{ key: 'watch', icon: ListIcon, label: 'WATCHLIST' },
 	{ key: 'alerts', icon: BellIcon, label: 'ALERTS' },
 	{ key: 'objects', icon: LayersIcon, label: 'OBJECT TREE' },

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { layoutMutationErrorMessage } from './workspace-error';
 import { ForbiddenError, HttpError, NetworkError } from '$lib/api/errors';
 
-describe('layoutMutationErrorMessage — B3\'s "you may not edit this layout" wording', () => {
+describe('layoutMutationErrorMessage — the "you may not edit this layout" wording', () => {
 	test('a rejected layout edit reads as a permission message, not the generic default', () => {
 		const message = layoutMutationErrorMessage(new ForbiddenError());
 		expect(message).toBe('You do not have permission to edit this layout.');

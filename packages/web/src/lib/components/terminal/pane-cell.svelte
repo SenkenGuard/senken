@@ -15,11 +15,13 @@
 	import ChartPane from './chart-pane.svelte';
 	import PaneHeader from './pane-header.svelte';
 	import SubPaneHeader from './sub-pane-header.svelte';
-	import { splitPaneLayers, type DrawingRuntime, type LayerRuntime } from '$lib/charts/pane-runtime';
+	import { drawingsForInstrument, splitPaneLayers, type DrawingRuntime, type LayerRuntime } from '$lib/charts/pane-runtime';
 	import type { ChartSettings } from '$lib/mock/chart-settings';
 	import { cn } from '$lib/utils.js';
 	import type { ToolKey } from './chart-config';
 	import type { MarketStatus } from '$lib/charts/live-state';
+	import type { StatusBar } from '$lib/charts/status-line';
+	import type { IChartApi } from 'lightweight-charts';
 
 	let {
 		instrument,
@@ -49,7 +51,8 @@
 		onLastClose,
 		onCreateDrawing,
 		onSelectDrawing,
-		onToolConsumed
+		onToolConsumed,
+		onChartApi
 	}: {
 		instrument: string;
 		/** The catalogued status for this instrument, when the page has one. */
@@ -88,15 +91,23 @@
 		onCreateDrawing: (drawing: Omit<DrawingRuntime, 'id' | 'position'>) => void;
 		onSelectDrawing: (id: string | null) => void;
 		onToolConsumed: () => void;
+		/** Forwarded straight through from `chart-pane.svelte`'s own prop of
+		 * the same name — this cell's `IChartApi`, once created, and
+		 * `undefined` again on teardown. Lets the page hold one `IChartApi`
+		 * per pane for the layout menu's TIME/CROSSHAIR sync toggles. */
+		onChartApi?: (chart: IChartApi | undefined) => void;
 	} = $props();
 
-	/** `null` while the pane's venue streams; otherwise why it does not. */
-	let liveNotice = $state<string | null>(null);
+	/** `null` while the pane's venue streams; otherwise the header's chip
+	 * label and the sentence behind it. */
+	let liveNotice = $state<{ label: string; message: string } | null>(null);
 	/** Where the pointer is, and which pane it is in. Mirrored to the others
 	 * so a sub-pane under the price draws the same vertical line the main
 	 * pane does — the pane the pointer is actually in is excluded, since
 	 * lightweight-charts already draws its own crosshair there. */
-	let hoverText = $state('');
+	/** The bar the status line describes: under the crosshair while the
+	 * pointer is on the plot, the newest loaded bar otherwise. */
+	let statusBar = $state<StatusBar | null>(null);
 	let narrow = $state(false);
 	/** Layers whose series is being recomputed, for the header's chips. */
 	let loadingLayerIds = $state<string[]>([]);
@@ -106,6 +117,12 @@
 	let livePrice = $state<number | null>(null);
 
 	const split = $derived(splitPaneLayers(layers));
+
+	/** Only the drawings that belong to whatever this pane is showing right
+	 * now. The pane keeps the rest — switching instrument and back brings
+	 * them straight back — but a level drawn on one market must never be
+	 * painted over another's candles. */
+	const shownDrawings = $derived(drawingsForInstrument(drawings, instrument));
 
 	/** Reported by the chart itself once its panes have been laid out. */
 	let paneTops = $state<number[]>([]);
@@ -131,8 +148,13 @@
 		     a reader reaches for often enough that a right-click each time is
 		     friction. Inside the axis gutter rather than over the plot, so
 		     they cost no chart. Same state as the menu and the settings
-		     dialog — all three write the pane's stored settings. -->
-		<div class="pointer-events-auto absolute right-[9px] bottom-[28px] z-[7] flex gap-px">
+		     dialog — all three write the pane's stored settings.
+		     At the top of the gutter, not the bottom: the app's floating
+		     assistant button is pinned to the window's bottom-right corner
+		     and sits over that spot, which left these two unclickable in
+		     every single-pane layout — the default one. The top of the
+		     gutter is empty (the header chips stop well clear of it). -->
+		<div class="pointer-events-auto absolute right-[9px] top-[7px] z-[7] flex gap-px">
 			<button
 				type="button"
 				aria-label="Auto-fit price scale"
@@ -174,7 +196,7 @@
 			replayIdx={replayCut}
 			{clearToken}
 			overlayLayers={split.main}
-			{drawings}
+			drawings={shownDrawings}
 			{settings}
 			subPaneLayers={split.sub}
 			{reloadToken}
@@ -186,7 +208,7 @@
 			onBarsLoading={(busy) => (barsLoading = busy)}
 			onAutoScaleChanged={(autoScale) => onPatchSettings?.({ autoScale })}
 			{selectedDrawingId}
-			onCrosshair={(t) => (hoverText = t)}
+			onStatusBar={(bar) => (statusBar = bar)}
 			onNarrow={(n) => (narrow = n)}
 			onLastClose={(price) => onLastClose?.(price)}
 			onLiveNotice={(notice) => (liveNotice = notice)}
@@ -195,6 +217,7 @@
 			{onCreateDrawing}
 			{onSelectDrawing}
 			{onToolConsumed}
+			{onChartApi}
 		/>
 		<PaneHeader
 			{liveNotice}
@@ -203,7 +226,8 @@
 			layers={split.main}
 			{loadingLayerIds}
 			{barsLoading}
-			{hoverText}
+			{statusBar}
+			{settings}
 			{narrow}
 			{livePrice}
 			{onToggleLayer}

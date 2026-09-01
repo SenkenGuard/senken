@@ -32,11 +32,23 @@ export interface PlotStyle {
  * this stays a pure data module with no chart-library dependency. */
 export const LINE_STYLE_MAP: Record<LineStyleName, number> = { SOLID: 0, DOTTED: 1, DASHED: 2 };
 
+/** The name an `overlay_instrument` layer's single close-price line is
+ * styled under, passed as `plotsForLayer`/`setPlotStyle`'s `indicatorName`
+ * argument. An overlay-instrument layer has no `indicatorName` of its own
+ * (it plots a second instrument, not an indicator), so this stands in for
+ * one — the same session-map/persisted-`style` path every indicator layer
+ * already uses, keyed by this constant instead. Given its own default
+ * colour (not the generic `'value'` default, which is the candles' own
+ * `#f2f2ef`) so a freshly added overlay is visible against the candlesticks
+ * from the moment it is added. */
+export const OVERLAY_INSTRUMENT_PLOT = 'overlay_instrument';
+
 /** One plot per field a given indicator reports (mirrors
  * `crates/api/src/indicator_handlers.rs`'s `reported_fields`/`field_key` —
  * the field keys here are exactly its wire spelling) plus the conventional
  * default color each one drew as an overlay/sub-pane series before this
- * milestone (`$lib/indicators/browser-compute.ts`, now deleted). */
+ * series before the server became the one source of indicator values
+ * (`$lib/indicators/browser-compute.ts`, now deleted). */
 export interface IndicatorDescriptorClient {
 	name: string;
 	title: string;
@@ -83,6 +95,8 @@ function defaultPlotsForIndicator(name: string): PlotStyle[] {
 			];
 		case 'Volume':
 			return [{ field: 'value', label: 'PLOT', type: 'histogram', color: '#9aa0a6', width: 1, style: 'SOLID', visible: true }];
+		case OVERLAY_INSTRUMENT_PLOT:
+			return [{ field: 'value', label: 'PLOT', type: 'line', color: '#c792ea', width: 1, style: 'SOLID', visible: true }];
 		default:
 			return [{ field: 'value', label: 'PLOT', type: 'line', color: '#f2f2ef', width: 1, style: 'SOLID', visible: true }];
 	}

@@ -1,17 +1,15 @@
-// Mock data + row builder for the chart settings dialog. Ported from the
-// reference's `state.chartSettings` fixture (lines 1514-1528), `chartTheme()`
-// (line 1917) and the `csRows`/`csGroupLabel`/`csSections` derivation (lines
-// 2614-2711, 3331-3344).
+// A pane's chart settings and the rows the settings dialog builds from them.
 //
-// UI only: every value here is a fixture default, not a
-// snapshot of anything real.
-//
-// Deviation: the reference's `chartSettings` fixture also carries
-// `alertLines` / `alertColor` / `alertLabels` and `evDividends` /
-// `evEarnings` / `evSplits` (lines 1526-1527), but none of the five
-// `csSection` branches (lines 2639-2711) ever render a row for them — they
-// are dead fields in the reference itself. Left out of `ChartSettings`
-// rather than carried forward unused.
+// Every field here is applied by something: `chart-pane.svelte` reads most
+// of them onto the chart, `pane-header.svelte` reads the status-line ones.
+// That is the entry requirement for the type, not a coincidence — a
+// settings row that writes a field nothing reads is a control that lies
+// about what it does, and eight of them (a logo toggle, buy/sell buttons,
+// a currency unit, price-to-bar ratio lock, non-overlapping labels, a plus
+// button, and navigation/pane button visibility) were removed rather than
+// left switchable: none had any mechanism behind it, and several never
+// could here — the chart library draws no navigation buttons and has no
+// bar-ratio lock to hold.
 
 import type { Component } from 'svelte';
 import ChartBarIcon from '@lucide/svelte/icons/chart-bar';
@@ -33,19 +31,13 @@ export interface ChartSettings {
 	wicks: boolean;
 	colorPrevClose: boolean;
 	precision: 'DEFAULT' | '2' | '4' | '5';
-	statusLogo: boolean;
 	statusSymbol: boolean;
 	statusOhlc: boolean;
 	statusChange: boolean;
 	statusVolume: boolean;
 	statusValues: boolean;
 	statusInputs: boolean;
-	statusBuySell: boolean;
-	currencyUnit: 'VISIBLE' | 'HIDDEN';
 	placement: 'RIGHT' | 'LEFT' | 'BOTH';
-	lockRatio: boolean;
-	noOverlap: boolean;
-	plusButton: boolean;
 	countdown: boolean;
 	symbolLabel: 'VALUE + LINE' | 'VALUE' | 'HIDDEN';
 	highLow: boolean;
@@ -66,8 +58,6 @@ export interface ChartSettings {
 	scaleFont: number;
 	scaleLineColor: string;
 	timeAxis: boolean;
-	navButtons: 'ON HOVER' | 'ALWAYS' | 'HIDDEN';
-	paneButtons: 'ON HOVER' | 'ALWAYS' | 'HIDDEN';
 	/** How the price axis maps price to pixels. `REGULAR` is linear;
 	 * `LOGARITHMIC` suits a long range; `PERCENT` and `INDEXED` are the
 	 * relative views. */
@@ -91,15 +81,15 @@ export function defaultChartSettings(): ChartSettings {
 	return {
 		bodyUp: 'auto', bodyDown: 'auto', borderUp: 'auto', borderDown: 'auto', wickUp: 'auto', wickDown: 'auto',
 		borders: true, wicks: true, colorPrevClose: false, precision: 'DEFAULT',
-		statusLogo: true, statusSymbol: true, statusOhlc: true, statusChange: true, statusVolume: false,
-		statusValues: true, statusInputs: true, statusBuySell: false,
-		currencyUnit: 'VISIBLE', placement: 'RIGHT', lockRatio: false, noOverlap: false, plusButton: true,
+		statusSymbol: true, statusOhlc: true, statusChange: true, statusVolume: false,
+		statusValues: true, statusInputs: true,
+		placement: 'RIGHT',
 		countdown: true, symbolLabel: 'VALUE + LINE', highLow: false, bidAsk: false, dayOfWeek: true, timeFormat: '24H',
 		bgMode: 'THEME', bgColor: '#0a0a0c', gridV: true, gridVColor: 'auto', gridH: true, gridHColor: 'auto',
 		crosshair: 'DASHED', crosshairColor: 'auto', watermark: 'HIDDEN', watermarkColor: 'auto',
 		priceScaleMode: 'REGULAR', invertScale: false, autoScale: true, paneSplit: [],
 		scaleTextColor: 'auto', scaleFont: 9, scaleLineColor: 'auto', timeAxis: true,
-		navButtons: 'ON HOVER', paneButtons: 'ON HOVER', marginTop: 10, marginBottom: 8, marginRight: 6,
+		marginTop: 10, marginBottom: 8, marginRight: 6,
 	};
 }
 
@@ -238,12 +228,10 @@ export function buildSettingsRows(
 		return {
 			groupLabel: 'INSTRUMENT',
 			rows: [
-				chk('LOGO', 'statusLogo'),
 				chk('TITLE & TIMEFRAME', 'statusSymbol'),
 				chk('CHART VALUES (OHLC)', 'statusOhlc'),
 				chk('BAR CHANGE VALUES', 'statusChange'),
 				chk('VOLUME', 'statusVolume'),
-				chk('BUY / SELL BUTTONS ON CHART', 'statusBuySell'),
 				group('INDICATORS'),
 				chk('TITLES', 'statusValues'),
 				chk('INPUTS IN TITLE', 'statusInputs')
@@ -254,12 +242,8 @@ export function buildSettingsRows(
 		return {
 			groupLabel: 'PRICE SCALE',
 			rows: [
-				optRow('CURRENCY AND UNIT', 'currencyUnit', ['VISIBLE', 'HIDDEN']),
 				optRow('SCALES PLACEMENT', 'placement', ['RIGHT', 'LEFT', 'BOTH']),
-				chk('LOCK PRICE TO BAR RATIO', 'lockRatio'),
 				group('PRICE LABELS & LINES'),
-				chk('NO OVERLAPPING LABELS', 'noOverlap'),
-				chk('PLUS BUTTON', 'plusButton'),
 				chk('COUNTDOWN TO BAR CLOSE', 'countdown'),
 				optRow('SYMBOL LABEL', 'symbolLabel', ['VALUE + LINE', 'VALUE', 'HIDDEN']),
 				chk('HIGH AND LOW LINES', 'highLow'),
@@ -300,9 +284,6 @@ export function buildSettingsRows(
 				{ label: 'TEXT COLOR', hasColor: true, colorValue: cs.scaleTextColor, colorFallback: theme.axis, onColorChange: (hex) => set({ scaleTextColor: hex }) },
 				numRow('TEXT SIZE', 'scaleFont', 'PX', 8, 16, 1),
 				{ label: 'SCALE LINES', hasColor: true, colorValue: cs.scaleLineColor, colorFallback: theme.border, onColorChange: (hex) => set({ scaleLineColor: hex }) },
-				group('BUTTONS'),
-				optRow('NAVIGATION', 'navButtons', ['ON HOVER', 'ALWAYS', 'HIDDEN']),
-				optRow('PANE', 'paneButtons', ['ON HOVER', 'ALWAYS', 'HIDDEN']),
 				group('MARGINS'),
 				numRow('TOP', 'marginTop', '%', 0, 40, 1),
 				numRow('BOTTOM', 'marginBottom', '%', 0, 40, 1),

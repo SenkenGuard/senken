@@ -2,10 +2,11 @@
 	// Charts route (the
 	// largest of the three pages). Top toolbar (lines 311-425): symbol
 	// readout, timeframe strip, indicator/settings menu buttons, replay
-	// control, workspace switcher, layout menu. Below it (lines 428-714):
-	// the drawing toolbar, the resizable pane grid, and the right panel
-	// (watchlist / objects / alerts / notes / engine) with its own vertical
-	// tab rail.
+	// control, refresh/reset-view, workspace switcher, layout menu. Below it
+	// (lines 428-714): the drawing toolbar, the resizable pane grid, and the
+	// right panel (trade engine / order book / watchlist / objects / alerts /
+	// notes) with its own vertical tab rail. The panel starts closed — a
+	// first look at this page is the chart and nothing else.
 	//
 	// this page now reads and writes real state — workspaces,
 	// layouts, panes, layers, bars and indicator values all come from
@@ -37,10 +38,8 @@
 	import type { InstrumentSummaryDto } from '$lib/api/types';
 	import type { MarketStatus } from '$lib/charts/live-state';
 	import { setIndicatorDescriptors, type IndicatorDescriptorClient } from '$lib/charts/layer-style';
-	import { wsClient } from '$lib/api/websocket';
-	import { wsEventsStore, priceFromEvent } from '$lib/api/ws-events.svelte';
-	import { hasQuoteFeed } from '$lib/api/sources.svelte';
-	import { objectTree } from '$lib/charts/pane-runtime';
+	import { ensureSourcesLoaded, hasBarSource, hasQuoteFeed } from '$lib/api/sources.svelte';
+	import { drawingsForInstrument, objectTree, type ObjectTreeItem } from '$lib/charts/pane-runtime';
 	import {
 		chartWorkspaceStore,
 		initChartWorkspaces,
@@ -50,16 +49,22 @@
 		deleteWorkspace,
 		setLayoutPreset,
 		setPaneInstrument,
+		setAllPanesInstrument,
 		setAllPanesTimeframe,
+		setPaneTimeframe,
 		toggleLayerVisible,
+		toggleDrawingVisible,
+		swapLayerOrder,
+		swapDrawingOrder,
 		editLayerParams,
 		addInstrumentOverlay,
 		addIndicatorLayer,
 		removeLayer,
 		addDrawing,
 		updateDrawingStyle,
+		updateDrawingText,
 		removeDrawing,
-		clearAllDrawings,
+		clearPaneDrawings,
 		dismissWorkspaceError,
 		persistLayerStyle,
 		updateDrawingGeometry,
@@ -74,7 +79,7 @@
 	import DrawToolbar from '$lib/components/terminal/draw-toolbar.svelte';
 	import OrderTicket from '$lib/components/terminal/order-ticket.svelte';
 	import OrderBook from '$lib/components/terminal/order-book.svelte';
-	import SymbolTree from '$lib/components/terminal/symbol-tree.svelte';
+	import ObjectTree from '$lib/components/terminal/object-tree.svelte';
 	import ChartSettingsDialog from '$lib/components/terminal/chart-settings-dialog.svelte';
 	import LayerDialog from '$lib/components/terminal/layer-dialog.svelte';
 	import DateJumpDialog from '$lib/components/terminal/date-jump-dialog.svelte';
@@ -83,17 +88,20 @@
 	import {
 		DEFAULT_ACCOUNT,
 		ACCOUNT_ICON,
-		ENGINE_SUB_TABS,
-		NOTE_TAGS,
-		ACTIVE_NOTE,
+		ENGINE_DEMO_NOTICE,
 		type OrderRow,
 		type OrderSide,
 		type OrderType
 	} from '$lib/components/terminal/trade-demo';
+	import WatchlistTab from '$lib/components/terminal/watchlist-tab.svelte';
+	import NotesTab from '$lib/components/terminal/notes-tab.svelte';
 	import * as Popover from '$lib/components/ui/popover/index.js';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { Switch } from '$lib/components/ui/switch/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import { syncTargets } from '$lib/charts/chart-sync';
+	import { shouldResetActivePaneView } from '$lib/charts/shortcuts';
+	import type { IChartApi, LogicalRange, MouseEventParams } from 'lightweight-charts';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import Columns3Icon from '@lucide/svelte/icons/columns-3';
@@ -101,6 +109,8 @@
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import PauseIcon from '@lucide/svelte/icons/pause';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import ScanIcon from '@lucide/svelte/icons/scan';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
@@ -112,6 +122,11 @@
 	let indicatorCatalog = $state<IndicatorDescriptorClient[]>([]);
 
 	onMount(() => {
+		// The instrument pickers below refuse a source that cannot serve
+		// bars, so the capability response has to be on its way before the
+		// first picker opens — the panes warm the same shared cache, but a
+		// reader can reach a picker before any pane has mounted.
+		void ensureSourcesLoaded();
 		void initChartWorkspaces();
 		void apiClient.listIndicators().then((items) => {
 			indicatorCatalog = items as unknown as IndicatorDescriptorClient[];
@@ -142,23 +157,79 @@
 	// Search results are the catalog status source. The server supplies this
 	// field from its cached venue catalog; keep the short-lived browser cache
 	// separate from persisted pane settings because a venue's state is market
-	// data, never a user preference.
+	// data, never a user preference. A key's presence means this instrument
+	// has been resolved at all — `pickSymbol` and the effect below both write
+	// `{ status: 'trading' }`, not just `{ status: 'closed' }`, so that
+	// presence is enough to mean "already resolved" without a second map to
+	// track it (`deriveLiveState` only ever looks at `status === 'closed'`,
+	// so recording the non-closed case changes nothing it reads).
 	let marketStatuses = $state<Record<string, MarketStatus>>({});
+	let marketStatusToken = 0;
+
+	// A pane loaded from a saved workspace — the normal case on every page
+	// load — never went through `pickSymbol`, so nothing has ever populated
+	// `marketStatuses` for its instrument, and its market-closed state never
+	// reaches the chart even when the catalog knows it. This resolves every
+	// pane's instrument the same way `pickSymbol` does, whenever the set of
+	// panes changes, skipping anything already resolved. `panes` is read
+	// outside `untrack` (it is what this effect must react to); the cache
+	// read/write is inside `untrack` for the same reason the WATCH tab's
+	// price effect uses it below — this effect's own writes to
+	// `marketStatuses` must not make it re-run against itself.
+	$effect(() => {
+		const currentPanes = panes;
+		const token = ++marketStatusToken;
+		untrack(() => {
+			const instrumentIds = Array.from(
+				new Set(currentPanes.map((p) => p.instrument).filter((id) => !(id in marketStatuses)))
+			);
+			if (instrumentIds.length === 0) return;
+			void Promise.all(
+				instrumentIds.map(async (id) => {
+					try {
+						// `id` is already `source:symbol`, the same grammar
+						// `searchInstruments` accepts to narrow to one venue —
+						// reused as the query rather than re-deriving it, then
+						// matched by exact id since a narrowed search can still
+						// return more than one row.
+						const page = await apiClient.searchInstruments(id, 5);
+						const row = page.rows.find((r) => r.id === id);
+						if (!row) return null;
+						const status: MarketStatus = row.status === 'closed' ? { status: 'closed' } : { status: 'trading' };
+						return [id, status] as const;
+					} catch {
+						// Leaves the pane exactly as unresolved as it was — no
+						// entry is written, so it behaves as it does today
+						// (and is retried next time the pane set changes).
+						return null;
+					}
+				})
+			).then((results) => {
+				if (token !== marketStatusToken) return;
+				const resolved = results.filter((r): r is readonly [string, MarketStatus] => r !== null);
+				if (resolved.length === 0) return;
+				marketStatuses = { ...marketStatuses, ...Object.fromEntries(resolved) };
+			});
+		});
+	});
 
 	let tool = $state<ToolKey>('cursor');
 	let clearToken = $state(0);
 
-	let panelOpen = $state(true);
+	// Closed by default: a first look at this page is the chart and nothing
+	// else. Clicking a rail tab opens that panel, same as it always has.
+	let panelOpen = $state(false);
 	let chartPanel = $state<ChartPanelKey>('engine');
-	let engineSub = $state<'book' | 'orders'>('book');
 	let orders = $state<OrderRow[]>([]);
 
 	let wsMenuOpen = $state(false);
 	let layoutMenuOpen = $state(false);
-	// Neither of these has a server field yet, so neither persists — kept as
-	// plain cosmetic UI state, same as before this stage.
-	let autosave = $state(true);
-	let sync = $state({ symbol: false, interval: false, crosshair: true, time: false });
+	// No server field yet, so this does not persist — plain cosmetic UI
+	// state, page-local like the rest of this stage's additions. `interval`
+	// defaults on (not off, like its siblings) because that already was this
+	// page's real behaviour before the toggle did anything at all — every
+	// pane's timeframe changed together, unconditionally.
+	let sync = $state({ symbol: false, interval: true, crosshair: true, time: false });
 	let newWorkspaceName = $state('');
 	let renamingWorkspaceId = $state<string | null>(null);
 	let renameDraft = $state('');
@@ -182,11 +253,23 @@
 		pane: number;
 		region: 'chart' | 'price-scale' | 'time-scale';
 	} | null>(null);
-	/** Bumped by the toolbar's reload button and by "Refresh chart data". */
-	let reloadToken = $state(0);
+	/** One reload counter per pane, exactly like `resetTokens` below: the
+	 * context menu's "REFRESH CHART DATA" bumps only the pane it was raised
+	 * on, and the toolbar's reload button bumps every pane at once. */
+	let reloadTokens = $state<number[]>([]);
 	/** One counter per pane: resetting pane 2's view must not disturb the
 	 * frame the user set on pane 1. */
 	let resetTokens = $state<number[]>([]);
+
+	function reloadPane(index: number) {
+		const next = [...reloadTokens];
+		next[index] = (next[index] ?? 0) + 1;
+		reloadTokens = next;
+	}
+
+	function reloadAllPanes() {
+		reloadTokens = panes.map((_, i) => (reloadTokens[i] ?? 0) + 1);
+	}
 
 	function resetPaneView(index: number) {
 		const next = [...resetTokens];
@@ -206,6 +289,112 @@
 		next[index] = { token: previousToken + 1, targetNanos };
 		jumpTargets = next;
 	}
+
+	// --- Cross-pane sync (layout menu's SYMBOL/INTERVAL/CROSSHAIR/TIME) -----
+	//
+	// SYMBOL and INTERVAL are plain branches in `pickSymbol`/`pickTf` above —
+	// each already had an all-panes and a single-pane store call to choose
+	// between. CROSSHAIR and TIME have no server-side notion at all: they
+	// only mean anything against a live `IChartApi`, one per pane, reported
+	// up through `onChartApi` (`pane-cell.svelte`/`pane-grid.svelte` forward
+	// `chart-pane.svelte`'s own prop of that name).
+	/** One `IChartApi` per pane, or `undefined` where the pane has not
+	 * mounted a chart yet (or has just torn one down). */
+	let chartApis = $state<(IChartApi | undefined)[]>([]);
+
+	function onChartApiFromPane(paneIndex: number, api: IChartApi | undefined) {
+		const next = [...chartApis];
+		next[paneIndex] = api;
+		chartApis = next;
+	}
+
+	/** TIME sync: panning or zooming one pane's time scale applies the same
+	 * logical range to every other pane. Re-subscribes whenever the toggle
+	 * flips or the set of live chart APIs changes, and tears every
+	 * subscription down on either — the effect's own return is the only
+	 * place any of this unsubscribes.
+	 *
+	 * The re-entrancy guard has to come first: applying a range to pane B
+	 * fires B's own change handler, which would apply it straight back to
+	 * pane A (and everyone else) without one — an infinite synchronous loop
+	 * between two panes, not merely a redundant extra call. */
+	$effect(() => {
+		if (!sync.time) return;
+		const apis = chartApis;
+		let applying = false;
+		const subs: { api: IChartApi; handler: (range: LogicalRange | null) => void }[] = [];
+		apis.forEach((api, sourceIndex) => {
+			if (!api) return;
+			const handler = (range: LogicalRange | null) => {
+				if (applying || range === null) return;
+				applying = true;
+				try {
+					for (const targetIndex of syncTargets(sourceIndex, apis.length)) {
+						apis[targetIndex]?.timeScale().setVisibleLogicalRange(range);
+					}
+				} finally {
+					applying = false;
+				}
+			};
+			api.timeScale().subscribeVisibleLogicalRangeChange(handler);
+			subs.push({ api, handler });
+		});
+		return () => {
+			for (const { api, handler } of subs) api.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+		};
+	});
+
+	/** CROSSHAIR sync: the hovered pane's crosshair draws in every other
+	 * pane at the same time and the same vertical position (each target
+	 * converts that position through its own price scale, since panes can
+	 * show differently priced instruments). Same re-entrancy guard as TIME
+	 * sync, for the same reason — `setCrosshairPosition` on pane B must not
+	 * re-trigger a fan-out from B. */
+	$effect(() => {
+		if (!sync.crosshair) return;
+		const apis = chartApis;
+		let applying = false;
+		const subs: { api: IChartApi; handler: (param: MouseEventParams) => void }[] = [];
+		apis.forEach((api, sourceIndex) => {
+			if (!api) return;
+			const handler = (param: MouseEventParams) => {
+				if (applying) return;
+				applying = true;
+				try {
+					for (const targetIndex of syncTargets(sourceIndex, apis.length)) {
+						const target = apis[targetIndex];
+						if (!target) continue;
+						const series = target.panes()[0]?.getSeries()[0];
+						const price = param.point && series ? series.coordinateToPrice(param.point.y) : null;
+						if (!series || param.time === undefined || price === null) {
+							target.clearCrosshairPosition();
+							continue;
+						}
+						target.setCrosshairPosition(price, param.time, series);
+					}
+				} finally {
+					applying = false;
+				}
+			};
+			api.subscribeCrosshairMove(handler);
+			subs.push({ api, handler });
+		});
+		return () => {
+			for (const { api, handler } of subs) api.unsubscribeCrosshairMove(handler);
+		};
+	});
+
+	/** The window-level `Alt+R` handler behind the context menu's own
+	 * "RESET CHART VIEW · ALT R" hint — `shouldResetActivePaneView` decides
+	 * whether this particular keydown should fire it at all (typing in a
+	 * field, or a dialog open, must not have the chart jump underneath). */
+	function handleGlobalKeydown(e: KeyboardEvent) {
+		const dialogOpen = csOpen || !!layerDlg || !!dateJumpDlg;
+		if (!shouldResetActivePaneView(e, e.target as { tagName?: string; isContentEditable?: boolean } | null, dialogOpen)) return;
+		e.preventDefault();
+		resetPaneView(activePaneIndex);
+	}
+
 	/** Which layer's settings are open, tracked by its *position* rather
 	 * than its id: saving a layout replaces every layer row server-side, so
 	 * the ids change on each write and a dialog keyed on one would close
@@ -230,7 +419,7 @@
 	function clearDrawings() {
 		selectedDrawing = null;
 		clearToken++;
-		void clearAllDrawings();
+		void clearPaneDrawings(activePaneIndex);
 	}
 
 	// The last real close per pane (`chart-pane.svelte`'s `onLastClose`),
@@ -279,18 +468,28 @@
 	}
 
 	function pickTf(t: Timeframe) {
-		void setAllPanesTimeframe(t);
+		if (sync.interval) void setAllPanesTimeframe(t);
+		else void setPaneTimeframe(activePaneIndex, t);
+	}
+
+	/** The pane-targeting core every symbol picker shares: SYMBOL sync decides
+	 * whether the active pane alone, or every pane, gets the new instrument.
+	 * Split out of `pickSymbol` so the WATCHLIST tab — whose rows are plain
+	 * instrument ids, not full `InstrumentSummaryDto` search hits — can reach
+	 * the same targeting logic without a status field it does not have. */
+	function pickPaneInstrument(instrument: string) {
+		if (sync.symbol) void setAllPanesInstrument(instrument);
+		else void setPaneInstrument(activePaneIndex, instrument);
 	}
 
 	function pickSymbol(instrument: InstrumentSummaryDto) {
-		const status = (instrument as InstrumentSummaryDto & { status?: string }).status;
-		if (status === 'closed') {
-			marketStatuses = { ...marketStatuses, [instrument.id]: { status: 'closed' } };
-		} else {
-			const { [instrument.id]: _removed, ...remaining } = marketStatuses;
-			marketStatuses = remaining;
-		}
-		void setPaneInstrument(activePaneIndex, instrument.id);
+		// Recorded either way — see `marketStatuses`' own doc above on why a
+		// resolved-but-trading instrument is written too, not just closed ones.
+		marketStatuses = {
+			...marketStatuses,
+			[instrument.id]: instrument.status === 'closed' ? { status: 'closed' } : { status: 'trading' }
+		};
+		pickPaneInstrument(instrument.id);
 	}
 
 	function onLastCloseFromPane(paneIndex: number, price: number) {
@@ -399,13 +598,25 @@
 			});
 	});
 
+	/** One instrument row for a picker.
+	 *
+	 * A source with no bar source registered cannot chart at all — picking
+	 * one leaves the pane blank while `GET /api/bars/plan` refuses the
+	 * request, which is what the catalogue's ~47 registered sources make
+	 * easy to do by accident. The row stays in the list, because dropping it
+	 * would read as "no such instrument"; it is simply not selectable, and
+	 * says why. `undefined` (the capability response has not arrived yet) is
+	 * never treated as "no": nothing is disabled on an answer we have not
+	 * been given. */
 	function instrumentRow(x: InstrumentSummaryDto, meta: string, onPick: () => void) {
+		const chartable = hasBarSource(x.id) !== false;
 		return {
 			icon: CoinsIcon,
 			title: `${x.source_id.toUpperCase()}:${x.symbol}`,
 			sub: x.name,
-			meta,
+			meta: chartable ? meta : 'NO BAR DATA',
 			metaTone: 'dim' as const,
+			disabled: !chartable,
 			onPick
 		};
 	}
@@ -477,65 +688,6 @@
 		});
 	}
 
-	// The right panel's WATCH tab ("a watchlist row ... take[s] a lease", same as a chart pane, an alert or a position). Real search,
-	// same endpoint the pickers above use; each listed row leases its own
-	// instrument through the shared `wsClient` for as long as it stays
-	// listed, so the whole visible set moves together whenever the tab
-	// opens, closes, or a new query narrows or widens it.
-	let watchQuery = $state('');
-	let watchResults = $state<InstrumentSummaryDto[]>([]);
-	let watchSearchToken = 0;
-	$effect(() => {
-		if (!(panelOpen && chartPanel === 'watch')) return;
-		const query = watchQuery;
-		const token = ++watchSearchToken;
-		apiClient
-			.searchInstruments(query, 20)
-			.then((page) => {
-				if (token === watchSearchToken) watchResults = page.rows;
-			})
-			.catch(() => {
-				if (token === watchSearchToken) watchResults = [];
-			});
-	});
-
-	// The lease itself: subscribing here and unsubscribing in this effect's
-	// own cleanup (fired again whenever `watchResults` changes, and once
-	// more on destroy) is the whole release mechanism — nobody has to
-	// remember to call anything, the same discipline `chart-pane.svelte`'s
-	// own live-price effect follows for a pane.
-	$effect(() => {
-		if (!(panelOpen && chartPanel === 'watch')) return;
-		const ids = watchResults.map((r) => r.id);
-		for (const id of ids) wsClient.subscribe(id);
-		return () => {
-			for (const id of ids) wsClient.unsubscribe(id);
-		};
-	});
-
-	let watchPrices = $state<Record<string, number>>({});
-	$effect(() => {
-		const event = wsEventsStore.last;
-		if (!event) return;
-		const rows = watchResults;
-		// `watchPrices` is read and written inside `untrack` deliberately —
-		// this effect's only reactive dependencies are the incoming WS event
-		// and the currently-listed rows, exactly the reasoning
-		// `chart-pane.svelte`'s own live-price effect documents for the same
-		// shape of update.
-		untrack(() => {
-			let next: Record<string, number> | null = null;
-			for (const row of rows) {
-				const price = priceFromEvent(event, row.id);
-				if (price != null && watchPrices[row.id] !== price) {
-					next ??= { ...watchPrices };
-					next[row.id] = price;
-				}
-			}
-			if (next) watchPrices = next;
-		});
-	});
-
 	// reference: a layer chip's "OPTIONS…" (line 2431) — the main
 	// instrument's settings live in chart settings; every other layer opens
 	// the layer dialog.
@@ -550,11 +702,56 @@
 	}
 
 	const activePanel = $derived(PANEL_TABS.find((p) => p.key === chartPanel) ?? PANEL_TABS[0]);
-	const treeGroups = $derived(objectTree(activePane?.layers ?? [], activePane?.drawings ?? []));
+	/** The drawings the active pane is actually showing — the ones made on
+	 * whatever instrument it currently displays. The pane keeps the rest,
+	 * and switching back to that instrument brings them straight back, but a
+	 * tree listing objects the chart is not drawing would be a list of
+	 * things the reader cannot see or click. */
+	const activePaneDrawings = $derived(
+		activePane ? drawingsForInstrument(activePane.drawings, activePane.instrument) : []
+	);
+	const treeGroups = $derived(objectTree(activePane?.layers ?? [], activePaneDrawings));
+	/** Only a *drawing* selection ever marks a row in the object tree — see
+	 * `object-tree.svelte`'s own `selected` check — and only while that
+	 * selection belongs to the pane the tree is currently showing. */
+	const treeSelectedId = $derived(selectedDrawing?.pane === activePaneIndex ? selectedDrawing.id : null);
+
+	/** Clicking a row selects it. Only a drawing has anything for "selected"
+	 * to mean on this page (it opens the floating `DrawingToolbar` — see
+	 * `handleSelectDrawing`); clicking a layer row clears any drawing
+	 * selection instead of leaving a stale one pointing at a different row. */
+	function handleTreeSelect(item: ObjectTreeItem) {
+		handleSelectDrawing(activePaneIndex, item.kind === 'drawing' ? item.id : null);
+	}
+	function handleTreeToggle(item: ObjectTreeItem) {
+		if (item.kind === 'layer') void toggleLayerVisible(activePaneIndex, item.id);
+		else void toggleDrawingVisible(activePaneIndex, item.id);
+	}
+	/** A layer's options open `LayerDialog`; a drawing has no separate
+	 * dialog — its properties are the floating `DrawingToolbar` that
+	 * selecting it already opens, so "options" on a drawing just selects it. */
+	function handleTreeOptions(item: ObjectTreeItem) {
+		if (item.kind === 'layer') openLayerSettings(activePaneIndex, item.id);
+		else handleSelectDrawing(activePaneIndex, item.id);
+	}
+	function handleTreeRemove(item: ObjectTreeItem) {
+		if (item.kind === 'layer') void removeLayer(activePaneIndex, item.id);
+		else void removeDrawing(activePaneIndex, item.id);
+	}
+	function handleTreeMove(item: ObjectTreeItem, neighborId: string) {
+		if (item.kind === 'layer') void swapLayerOrder(activePaneIndex, item.id, neighborId);
+		else void swapDrawingOrder(activePaneIndex, item.id, neighborId);
+	}
 	const dialogDrawing = $derived.by(() => {
 		const sel = selectedDrawing;
 		if (!sel) return null;
-		return panes[sel.pane]?.drawings.find((d) => d.id === sel.id) ?? null;
+		const pane = panes[sel.pane];
+		if (!pane) return null;
+		// Only among the drawings that pane is showing: switching its
+		// instrument hides the others, and a properties bar floating over a
+		// chart that is no longer drawing the object it edits is a control
+		// pointed at nothing.
+		return drawingsForInstrument(pane.drawings, pane.instrument).find((d) => d.id === sel.id) ?? null;
 	});
 	/** Where the floating toolbar sits. Anchored to the top of the chart
 	 * area rather than to the object itself: a bar that follows the drawing
@@ -636,7 +833,7 @@
 		}
 		return [
 			{ kind: 'action', label: 'RESET CHART VIEW', hint: 'ALT R', onSelect: () => resetPaneView(menu.pane) },
-			{ kind: 'action', label: 'REFRESH CHART DATA', onSelect: () => (reloadToken += 1) },
+			{ kind: 'action', label: 'REFRESH CHART DATA', onSelect: () => reloadPane(menu.pane) },
 			{ kind: 'action', label: 'GO TO DATE…', onSelect: () => (dateJumpDlg = { pane: menu.pane }) },
 			{ kind: 'separator' },
 			{
@@ -669,6 +866,8 @@
 		`PANE ${activePaneIndex + 1} · ${activePane ? parseInstrumentId(activePane.instrument).ticker : ''}`
 	);
 </script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 {#snippet layoutIcon(id: LayoutId, active: boolean)}
 	{@const L = LAYOUTS[id]}
@@ -758,41 +957,95 @@
 							<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">BAR REPLAY {replayPct}</span>
 						</Tooltip.Content>
 					</Tooltip.Root>
-					<button
-						type="button"
-						class="flex h-[27px] w-7 cursor-pointer items-center justify-center border border-ink/10 text-dim2"
-						onclick={resetReplay}
-					>
-						<RotateCcwIcon class="size-[14px]" />
-					</button>
+					<Tooltip.Root>
+						<Tooltip.Trigger
+							class="flex h-[27px] w-7 cursor-pointer items-center justify-center border border-ink/10 text-dim2"
+							onclick={resetReplay}
+							aria-label="Reset replay"
+						>
+							<RotateCcwIcon class="size-[14px]" />
+						</Tooltip.Trigger>
+						<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+							<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">RESET REPLAY</span>
+						</Tooltip.Content>
+					</Tooltip.Root>
 				</div>
-			</Tooltip.Provider>
 
-			<div class="h-5 w-px flex-none bg-ink/10"></div>
+				<div class="h-5 w-px flex-none bg-ink/10"></div>
 
-			<Popover.Root bind:open={wsMenuOpen}>
-				<Popover.Trigger
-					class={cn(
-						'flex h-[27px] flex-none cursor-pointer items-center gap-2 border px-2.5',
-						wsMenuOpen ? 'border-foreground bg-ink/8' : 'border-ink/14'
-					)}
-				>
-					<Columns3Icon class="size-3 text-dim2" />
-					<span class="max-w-[72px] overflow-hidden font-medium text-ellipsis whitespace-nowrap uppercase text-foreground text-[11px] tracking-[0.1em]">
-						{chartWorkspaceStore.workspaces.find((w) => w.id === chartWorkspaceStore.activeWorkspaceId)?.name ?? '—'}
-					</span>
-					<ChevronDownIcon class="size-[11px] text-dim2" />
-				</Popover.Trigger>
+				<!-- Refresh and reset-view: the manual way out of a pane that has
+				     ended up somewhere the data or the frame cannot explain.
+				     Refresh reloads every pane; reset-view snaps the active pane
+				     back to its default range (also `Alt R` — see
+				     `handleGlobalKeydown`). -->
+				<div class="flex flex-none items-center gap-1.5">
+					<Tooltip.Root>
+						<Tooltip.Trigger
+							class="flex h-[27px] w-7 cursor-pointer items-center justify-center border border-ink/10 text-dim2"
+							onclick={reloadAllPanes}
+							aria-label="Refresh chart data"
+						>
+							<RefreshCwIcon class="size-[14px]" />
+						</Tooltip.Trigger>
+						<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+							<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">REFRESH CHART DATA</span>
+						</Tooltip.Content>
+					</Tooltip.Root>
+					<Tooltip.Root>
+						<Tooltip.Trigger
+							class="flex h-[27px] w-7 cursor-pointer items-center justify-center border border-ink/10 text-dim2"
+							onclick={() => resetPaneView(activePaneIndex)}
+							aria-label="Reset chart view"
+						>
+							<ScanIcon class="size-[14px]" />
+						</Tooltip.Trigger>
+						<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+							<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">RESET CHART VIEW · ALT R</span>
+						</Tooltip.Content>
+					</Tooltip.Root>
+				</div>
+
+				<div class="h-5 w-px flex-none bg-ink/10"></div>
+
+				<Popover.Root bind:open={wsMenuOpen}>
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<span {...props} class="contents">
+								<Popover.Trigger
+									class={cn(
+										'flex h-[27px] flex-none cursor-pointer items-center gap-2 border px-2.5',
+										wsMenuOpen ? 'border-foreground bg-ink/8' : 'border-ink/14'
+									)}
+								>
+									<Columns3Icon class="size-3 text-dim2" />
+									<span class="max-w-[72px] overflow-hidden font-medium text-ellipsis whitespace-nowrap uppercase text-foreground text-[11px] tracking-[0.1em]">
+										{chartWorkspaceStore.workspaces.find((w) => w.id === chartWorkspaceStore.activeWorkspaceId)?.name ?? '—'}
+									</span>
+									<ChevronDownIcon class="size-[11px] text-dim2" />
+								</Popover.Trigger>
+							</span>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+						<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">WORKSPACES</span>
+					</Tooltip.Content>
+				</Tooltip.Root>
 				<Popover.Content align="end" sideOffset={10} class="w-[280px] rounded-none border-ink/16 bg-popover p-0">
-					<div class="flex items-center justify-between border-b border-ink/7 px-3 py-2.5">
-						<span class="font-mono text-[10px] tracking-[0.16em] text-secondary-foreground">AUTOSAVE</span>
-						<Switch size="sm" checked={autosave} onCheckedChange={(v) => (autosave = v)} />
-					</div>
 					<form onsubmit={submitNewWorkspace} class="flex items-center gap-1.5 border-b border-ink/7 px-3 py-2.5">
 						<Input placeholder="New workspace name…" bind:value={newWorkspaceName} class="h-7 flex-1 text-[11px]" />
-						<button type="submit" class="flex size-7 flex-none cursor-pointer items-center justify-center border border-ink/14 text-dim2" aria-label="Create workspace">
-							<PlusIcon class="size-3" />
-						</button>
+						<Tooltip.Root>
+							<Tooltip.Trigger
+								type="submit"
+								class="flex size-7 flex-none cursor-pointer items-center justify-center border border-ink/14 text-dim2"
+								aria-label="Create workspace"
+							>
+								<PlusIcon class="size-3" />
+							</Tooltip.Trigger>
+							<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+								<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">CREATE WORKSPACE</span>
+							</Tooltip.Content>
+						</Tooltip.Root>
 					</form>
 					<div class="px-3 pt-2.5 pb-1.5 font-mono text-[8px] tracking-[0.26em] text-dim">WORKSPACES</div>
 					{#each chartWorkspaceStore.workspaces as w (w.id)}
@@ -807,18 +1060,31 @@
 								<button type="button" class="min-w-0 flex-1 cursor-pointer text-left" onclick={() => pickWorkspace(w.id)}>
 									<span class={cn('block truncate text-[11.5px] font-medium tracking-[0.1em] uppercase', active ? 'text-inv' : 'text-foreground')}>{w.name}</span>
 								</button>
-								<button type="button" class={cn('flex-none cursor-pointer', active ? 'text-inv/70' : 'text-dim2')} onclick={() => startRename(w.id, w.name)} aria-label="Rename workspace">
-									<PencilIcon class="size-3" />
-								</button>
-								<button
-									type="button"
-									class={cn('flex-none cursor-pointer', active ? 'text-inv/70' : 'text-dim2')}
-									disabled={chartWorkspaceStore.workspaces.length <= 1}
-									onclick={() => confirmDeleteWorkspace(w.id)}
-									aria-label="Delete workspace"
-								>
-									<Trash2Icon class="size-3" />
-								</button>
+								<Tooltip.Root>
+									<Tooltip.Trigger
+										class={cn('flex-none cursor-pointer', active ? 'text-inv/70' : 'text-dim2')}
+										onclick={() => startRename(w.id, w.name)}
+										aria-label="Rename workspace"
+									>
+										<PencilIcon class="size-3" />
+									</Tooltip.Trigger>
+									<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+										<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">RENAME WORKSPACE</span>
+									</Tooltip.Content>
+								</Tooltip.Root>
+								<Tooltip.Root>
+									<Tooltip.Trigger
+										class={cn('flex-none cursor-pointer', active ? 'text-inv/70' : 'text-dim2')}
+										disabled={chartWorkspaceStore.workspaces.length <= 1}
+										onclick={() => confirmDeleteWorkspace(w.id)}
+										aria-label="Delete workspace"
+									>
+										<Trash2Icon class="size-3" />
+									</Tooltip.Trigger>
+									<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+										<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">DELETE WORKSPACE</span>
+									</Tooltip.Content>
+								</Tooltip.Root>
 							{/if}
 						</div>
 					{/each}
@@ -826,15 +1092,26 @@
 			</Popover.Root>
 
 			<Popover.Root bind:open={layoutMenuOpen}>
-				<Popover.Trigger
-					class={cn(
-						'flex h-[27px] flex-none cursor-pointer items-center gap-2 border px-2',
-						layoutMenuOpen ? 'border-foreground bg-ink/8' : 'border-ink/14'
-					)}
-				>
-					{@render layoutIcon(layout.preset, true)}
-					<ChevronDownIcon class="size-[11px] text-dim2" />
-				</Popover.Trigger>
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						{#snippet child({ props })}
+							<span {...props} class="contents">
+								<Popover.Trigger
+									class={cn(
+										'flex h-[27px] flex-none cursor-pointer items-center gap-2 border px-2',
+										layoutMenuOpen ? 'border-foreground bg-ink/8' : 'border-ink/14'
+									)}
+								>
+									{@render layoutIcon(layout.preset, true)}
+									<ChevronDownIcon class="size-[11px] text-dim2" />
+								</Popover.Trigger>
+							</span>
+						{/snippet}
+					</Tooltip.Trigger>
+					<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+						<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">CHART LAYOUT</span>
+					</Tooltip.Content>
+				</Tooltip.Root>
 				<Popover.Content align="end" sideOffset={10} class="w-[250px] rounded-none border-ink/16 bg-popover p-0">
 					<div class="px-3 pt-2.5 pb-1.5 font-mono text-[8px] tracking-[0.26em] text-dim">CHART LAYOUT</div>
 					{#each LAYOUT_GROUPS as g (g.count)}
@@ -866,14 +1143,19 @@
 				</Popover.Content>
 			</Popover.Root>
 
-			<button
-				type="button"
-				class="flex h-[27px] w-[30px] flex-none cursor-pointer items-center justify-center border border-ink/10 text-dim2"
-				onclick={toggleFullscreen}
-				aria-label="Toggle fullscreen"
-			>
-				<Maximize2Icon class="size-[14px]" />
-			</button>
+			<Tooltip.Root>
+				<Tooltip.Trigger
+					class="flex h-[27px] w-[30px] flex-none cursor-pointer items-center justify-center border border-ink/10 text-dim2"
+					onclick={toggleFullscreen}
+					aria-label="Toggle fullscreen"
+				>
+					<Maximize2Icon class="size-[14px]" />
+				</Tooltip.Trigger>
+				<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+					<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">TOGGLE FULLSCREEN</span>
+				</Tooltip.Content>
+			</Tooltip.Root>
+		</Tooltip.Provider>
 		</div>
 
 		<!-- Toolbar + pane grid + right panel (lines 428-714) -->
@@ -885,11 +1167,18 @@
 				<DrawingToolbar
 			x={drawingToolbarAnchor.x}
 			y={drawingToolbarAnchor.y}
+			kind={dialogDrawing.kind}
+			text={dialogDrawing.text}
+			visible={dialogDrawing.visible}
 			color={dialogDrawing.color}
 			width={dialogDrawing.width}
 			lineStyle={dialogDrawing.lineStyle}
 			onChangeStyle={(patch) =>
 				selectedDrawing && void updateDrawingStyle(selectedDrawing.pane, selectedDrawing.id, patch)}
+			onChangeText={(text) =>
+				selectedDrawing && void updateDrawingText(selectedDrawing.pane, selectedDrawing.id, text)}
+			onToggleVisible={() =>
+				selectedDrawing && void toggleDrawingVisible(selectedDrawing.pane, selectedDrawing.id)}
 			onDelete={() => {
 				if (selectedDrawing) void removeDrawing(selectedDrawing.pane, selectedDrawing.id);
 				selectedDrawing = null;
@@ -909,7 +1198,7 @@
 				{replayPct}
 				{clearToken}
 				{selectedDrawing}
-				{reloadToken}
+				{reloadTokens}
 				{resetTokens}
 				{jumpTargets}
 				{marketStatuses}
@@ -925,19 +1214,31 @@
 				onCreateDrawing={handleCreateDrawing}
 				onSelectDrawing={handleSelectDrawing}
 				onToolConsumed={handleToolConsumed}
+				onChartApi={onChartApiFromPane}
 			/>
 
 			{#if panelOpen}
 				<div class="flex w-[262px] min-h-0 flex-none flex-col border-l border-border bg-chrome">
 					<div class="flex h-[30px] flex-none items-center justify-between border-b border-ink/7 px-3">
 						<span class="font-mono text-[8px] tracking-[0.26em] text-dim">{activePanel.label}</span>
-						<button type="button" class="cursor-pointer text-dim" onclick={() => (panelOpen = false)} aria-label="Close panel">
-							<XIcon class="size-3" />
-						</button>
+						<Tooltip.Provider>
+							<Tooltip.Root>
+								<Tooltip.Trigger class="cursor-pointer text-dim" onclick={() => (panelOpen = false)} aria-label="Close panel">
+									<XIcon class="size-3" />
+								</Tooltip.Trigger>
+								<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+									<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">CLOSE PANEL</span>
+								</Tooltip.Content>
+							</Tooltip.Root>
+						</Tooltip.Provider>
 					</div>
 
 					{#if chartPanel === 'engine'}
 						<div class="flex min-h-0 flex-1 flex-col">
+							<div class="flex-none border-b border-ink/7 px-3 py-2">
+								<span class="font-mono text-[8.5px] tracking-[0.1em] text-dim">{ENGINE_DEMO_NOTICE}</span>
+							</div>
+
 							<div class="flex items-center justify-between gap-2 border-b border-ink/7 px-3 py-2.5">
 								<div class="flex min-w-0 items-center gap-2">
 									<AccountIcon class="size-[13px] flex-none text-dim2" />
@@ -949,26 +1250,7 @@
 							<OrderTicket instrument={activePane?.instrument ?? ''} {mid} ccy={DEFAULT_ACCOUNT.ccy} leverage={DEFAULT_ACCOUNT.leverage} onPlace={placeOrder} />
 
 							<div class="min-h-0 flex-1 overflow-auto">
-								<div class="flex h-7 items-stretch border-b border-ink/7">
-									{#each ENGINE_SUB_TABS as t (t.key)}
-										<button
-											type="button"
-											class={cn(
-												'flex cursor-pointer items-center gap-1.5 border-r border-ink/6 px-3',
-												engineSub === t.key ? 'bg-foreground text-inv' : 'text-dim'
-											)}
-											onclick={() => (engineSub = t.key)}
-										>
-											<span class="font-mono text-[8px] tracking-[0.22em]">{t.label}</span>
-											{#if t.key === 'orders'}
-												<span class="font-mono text-[8.5px] text-dim">{orders.length}</span>
-											{/if}
-										</button>
-									{/each}
-								</div>
-								{#if engineSub === 'book'}
-									<OrderBook instrument={activePane?.instrument ?? ''} />
-								{:else if orders.length === 0}
+								{#if orders.length === 0}
 									<div class="py-5.5 text-center font-mono text-[9px] tracking-[0.16em] text-dim">NO ORDERS ON THIS ACCOUNT</div>
 								{:else}
 									{#each orders as o (o.id)}
@@ -986,36 +1268,12 @@
 								{/if}
 							</div>
 						</div>
-					{:else if chartPanel === 'watch'}
-						<div class="flex min-h-0 flex-1 flex-col">
-							<div class="flex-none border-b border-ink/7 p-2">
-								<Input
-									bind:value={watchQuery}
-									placeholder="Search instruments…"
-									class="h-7 border-ink/14 bg-transparent font-mono text-[10.5px]"
-								/>
-							</div>
-							<div class="min-h-0 flex-1 overflow-auto">
-								{#each watchResults as r (r.id)}
-									<button
-										type="button"
-										class="flex w-full cursor-pointer items-center justify-between gap-2 border-b border-ink/5 px-3 py-2.5"
-									onclick={() => pickSymbol(r)}
-									>
-										<div class="flex min-w-0 items-center gap-2.5">
-											<div class="flex size-[18px] flex-none items-center justify-center border border-ink/14 font-mono text-[8.5px] text-secondary-foreground">{r.symbol.slice(0, 1)}</div>
-											<span class="truncate font-mono text-[10.5px] tracking-[0.06em] text-foreground">{r.source_id.toUpperCase()}:{r.symbol}</span>
-										</div>
-										<span class="flex-none font-mono text-[10px] text-secondary-foreground">
-											{watchPrices[r.id] != null ? fmtDecimal(watchPrices[r.id]) : ''}
-										</span>
-									</button>
-								{/each}
-								{#if watchResults.length === 0}
-									<div class="py-5.5 text-center font-mono text-[9px] tracking-[0.16em] text-dim">NO MATCH</div>
-								{/if}
-							</div>
+					{:else if chartPanel === 'depth'}
+						<div class="min-h-0 flex-1 overflow-auto">
+							<OrderBook instrument={activePane?.instrument ?? ''} />
 						</div>
+					{:else if chartPanel === 'watch'}
+						<WatchlistTab onPickInstrument={pickPaneInstrument} />
 					{:else if chartPanel === 'alerts'}
 						<AlertsPanel paneInstrument={activePane?.instrument ?? ''} paneTimeframe={activePane?.timeframe ?? '1h'} />
 					{:else if chartPanel === 'objects'}
@@ -1023,17 +1281,18 @@
 							<div class="border-b border-ink/7 px-3 py-2 font-mono text-[8.5px] tracking-[0.2em] text-secondary-foreground">
 								PANE {activePaneIndex + 1} · {activePane ? parseInstrumentId(activePane.instrument).venue + ':' + parseInstrumentId(activePane.instrument).ticker : ''}
 							</div>
-							<SymbolTree groups={treeGroups} />
+							<ObjectTree
+								groups={treeGroups}
+								selectedId={treeSelectedId}
+								onSelect={handleTreeSelect}
+								onToggle={handleTreeToggle}
+								onOptions={handleTreeOptions}
+								onRemove={handleTreeRemove}
+								onMove={handleTreeMove}
+							/>
 						</div>
 					{:else if chartPanel === 'notes'}
-						<div class="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto p-3">
-							<div class="border border-ink/10 p-2.5 font-mono text-[10px] leading-relaxed text-secondary-foreground">{ACTIVE_NOTE}</div>
-							<div class="flex flex-wrap gap-1.5">
-								{#each NOTE_TAGS as t (t)}
-									<span class="border border-ink/12 px-2.5 py-1 font-mono text-[8.5px] tracking-[0.16em] text-dim2">{t}</span>
-								{/each}
-							</div>
-						</div>
+						<NotesTab />
 					{/if}
 				</div>
 			{/if}

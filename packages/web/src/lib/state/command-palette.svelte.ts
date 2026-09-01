@@ -31,6 +31,11 @@ export interface CommandRow {
 	meta: string;
 	metaTone: Tone;
 	onPick: () => void;
+	/** Shown, but not selectable. A row that cannot do what picking it
+	 * promises belongs in the list — leaving it out would read as "no such
+	 * instrument" — but choosing it must not strand the caller. `meta`
+	 * carries the reason. */
+	disabled?: boolean;
 }
 
 export interface CommandKindTab {

@@ -1,14 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import type { Logical, LogicalRange } from 'lightweight-charts';
 import { nativePaneData } from './native-panes';
-import { preserveVisibleRange } from './chart-window';
+import { logicalRangeShift, preserveVisibleRange } from './chart-window';
 
 function range(from: number, to: number): LogicalRange {
 	return { from: from as Logical, to: to as Logical };
 }
 
 /** A time scale over a real series: logical indices address positions in
- * `times`, so prepending renumbers them exactly as lightweight-charts does. */
+ * `times`, so prepending renumbers them exactly as lightweight-charts does.
+ * `times` is readable so a test can compute the same shift the pane does. */
 function scaleOver(initial: number[]) {
 	let times = [...initial];
 	let logical = range(0, initial.length - 1);
@@ -16,16 +17,11 @@ function scaleOver(initial: number[]) {
 		prepend(older: number[]) {
 			times = [...older, ...times];
 		},
+		get times() {
+			return times;
+		},
 		visibleTimes(): [number | undefined, number | undefined] {
 			return [times[Math.round(logical.from)], times[Math.round(logical.to)]];
-		},
-		getVisibleRange: () => {
-			const from = times[Math.round(logical.from)];
-			const to = times[Math.round(logical.to)];
-			return from == null || to == null ? null : { from, to };
-		},
-		setVisibleRange: (next: { from: number; to: number }) => {
-			logical = range(times.indexOf(next.from), times.indexOf(next.to));
 		},
 		getVisibleLogicalRange: () => logical,
 		setVisibleLogicalRange: (next: LogicalRange) => (logical = next)
@@ -47,14 +43,35 @@ describe('native chart panes', () => {
 	// The one that paging depends on. A page of older bars renumbers every
 	// logical index, so putting the same logical range back leaves the
 	// viewport on different bars entirely — the chart lurches backwards the
-	// moment a page lands. Holding the *times* is what makes it seamless.
+	// moment a page lands. Shifting the logical range by how far the bars
+	// moved is what makes it seamless.
 	test('a prepended page of history leaves the reader looking at the same bars', () => {
 		const scale = scaleOver([30, 40, 50]);
+		const before = [...scale.times];
 		expect(scale.visibleTimes()).toEqual([30, 50]);
 
-		preserveVisibleRange(scale, () => scale.prepend([10, 20]));
+		preserveVisibleRange(
+			scale,
+			() => scale.prepend([10, 20]),
+			// Computed the same way the pane computes it, from the bar times
+			// either side of the update.
+			logicalRangeShift(before, [10, 20, ...before])
+		);
 
 		expect(scale.visibleTimes()).toEqual([30, 50]);
+	});
+
+	// The failure a time-based restore could not see: the reader's margin.
+	// A viewport that extends past the newest bar covers logical indices no
+	// bar occupies, and those are exactly what a range clipped to the data
+	// throws away.
+	test('empty space kept to the right of the newest bar survives a re-set', () => {
+		const scale = scaleOver([100, 200, 300]);
+		scale.setVisibleLogicalRange(range(0, 8));
+
+		preserveVisibleRange(scale, () => {}, 0);
+
+		expect(scale.getVisibleLogicalRange()).toEqual(range(0, 8));
 	});
 
 	test('adding and removing a drawing does not shift the visible range', () => {
@@ -83,7 +100,7 @@ describe('native chart panes', () => {
 		expect(scale.visibleTimes()).toEqual([100, 300]);
 	});
 
-	test('an empty chart falls back to the logical range, having no times to hold', () => {
+	test('an empty chart keeps whatever range it had, having no bars to hold', () => {
 		const scale = scaleOver([]);
 		scale.setVisibleLogicalRange(range(0, 10));
 

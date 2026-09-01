@@ -4,6 +4,9 @@ import {
 	HISTORY_PREFETCH_THRESHOLD_BARS,
 	MAX_HISTORY_BARS,
 	applyHistoryJump,
+	defaultFrame,
+	logicalRangeShift,
+	preserveVisibleRange,
 	historyLoadPriority,
 	indicatorRange,
 	historyWindowAround,
@@ -114,7 +117,7 @@ describe('prefetch hysteresis prevents thrashing on a small back-and-forth drag'
 
 	test('a small back-and-forth drag near the edge triggers far fewer fetches than moves', () => {
 		// Net drift toward the edge, but every other move reverses briefly —
-		// exactly the "small back-and-forth drag" B11a describes.
+		// exactly the small back-and-forth drag the hysteresis exists for.
 		const moves = Array.from({ length: 400 }, (_, i) => (i % 2 === 0 ? -30 : 22));
 		const fetches = fetchesForDrag(moves, HISTORY_PAGE_BARS);
 		expect(fetches).toBeGreaterThan(0);
@@ -157,5 +160,111 @@ describe('indicatorRange', () => {
 
 	test('is null while the pane has no bars', () => {
 		expect(indicatorRange([], 60)).toBeNull();
+	});
+});
+
+
+describe('holding the viewport still across a structural update', () => {
+	/** The two time-scale methods `preserveVisibleRange` actually uses, with
+	 * a settable range — enough to observe what it puts back, which is the
+	 * whole property under test. */
+	function fakeTimeScale(initial: { from: number; to: number } | null) {
+		let range = initial;
+		return {
+			getVisibleLogicalRange: () => (range as never),
+			setVisibleLogicalRange: (next: { from: number; to: number }) => {
+				range = { from: next.from, to: next.to };
+			},
+			get range() {
+				return range;
+			}
+		};
+	}
+
+	test('an unchanged window keeps the reader’s zoom and both margins exactly', () => {
+		// A viewport with six bars of empty space to the right of the newest
+		// bar (logical 299) — the margin every re-set used to eat.
+		const scale = fakeTimeScale({ from: 145.5, to: 305.5 });
+		preserveVisibleRange(scale, () => {}, 0);
+		expect(scale.range).toEqual({ from: 145.5, to: 305.5 });
+	});
+
+	test('a prepended page moves the viewport with the bars it was looking at', () => {
+		const previous = [10, 20, 30];
+		const next = [-20, -10, 0, 10, 20, 30];
+		const shift = logicalRangeShift(previous, next);
+		expect(shift).toBe(3);
+		const scale = fakeTimeScale({ from: 0.5, to: 2.5 });
+		preserveVisibleRange(scale, () => {}, shift);
+		expect(scale.range).toEqual({ from: 3.5, to: 5.5 });
+	});
+
+	test('a bar appended at the right does not move anything', () => {
+		expect(logicalRangeShift([10, 20, 30], [10, 20, 30, 40])).toBe(0);
+	});
+
+	test('a window sharing no bar with its predecessor reports no anchor', () => {
+		expect(logicalRangeShift([10, 20, 30], [900, 910])).toBeNull();
+		expect(logicalRangeShift([], [10, 20])).toBeNull();
+		expect(logicalRangeShift([10, 20], [])).toBeNull();
+	});
+
+	test('a null shift leaves the new window unframed for the caller to place', () => {
+		const scale = fakeTimeScale({ from: 0.5, to: 2.5 });
+		preserveVisibleRange(scale, () => {}, null);
+		// Untouched: the caller frames a replaced window itself rather than
+		// restoring a range that no longer means anything.
+		expect(scale.range).toEqual({ from: 0.5, to: 2.5 });
+	});
+
+	test('an empty chart has nothing to restore', () => {
+		const scale = fakeTimeScale(null);
+		preserveVisibleRange(scale, () => {}, 0);
+		expect(scale.range).toBeNull();
+	});
+
+	test('the anchor falls back to the last bar when the first one is gone', () => {
+		// The oldest bars were dropped and two newer ones added: the window
+		// shifted left by two.
+		expect(logicalRangeShift([10, 20, 30, 40], [30, 40, 50, 60])).toBe(-2);
+	});
+});
+
+describe('the default frame', () => {
+	// 1000px of plot, 300 bars wanted, 6 bars of margin: every bar gets
+	// 1000/306 px and the newest one sits six bars in from the right edge.
+	test('keeps the right margin clear instead of jamming the newest bar against the scale', () => {
+		const frame = defaultFrame(300, 6, 1000);
+		expect(frame?.scrollPosition).toBe(6);
+		expect(frame?.barSpacing).toBeCloseTo(1000 / 306, 10);
+	});
+
+	test('frames a fixed recent window rather than every bar ever paged in', () => {
+		const shallow = defaultFrame(300, 6, 1000);
+		const deep = defaultFrame(12_000, 6, 1000);
+		// Forty times the history, the same readable bar width — the whole
+		// difference between this and fitting everything loaded.
+		expect(deep?.barSpacing).toBeCloseTo(shallow?.barSpacing ?? 0, 10);
+	});
+
+	test('a pane holding fewer bars than the window shows all of them, still with the margin', () => {
+		const frame = defaultFrame(12, 6, 900);
+		expect(frame?.scrollPosition).toBe(6);
+		expect(frame?.barSpacing).toBeCloseTo(900 / 18, 10);
+	});
+
+	test('there is nothing to frame on an empty pane, or before the chart has a width', () => {
+		expect(defaultFrame(0, 6, 1000)).toBeNull();
+		expect(defaultFrame(300, 6, 0)).toBeNull();
+	});
+
+	test('a zero right margin is honoured rather than replaced by a default', () => {
+		const frame = defaultFrame(300, 0, 1200);
+		expect(frame?.scrollPosition).toBe(0);
+		expect(frame?.barSpacing).toBeCloseTo(1200 / 300, 10);
+	});
+
+	test('a negative margin cannot push the newest bar off the right edge', () => {
+		expect(defaultFrame(300, -4, 1200)?.scrollPosition).toBe(0);
 	});
 });

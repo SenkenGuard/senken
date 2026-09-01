@@ -4,9 +4,8 @@
 // fallback left: a venue without `book.supported` never reaches this module
 // at all (`order-book.svelte` shows a disabled control with its reason
 // instead), and a venue that does report the capability renders only what
-// its own snapshot actually contains — see 019 M3's own warning that a
-// fallback which *looks* real is exactly the mistake this milestone exists
-// to close.
+// its own snapshot actually contains. Depth that merely *looks* real is
+// worse than no depth at all: it is market data a reader would trade on.
 //
 // Kept pure (no `apiClient`, no `$state`) for the same reason
 // `$lib/api/ws-frames.ts` and `$lib/charts/indicator-display.ts` are: it

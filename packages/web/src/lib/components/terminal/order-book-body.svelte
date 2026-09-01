@@ -8,9 +8,10 @@
 	// Five distinct states, never collapsed into one another: a source that
 	// does not report `book.supported` is not the same fact as a snapshot
 	// that has not arrived yet, and neither is the same as a snapshot that
-	// arrived and is genuinely empty — an indistinguishable blank list is
-	// exactly the honesty gap 019 M3 exists to close (`data-book-state`
-	// carries which one this is, not just whether rows are showing).
+	// arrived and is genuinely empty. One indistinguishable blank list for
+	// three different facts is the honesty gap this exists to close
+	// (`data-book-state` carries which one it is, not just whether rows are
+	// showing).
 	import { cn } from '$lib/utils.js';
 	import type { BookRow } from './order-book';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';

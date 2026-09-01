@@ -268,7 +268,7 @@ describe('one shared path — hit-testing does not know or care which side produ
 	// A persisted rectangle and a synthetic object shaped exactly like what a
 	// future indicator's own `Box` display item will look like
 	// (`crates/indicators/src/drawable.rs::Drawable::Box`, not yet reachable
-	// through `POST /api/indicators/compute` — see this track's report) are
+	// through `POST /api/indicators/compute`) are
 	// fed through the *same* pixel-geometry shape and the *same*
 	// `hitTestDrawable` used above. Nothing here special-cases either
 	// origin — that absence is the property this test is proving, not the

@@ -57,13 +57,13 @@
 			<Tooltip.Trigger
 				class="flex h-7 w-full max-w-[30px] cursor-pointer items-center justify-center text-dim"
 				onclick={onClear}
-				aria-label="Clear drawings"
+				aria-label="Clear this pane's drawings"
 			>
 				<EraserIcon class="size-[15px]" />
 			</Tooltip.Trigger>
 			<Tooltip.Content side="right" sideOffset={10} arrowClasses="hidden" class={flyoutClass}>
 				<span class="font-mono text-[9.5px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">
-					CLEAR DRAWINGS
+					CLEAR PANE DRAWINGS
 				</span>
 			</Tooltip.Content>
 		</Tooltip.Root>

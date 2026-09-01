@@ -31,6 +31,31 @@ describe("parsePaneSettings — a pane's settings text must never break the char
 	test('an empty string (never valid JSON) falls back to defaults too', () => {
 		expect(parsePaneSettings('')).toEqual(defaultChartSettings());
 	});
+
+	test('a key this build no longer has is dropped rather than carried back out', () => {
+		// Settings that nothing ever read were removed; text written by an
+		// older build still names them, and a blanket merge would keep
+		// re-saving them forever.
+		const result = parsePaneSettings('{"plusButton":true,"bodyUp":"#ff0000"}');
+		expect(Object.keys(result)).not.toContain('plusButton');
+		expect(result.bodyUp).toBe('#ff0000');
+	});
+
+	test('a value of the wrong type is refused, not handed to the chart', () => {
+		const result = parsePaneSettings('{"marginRight":"6","gridV":"yes","scaleFont":11}');
+		expect(result.marginRight).toBe(defaultChartSettings().marginRight);
+		expect(result.gridV).toBe(defaultChartSettings().gridV);
+		// The well-typed neighbour in the same object still applies, so this
+		// rejects a field rather than the whole record.
+		expect(result.scaleFont).toBe(11);
+	});
+
+	test('the one array field survives only when it really holds numbers', () => {
+		expect(parsePaneSettings('{"paneSplit":[60,40]}').paneSplit).toEqual([60, 40]);
+		expect(parsePaneSettings('{"paneSplit":["60","40"]}').paneSplit).toEqual(
+			defaultChartSettings().paneSplit
+		);
+	});
 });
 
 describe('paneSettingsToJson round-trip', () => {
