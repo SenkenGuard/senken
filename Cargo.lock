@@ -4081,11 +4081,13 @@ dependencies = [
  "senken-indicators",
  "senken-loader",
  "senken-marketdata",
+ "senken-notes",
  "senken-plugin",
  "senken-runtime",
  "senken-series",
  "senken-subscription",
  "senken-venue",
+ "senken-watchlist",
  "serde",
  "serde_json",
  "tempfile",
@@ -4260,6 +4262,19 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "senken-notes"
+version = "0.0.3"
+dependencies = [
+ "rusqlite",
+ "senken-acl",
+ "senken-identity",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "uuid",
 ]
 
 [[package]]
@@ -4676,6 +4691,20 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "senken-watchlist"
+version = "0.0.3"
+dependencies = [
+ "rusqlite",
+ "senken-acl",
+ "senken-identity",
+ "senken-marketdata",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "uuid",
 ]
 
 [[package]]
