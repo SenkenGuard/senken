@@ -210,3 +210,45 @@ fn an_account_with_nothing_open_is_in_no_breach_at_all() {
          thresholds are set"
     );
 }
+
+#[test]
+fn the_two_stop_levels_come_from_settings_and_are_not_platform_constants() {
+    use senken_plugin_mt5_hedging::settings::{
+        KEY_MARGIN_CALL, KEY_STOP_OUT, schema, stop_levels_of,
+    };
+    use senken_trade::SettingsInput;
+
+    // A broker with unusual thresholds — the point being that they are
+    // read, not assumed.
+    let values = schema()
+        .validate(
+            &SettingsInput::new()
+                .with(KEY_MARGIN_CALL, "80.00".into())
+                .with(KEY_STOP_OUT, "20.00".into()),
+        )
+        .unwrap();
+
+    let levels = stop_levels_of(&values);
+    assert_eq!(
+        levels.margin_call,
+        Some(Scaled::new(2, 8_000)),
+        "80% is this broker's call level, and nothing in the code may override it"
+    );
+    assert_eq!(levels.stop_out, Some(Scaled::new(2, 2_000)));
+
+    // 1 000 margin, equity 500 → 50%: past this broker's 20% stop out?
+    // No — but well under its 80% call.
+    let held = account(
+        money(1_000),
+        vec![ticket(1, PositionSide::Long, 108_500, money(1_000))],
+    );
+    let risk = held
+        .risk(levels, &|_: &InstrumentId| Some(symbol(108_000)))
+        .unwrap();
+    assert_eq!(
+        risk.breach,
+        Some(RiskBreach::OpeningBlocked),
+        "the same account that a 50%-stop-out broker would be closing out is only margin \
+         called here, which is what makes these settings rather than constants"
+    );
+}
