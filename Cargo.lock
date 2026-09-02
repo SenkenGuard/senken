@@ -5229,6 +5229,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "senken-plugin-mt5-netting"
+version = "0.0.5"
+dependencies = [
+ "senken-core",
+ "senken-marketdata",
+ "senken-sim-core",
+ "senken-trade",
+ "tokio",
+]
+
+[[package]]
 name = "senken-plugin-okx"
 version = "0.0.5"
 dependencies = [
