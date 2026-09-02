@@ -1,0 +1,25 @@
+[package]
+name = "senken-plugin-spot"
+description = "A paper-trading adapter that simulates a spot exchange account: asset balances with free and locked, order locks, and a fee charged in the asset the trade produces"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+senken-core = { workspace = true }
+senken-marketdata = { workspace = true }
+senken-sim-core = { workspace = true }
+senken-trade = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

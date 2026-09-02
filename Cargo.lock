@@ -5303,6 +5303,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "senken-plugin-spot"
+version = "0.0.5"
+dependencies = [
+ "senken-core",
+ "senken-marketdata",
+ "senken-sim-core",
+ "senken-trade",
+ "tokio",
+]
+
+[[package]]
 name = "senken-plugin-upbit"
 version = "0.0.5"
 dependencies = [
