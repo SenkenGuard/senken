@@ -1,0 +1,25 @@
+[package]
+name = "senken-plugin-futures"
+description = "A paper-trading adapter that simulates a crypto perpetual futures account: one-way or hedge mode, isolated or cross margin, funding and liquidation from a venue-supplied bracket table"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+senken-core = { workspace = true }
+senken-marketdata = { workspace = true }
+senken-sim-core = { workspace = true }
+senken-trade = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

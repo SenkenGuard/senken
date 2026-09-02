@@ -5109,6 +5109,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "senken-plugin-futures"
+version = "0.0.5"
+dependencies = [
+ "senken-core",
+ "senken-marketdata",
+ "senken-sim-core",
+ "senken-trade",
+ "tokio",
+]
+
+[[package]]
 name = "senken-plugin-gate"
 version = "0.0.5"
 dependencies = [
