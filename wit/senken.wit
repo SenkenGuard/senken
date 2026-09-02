@@ -359,3 +359,164 @@ world compiled-indicator {
     /// entirely out of calls to `builtins`.
     export on-bar: func(open: f64, high: f64, low: f64, close: f64, volume: f64) -> f64;
 }
+
+/// The host's own fetch capability, and the *only* path a venue plugin has
+/// to the network.
+///
+/// A venue adapter is the most I/O-shaped thing in the whole system, which
+/// is exactly why it is given none of its own: `wasi:sockets` and
+/// `wasi:http` are never imported by `venue-plugin` below, so a venue
+/// plugin cannot hold a socket the host does not mediate. What it gets
+/// instead is this one function — "fetch this URL" — and every call to it
+/// is charged against the host's own shared rate/concurrency/circuit
+/// budget for that venue before a single byte leaves the machine. That
+/// budget exists because IP addresses get banned by real venues over real
+/// mistakes; a rule a plugin could opt out of by holding its own socket
+/// would not be a rule at all.
+interface http {
+    /// Why a `fetch` call did not return a body.
+    variant fetch-error {
+        /// The request never completed: DNS, connect, timeout, TLS.
+        transport(string),
+        /// The venue answered with a non-success HTTP status. Carries the
+        /// status and a (possibly truncated) copy of the response body — a
+        /// `tuple`, since a variant case carries at most one payload type.
+        http(tuple<u16, string>),
+        /// This plugin's shared budget currently has its circuit open
+        /// (recent bans, or repeated `429`s) and is fast-failing rather
+        /// than queueing behind a venue that is not going to answer.
+        rejected(string),
+    }
+
+    /// Fetches `path` and returns its body.
+    ///
+    /// `path` is resolved against the one origin the host configured for
+    /// this plugin when it was loaded (`https://www.okx.com`, say) — never
+    /// an absolute URL the guest names itself. A venue plugin has no way to
+    /// spell a domain outside the one it was registered for, which is what
+    /// keeps "fetch this URL" from quietly becoming "fetch any URL": the
+    /// host, not the plugin, decides what a fetch can ever reach.
+    ///
+    /// `cost` weighs this call against the host's own proactive rate
+    /// window for the venue this plugin was loaded for, the same way a
+    /// compiled-in adapter's own `VenueClient::get` is weighted — an
+    /// instrument-catalog fetch and a bar page do not cost a venue the
+    /// same, and only the plugin knows which this call is. The weight is
+    /// advisory input to a budget the plugin cannot see or bypass, never a
+    /// claim the host takes on faith about what the request actually did.
+    fetch: func(path: string, cost: u32) -> result<list<u8>, fetch-error>;
+}
+
+/// The market-data capability a venue plugin exports: search its
+/// instruments, and fetch bars for one of them.
+///
+/// Deliberately not a stateful `resource` the way `indicator`'s `instance`
+/// is — an indicator instance accumulates state bar over bar, but nothing
+/// about listing a catalog or fetching one page of history needs to
+/// persist between calls, so a host is free to call these functions
+/// against a fresh instantiation each time without losing anything.
+interface venue {
+    use types.{instant, bar, bar-spec};
+    use http.{fetch-error};
+
+    /// One instrument this venue lists.
+    ///
+    /// Spot only, deliberately: a derivative's contract terms (expiry,
+    /// settlement currency, strike) are a real chunk of `senken_marketdata`'s
+    /// own `Contract` type, and no dynamic venue exists yet to demand the
+    /// wire cost of carrying them across this boundary before it is
+    /// needed. A venue plugin that only ever lists spot pairs describes its
+    /// whole catalog with this record as it stands.
+    record instrument {
+        /// Normalised symbol, unique within this venue (`BTCUSDT`).
+        symbol: string,
+        /// The venue's own identifier, verbatim (`BTC-USDT` on OKX) — sent
+        /// back to `bars` exactly as given here, never reconstructed from
+        /// `symbol`.
+        source-symbol: string,
+        /// Human-readable name (`BTC / USDT`).
+        name: string,
+        /// Base asset code.
+        base: string,
+        /// Quote asset code.
+        quote: string,
+        /// Decimal places in a price.
+        price-scale: u8,
+        /// Minimum price increment at `price-scale`.
+        tick-size: s64,
+        /// Decimal places in a quantity.
+        qty-scale: u8,
+        /// Minimum quantity increment at `qty-scale`.
+        step-size: s64,
+    }
+
+    /// Static identity, read once before any other call.
+    record venue-descriptor {
+        /// Stable, unique, lowercase `[a-z0-9-]` identifier — becomes the
+        /// source half of every instrument id this venue contributes.
+        id: string,
+        /// Human-readable name.
+        name: string,
+        /// The scheme and host every `http.fetch` call's `path` resolves
+        /// against — `https://www.okx.com`, say. Declared by the plugin
+        /// itself, read once by the host at load time and pinned for this
+        /// plugin's whole lifetime alongside `id`/`name`: a plugin cannot
+        /// change which origin its own `fetch` calls reach after it has
+        /// loaded, the same way it cannot change its own `id`. A host may
+        /// still override this at load time — the same reason a compiled-in
+        /// adapter's own `HttpSource`/`BarSource` already exposes a
+        /// `with_url` builder, for a regional mirror or a test double — but
+        /// this value is what a plugin gets when nothing overrides it.
+        base-url: string,
+    }
+
+    /// Why a `venue` call failed, restated at this boundary because a
+    /// plugin never links `senken-marketdata` to speak its
+    /// `SourceError` directly.
+    variant venue-error {
+        /// The underlying `http.fetch` call failed — carried verbatim.
+        fetch(fetch-error),
+        /// The venue's own document did not have the shape this plugin
+        /// expects.
+        decode(string),
+        /// The venue rejected the request at the application level, e.g.
+        /// an error code inside an HTTP 200 body.
+        rejected(string),
+    }
+
+    /// Returns this venue's identity.
+    descriptor: func() -> venue-descriptor;
+
+    /// Fetches this venue's full instrument catalog.
+    instruments: func() -> result<list<instrument>, venue-error>;
+
+    /// The bar specs this venue can fetch directly, for a caller deciding
+    /// what to offer before trying a fetch that would just be rejected.
+    supported-specs: func() -> list<bar-spec>;
+
+    /// The largest number of bars one `bars` call may return.
+    max-rows: func() -> u32;
+
+    /// Fetches every **closed** bar of `spec` for `source-symbol` between
+    /// `range-start` (inclusive) and `range-end` (exclusive), ascending by
+    /// `ts-open` regardless of the order the venue itself returns them in —
+    /// the same contract `senken_plugin::BarSource::bars` states for a
+    /// compiled-in adapter.
+    bars: func(source-symbol: string, spec: bar-spec, range-start: instant, range-end: instant) -> result<list<bar>, venue-error>;
+}
+
+/// The world a dynamically loaded venue plugin implements.
+///
+/// Mirrors the split between `senken_plugin::MarketDataSource` and
+/// `senken_plugin::BarSource` a compiled-in venue adapter satisfies — this
+/// world's one `venue` export answers both, so the runtime that loads a
+/// component against it can present the result as an ordinary
+/// implementation of each and the rest of the application never has to
+/// know the source was loaded from a `.wasm` file at all. What a compiled-in
+/// adapter gets from `senken-venue` (HTTP, retry, the shared rate/
+/// concurrency/circuit budget) is what `import http` gives a guest here —
+/// see that interface's own docs for why it is the *only* thing imported.
+world venue-plugin {
+    import http;
+    export venue;
+}

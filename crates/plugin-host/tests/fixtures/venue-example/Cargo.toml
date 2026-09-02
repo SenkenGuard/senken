@@ -1,0 +1,27 @@
+# A well-behaved test fixture proving `wit/senken.wit`'s `venue-plugin`
+# world end to end: fetches through the host's `http` interface (never a
+# socket of its own), decodes a real recorded OKX response, and returns
+# bars matching what `plugins/okx`'s own already-tested adapter expects
+# from the very same bytes. Its own tiny workspace, not part of the main
+# one — see `../panics/Cargo.toml` for why.
+[workspace]
+
+[package]
+name = "fixture-venue-example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The guest-side codegen macro this fixture uses directly, rather than
+# through `senken-plugin-api`: that crate's own `generate!` invocation is
+# hardwired to the `indicator-plugin` world (see its own `src/lib.rs`), so
+# a `venue-plugin` guest has no SDK crate to depend on yet — calling
+# `wit_bindgen::generate!` itself is the only way to implement this world
+# today. Pinned to the same version `senken-plugin-api` and
+# `senken-indicator-lang`'s own compiled output use.
+wit-bindgen = "0.57"
+serde_json = "1"

@@ -5196,16 +5196,20 @@ dependencies = [
  "async-trait",
  "bytes",
  "num-traits",
+ "reqwest",
  "senken-core",
  "senken-indicator-lang",
  "senken-indicators",
+ "senken-marketdata",
  "senken-series",
+ "senken-venue",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-io",
+ "wiremock",
 ]
 
 [[package]]
@@ -5399,6 +5403,7 @@ version = "0.0.5"
 dependencies = [
  "async-trait",
  "num-traits",
+ "reqwest",
  "senken-acl",
  "senken-core",
  "senken-identity",
@@ -5413,12 +5418,14 @@ dependencies = [
  "senken-store",
  "senken-subscription",
  "senken-trade",
+ "senken-venue",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

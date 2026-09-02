@@ -192,12 +192,19 @@ impl Drop for PluginInstance {
 /// is what makes "no host code may `unwrap()` a guest result" a property of
 /// the code rather than a convention someone has to remember at each call
 /// site.
-pub(crate) fn guarded_call<T>(
+///
+/// Generic over the `Store` data type `S` rather than fixed to
+/// [`PluginState`]: [`crate::venue`]'s own venue-plugin calls go through
+/// this exact same function, against its own, unrelated `VenuePluginState`
+/// — the guarantee this function keeps ("a trap never damages the host")
+/// does not depend on which world a `Store` was built for, only on never
+/// letting a raw `wasmtime::Result` reach a caller unexamined.
+pub(crate) fn guarded_call<S, T>(
     circuit: &PluginCircuit,
     log: &PluginLog,
     health: &RuntimeHealth,
-    store: &mut Store<PluginState>,
-    call: impl FnOnce(&mut Store<PluginState>) -> wasmtime::Result<T>,
+    store: &mut Store<S>,
+    call: impl FnOnce(&mut Store<S>) -> wasmtime::Result<T>,
 ) -> Result<(T, Option<u64>), PluginHostError> {
     circuit
         .ensure_closed()

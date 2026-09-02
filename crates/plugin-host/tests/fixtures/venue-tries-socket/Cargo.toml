@@ -1,0 +1,18 @@
+# A venue plugin that reaches for a TCP socket instead of the host's
+# `fetch` — proves that alone keeps a `venue-plugin` component from
+# *loading* at all, exactly as `../tries-socket` proves for the
+# `indicator-plugin` world. See `../panics/Cargo.toml` for why this is its
+# own tiny workspace.
+[workspace]
+
+[package]
+name = "fixture-venue-tries-socket"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.57"

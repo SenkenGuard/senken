@@ -29,25 +29,32 @@ mod compiled_instance;
 mod execution;
 mod health;
 mod host;
+mod http_host;
 mod instance;
 mod log;
 mod wasi;
 
 pub use bindings::{
-    Bar, BarSpec, BarUnit, BoxDrawable, Drawable, Extend, IndicatorDescriptor, LabelAnchor,
-    LabelDrawable, LevelDrawable, OnBarResult, ParamKind, ParamSpec, ParamValue, PlotPoint,
-    PlotShape, PlotSpec, PlotValue, PriceCoord, Scaled, SegmentDrawable, SeriesDrawable,
-    SeriesShape, Volume,
+    Bar, BarSpec, BarUnit, BoxDrawable, Drawable, Extend, FetchError, IndicatorDescriptor,
+    LabelAnchor, LabelDrawable, LevelDrawable, OnBarResult, ParamKind, ParamSpec, ParamValue,
+    PlotPoint, PlotShape, PlotSpec, PlotValue, PriceCoord, Scaled, SegmentDrawable, SeriesDrawable,
+    SeriesShape, VenueDescriptor, VenueError, VenueInstrument, Volume,
 };
 pub use circuit::CircuitState;
 pub use compiled_instance::CompiledIndicatorInstance;
 pub use execution::ExecutionMode;
 pub use health::PluginHealth;
 pub use host::{
-    LoadedCompiledIndicator, LoadedPlugin, PluginHost, PluginLimits, SUPPORTED_API_VERSION,
+    LoadedCompiledIndicator, LoadedPlugin, LoadedVenuePlugin, PluginHost, PluginLimits,
+    SUPPORTED_API_VERSION, VenueCallError,
 };
 pub use instance::PluginInstance;
 pub use log::{PluginLogLine, PluginLogSeverity};
+// A caller building a `senken_venue::VenueClient` to hand to
+// `PluginHost::load_venue` needs `senken-venue` itself (for
+// `senken_venue::LimitGroup`) regardless of anything this crate could
+// re-export, so `VenueClient` is named in `load_venue`'s own signature
+// without a convenience re-export here.
 
 /// What went wrong while loading or running a plugin.
 ///

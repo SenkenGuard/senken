@@ -43,3 +43,32 @@ pub(crate) mod generated_compiled {
 }
 
 pub(crate) use generated_compiled::CompiledIndicator;
+
+/// Host-side bindings for `wit/senken.wit`'s `venue-plugin` world — the
+/// dynamic counterpart to a compiled-in [`senken_plugin::MarketDataSource`]/
+/// [`senken_plugin::BarSource`] pair.
+///
+/// `types` is aliased back to [`generated`]'s own copy via `with` rather
+/// than left to generate a second, structurally-identical-but-distinct
+/// `Bar`/`BarSpec` Rust type: this world's `venue` interface reuses those
+/// two exactly (`use types.{instant, bar, bar-spec}` in `wit/senken.wit`),
+/// and `senken_runtime::plugin_host`'s bridge functions
+/// (`bar_to_wit`/`bar_spec_to_wit`) must be able to hand either world's
+/// bindings the very same value.
+#[doc(hidden)]
+pub(crate) mod generated_venue {
+    wasmtime::component::bindgen!({
+        path: "../../wit/senken.wit",
+        world: "venue-plugin",
+        with: {
+            "senken:plugin-api/types@0.1.0": crate::bindings::generated::senken::plugin_api::types,
+        },
+    });
+}
+
+pub(crate) use generated_venue::VenuePlugin;
+pub use generated_venue::exports::senken::plugin_api::venue::{
+    Instrument as VenueInstrument, VenueDescriptor, VenueError,
+};
+pub use generated_venue::senken::plugin_api::http::FetchError;
+pub(crate) use generated_venue::senken::plugin_api::http::Host as HttpHost;

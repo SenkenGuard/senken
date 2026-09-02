@@ -40,3 +40,26 @@ Two more pieces sit on top of those four, for the same reason:
   every call it makes; a ring buffer keeps that history around without
   letting a runaway plugin exhaust the disk the same way it was already
   denied a socket to reach out through.
+
+## Venue plugins: fetch through the host, never a socket of your own
+
+`wit/senken.wit`'s `venue-plugin` world (`PluginHost::load_venue`) is the
+dynamic counterpart to a compiled-in `senken_plugin::MarketDataSource`/
+`BarSource` pair. It gets exactly the same four-mechanism confinement above,
+plus one more: it imports no `wasi:sockets` and no `wasi:http` at all. The
+only way its bytes ever reach a network is `wit/senken.wit`'s own `http`
+interface — a single `fetch(path, cost)` call this crate backs with a real
+`senken_venue::VenueClient`, so every byte a venue plugin ever receives is
+charged against a real `senken_venue::LimitGroup` before it leaves the
+machine. There is no path around that budget for a venue plugin to reach
+for, because there is no second door to the network to find.
+
+That `fetch` call is a plain blocking function, not an `async` import: this
+crate's `Engine`/`Linker` stay fully synchronous for every world it loads
+(see `src/http_host.rs`'s own module docs for why), and `FetchExecutor`
+bridges a genuine network call onto a small dedicated Tokio runtime rather
+than reaching for `Handle::block_on`, which panics if the calling thread is
+already inside another runtime's own worker. Epoch interruption cannot
+bound that blocked call at all — it only traps while the guest is executing
+its own WASM instructions — so the fetch bridge carries its own independent
+timeout instead.

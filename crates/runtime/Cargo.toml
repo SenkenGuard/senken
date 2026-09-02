@@ -56,6 +56,13 @@ senken-plugin-host = { workspace = true }
 senken-series = { workspace = true }
 senken-storage = { workspace = true }
 senken-store = { workspace = true }
+# `plugin_host.rs`'s `DynamicVenues` builds one `senken_venue::LimitGroup`
+# per registered venue plugin, and a shared `reqwest::Client` to hand
+# `senken_plugin_host::PluginHost::load_venue` — the exact same budget and
+# client shape `senken_plugin::HttpActivationContext` already builds for a
+# compiled-in venue plugin, applied to the dynamically loaded path instead.
+senken-venue = { workspace = true }
+reqwest = { workspace = true }
 serde_json = { workspace = true }
 # Content-addresses a registered `compiled-indicator` component (see
 # `plugin_host.rs::synthesize_compiled_info`): the language has no channel
@@ -71,6 +78,13 @@ sha2 = { workspace = true }
 senken-trade = { workspace = true, features = ["engine"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# `plugin_host.rs`'s `DynamicVenues` runs every venue-plugin `Store` call
+# through `tokio::task::spawn_blocking`: `senken_plugin_host::LoadedVenuePlugin`'s
+# own methods are deliberately plain blocking calls (see that crate's own
+# `http_host` module docs for why), and `MarketDataSource`/`BarSource` are
+# `async fn` — `spawn_blocking` is what lets a real network fetch run
+# without ever blocking whatever async executor is polling this source.
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 # Proves the full compile-register-compute pipeline end to end (`tests/
@@ -81,3 +95,8 @@ tracing = { workspace = true }
 senken-indicator-lang = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# `plugin_host.rs`'s own `DynamicVenues` tests stand up a real HTTP server
+# so a compiled `venue-plugin` fixture's `fetch` calls have something real
+# to hit, the same technique `senken-plugin-host`'s own `tests/venue.rs`
+# already uses one layer down.
+wiremock = { workspace = true }

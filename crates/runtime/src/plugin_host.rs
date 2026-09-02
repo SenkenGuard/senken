@@ -1,18 +1,24 @@
 //! Bridges Senken's own domain types to the WIT wire shapes
-//! `senken-plugin-host` speaks, and the catalog of indicators loaded from
-//! uploaded `.wasm` components on top of it.
+//! `senken-plugin-host` speaks: the catalog of indicators loaded from
+//! uploaded `.wasm` components ([`DynamicIndicators`]), and the catalog of
+//! venues loaded the same way ([`DynamicVenues`](crate::plugin_host::DynamicVenues)), presented as ordinary
+//! [`senken_marketdata::source::MarketDataSource`]/[`senken_plugin::BarSource`]
+//! implementations so the rest of the application never has to know a given
+//! source came from a `.wasm` file.
 //!
 //! This lives here, not in `senken-plugin-host` or `senken-plugin-api`,
 //! because it needs a domain crate (`senken-series` for [`senken_series::Bar`],
-//! and `senken-indicators` for the exact vocabulary a built-in's own
-//! descriptor already uses) and the plugin runtime at the same time.
+//! `senken-marketdata` for [`senken_marketdata::instrument::Instrument`], and
+//! `senken-indicators` for the exact vocabulary a built-in's own descriptor
+//! already uses) and the plugin runtime at the same time.
 //! `senken-plugin-api` must never depend on a domain crate — a published
 //! SDK must not ship a domain crate's implementation alongside it — and
 //! `senken-plugin-host`'s own domain dependency exists for one purpose only
-//! (backing the `builtins` WIT import with real indicator state machines).
-//! Neither crate is the right place for a *second*, unrelated use of both
-//! at once, so it lives at the one layer that already depends on
-//! everything: the runtime.
+//! (backing the `builtins` WIT import with real indicator state machines,
+//! and the `http` import with a real `senken_venue::VenueClient`). Neither
+//! crate is the right place for a *second*, unrelated use of both at once,
+//! so it lives at the one layer that already depends on everything: the
+//! runtime.
 //!
 //! # Why an uploaded indicator's plotted values line up with a raw scaled
 //! integer, not a real price
@@ -34,22 +40,32 @@
 //! whole system already uses.
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
+use senken_core::{TimeRange, UnixNanos};
 use senken_indicators::{
     Drawable, Extend, LabelAnchor, ParamDefault, ParamKind, PlotShape, Point, PriceCoord,
     SeriesShape,
 };
+use senken_marketdata::SourceSymbol;
+use senken_marketdata::instrument::{Instrument, InstrumentStatus};
+use senken_marketdata::source::{MarketDataSource, SourceError};
+use senken_plugin::BarSource;
 use senken_plugin_host::{
     Bar as WitBar, BarSpec as WitBarSpec, BarUnit as WitBarUnit, CircuitState,
     CompiledIndicatorInstance, Drawable as WitDrawable, Extend as WitExtend,
-    IndicatorDescriptor as WitIndicatorDescriptor, LabelAnchor as WitLabelAnchor,
-    LoadedCompiledIndicator, LoadedPlugin, ParamKind as WitParamKind, ParamValue as WitParamValue,
-    PlotShape as WitPlotShape, PluginHealth, PluginHost, PluginHostError, PluginInstance,
-    PluginLimits, PluginLogLine, PriceCoord as WitPriceCoord, Scaled as WitScaled,
-    SeriesShape as WitSeriesShape, Volume as WitVolume,
+    FetchError as WitFetchError, IndicatorDescriptor as WitIndicatorDescriptor,
+    LabelAnchor as WitLabelAnchor, LoadedCompiledIndicator, LoadedPlugin, LoadedVenuePlugin,
+    ParamKind as WitParamKind, ParamValue as WitParamValue, PlotShape as WitPlotShape,
+    PluginHealth, PluginHost, PluginHostError, PluginInstance, PluginLimits, PluginLogLine,
+    PriceCoord as WitPriceCoord, Scaled as WitScaled, SeriesShape as WitSeriesShape,
+    VenueCallError, VenueError as WitVenueError, VenueInstrument as WitVenueInstrument,
+    Volume as WitVolume,
 };
 use senken_series::{Bar, BarSpec, BarUnit, Volume};
+use senken_venue::{LimitGroup, VenueClient};
 use sha2::{Digest, Sha256};
 
 /// The `scaled.scale` this bridge uses for every price and quantity field —
@@ -168,6 +184,72 @@ fn volume_to_wit(volume: Volume) -> WitVolume {
         Volume::Real(value) => WitVolume::Real(scaled(value)),
         Volume::Tick(count) => WitVolume::Tick(count),
         Volume::Absent => WitVolume::Absent,
+    }
+}
+
+/// The reverse of [`bar_unit_to_wit`] — total, because `wit/senken.wit`'s
+/// `bar-unit` enum is a closed, exact copy of `BarUnit`'s six variants
+/// today, so every value it can carry has a domain counterpart. Unlike the
+/// forward direction, there is no "unit added to `BarUnit` since" case to
+/// guard against here: a *guest*-declared unit can never name a seventh
+/// case the WIT enum itself does not have.
+fn bar_unit_from_wit(unit: WitBarUnit) -> BarUnit {
+    match unit {
+        WitBarUnit::Second => BarUnit::Second,
+        WitBarUnit::Minute => BarUnit::Minute,
+        WitBarUnit::Hour => BarUnit::Hour,
+        WitBarUnit::Day => BarUnit::Day,
+        WitBarUnit::Week => BarUnit::Week,
+        WitBarUnit::Month => BarUnit::Month,
+    }
+}
+
+/// The reverse of [`bar_spec_to_wit`]. `None` only for a `step` of `0` — a
+/// venue plugin's own bug, since `wit/senken.wit` cannot express
+/// `BarSpec`'s own "always at least one" invariant in its plain `u32`
+/// field the way `senken_series::BarSpec::step`'s `NonZeroU32` does at the
+/// type level.
+fn bar_spec_from_wit(spec: WitBarSpec) -> Option<BarSpec> {
+    Some(BarSpec {
+        step: NonZeroU32::new(spec.step)?,
+        unit: bar_unit_from_wit(spec.unit),
+    })
+}
+
+/// The reverse of [`volume_to_wit`]. Every raw integer crosses back
+/// unchanged, for the same reason [`bar_to_wit`]'s own doc comment states
+/// for the forward direction — a venue plugin's `bars` call carries its
+/// own venue-native scale per field exactly like a dynamic indicator's
+/// `bar` does, and `senken_series::Bar` itself never carries a scale at
+/// all (a series' own metadata does, resolved elsewhere), so there is
+/// nothing to divide by here.
+fn volume_from_wit(volume: WitVolume) -> Volume {
+    match volume {
+        WitVolume::Real(value) => Volume::Real(value.value),
+        WitVolume::Tick(count) => Volume::Tick(count),
+        WitVolume::Absent => Volume::Absent,
+    }
+}
+
+/// Converts one `wit/senken.wit` `bar` (as a [`LoadedVenuePlugin::bars`]
+/// call returns it) into a [`Bar`] — the mirror image of [`bar_to_wit`],
+/// minus that function's own `spec` argument: a venue plugin's `bar`
+/// record carries its own `spec` field, which this bridge does not need
+/// (the caller already knows which spec it asked for) and does not
+/// validate against it — a venue plugin that answered a different spec
+/// than it was asked for is a bug this bridge has no way to detect from
+/// one bar alone.
+fn bar_from_wit(bar: &WitBar) -> Bar {
+    Bar {
+        ts_open: UnixNanos::from_nanos(bar.ts_open),
+        open: bar.open.value,
+        high: bar.high.value,
+        low: bar.low.value,
+        close: bar.close.value,
+        volume: volume_from_wit(bar.volume),
+        quote_volume: bar.quote_volume.map(|value| value.value),
+        trade_count: bar.trade_count,
+        taker_buy_volume: bar.taker_buy_volume.map(|value| value.value),
     }
 }
 
@@ -1227,6 +1309,617 @@ impl DynamicIndicatorInstance {
     }
 }
 
+/// Converts one `wit/senken.wit` `instrument` into the domain [`Instrument`]
+/// every `senken-marketdata` consumer already speaks.
+///
+/// Spot only, always `InstrumentStatus::Trading`: `wit/senken.wit`'s own
+/// `venue.instrument` record carries neither a `kind` nor a `status` field
+/// (see that record's own doc comment for why — a derivative's contract
+/// terms are real weight this boundary does not carry yet), so every
+/// dynamic venue instrument is presented as an ordinary, currently-trading
+/// spot pair. A plugin author with a delisted or halted symbol to report
+/// has no channel for that today; extending `venue.instrument` to carry it
+/// is a real, separate piece of work, not a gap this bridge can paper over.
+fn instrument_from_wit(instrument: WitVenueInstrument) -> Instrument {
+    Instrument::spot(
+        instrument.symbol,
+        instrument.source_symbol,
+        instrument.base,
+        instrument.quote,
+    )
+    .with_name(instrument.name)
+    .with_status(InstrumentStatus::Trading)
+    .with_price_increment((instrument.price_scale, instrument.tick_size))
+    .with_qty_increment((instrument.qty_scale, instrument.step_size))
+}
+
+/// Restates a [`VenueCallError`] as the [`SourceError`] every
+/// `MarketDataSource`/`BarSource` caller already knows how to handle.
+///
+/// [`VenueCallError::Host`] — a trap, an open circuit breaker, or a load
+/// failure this bridge did not expect to see again after the plugin already
+/// loaded once — is always reported as [`SourceError::Rejected`], never
+/// [`SourceError::Transport`]: a guest trap is a deterministic bug in
+/// compiled code, not a transient network condition, so telling a caller
+/// "retry me" would be dishonest (`SourceError::is_retryable` returns
+/// `false` for `Rejected`, exactly the answer this case needs).
+fn source_error_from_venue_call_error(error: VenueCallError) -> SourceError {
+    match error {
+        VenueCallError::Host(host_error) => SourceError::rejected(host_error.to_string()),
+        VenueCallError::Venue(WitVenueError::Fetch(WitFetchError::Transport(message))) => {
+            SourceError::transport(message)
+        }
+        VenueCallError::Venue(WitVenueError::Fetch(WitFetchError::Http((status, body)))) => {
+            SourceError::http(status, body)
+        }
+        VenueCallError::Venue(WitVenueError::Fetch(WitFetchError::Rejected(reason))) => {
+            SourceError::rejected(reason)
+        }
+        VenueCallError::Venue(WitVenueError::Decode(message)) => SourceError::decode(message),
+        VenueCallError::Venue(WitVenueError::Rejected(reason)) => SourceError::rejected(reason),
+        // `VenueCallError` is `#[non_exhaustive]` (a future variant this
+        // bridge has not seen must not fail to compile here); restated as
+        // `Rejected` rather than guessed at more specifically, the same
+        // fallback `VenueCallError::Host` above already uses.
+        other => SourceError::rejected(other.to_string()),
+    }
+}
+
+/// Runs `call` — one of [`LoadedVenuePlugin`]'s own blocking methods — on
+/// Tokio's blocking thread pool, so an `async fn` caller
+/// ([`DynamicVenueSource`]'s own `MarketDataSource`/`BarSource` impls)
+/// never blocks its own executor on a call that may run a real network
+/// fetch to completion (see `senken_plugin_host::http_host`'s own docs for
+/// why that fetch is itself a plain blocking call, not something this
+/// function could `.await` directly).
+///
+/// A panic inside `call` (never expected — every guest-facing path in
+/// `senken-plugin-host` already turns a trap into `Err`) surfaces as
+/// [`VenueCallError::Host`] rather than propagating, so one broken venue
+/// plugin cannot take an unrelated caller's task down with it.
+async fn run_venue_call<T>(
+    call: impl FnOnce() -> Result<T, VenueCallError> + Send + 'static,
+) -> Result<T, VenueCallError>
+where
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(call).await {
+        Ok(result) => result,
+        Err(join_error) => Err(VenueCallError::Host(PluginHostError::Trap(format!(
+            "venue plugin call task did not complete: {join_error}"
+        )))),
+    }
+}
+
+/// Why loading, registering or calling a dynamic venue failed.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DynamicVenueError {
+    /// The plugin runtime itself refused to load or run the component.
+    #[error(transparent)]
+    Host(#[from] PluginHostError),
+    /// The component loaded, but a call this bridge makes once at
+    /// registration time (`supported-specs`, `max-rows`) failed.
+    #[error(transparent)]
+    Call(#[from] VenueCallError),
+    /// No venue is registered under this id.
+    #[error("no dynamic venue plugin is registered as `{0}`")]
+    UnknownPlugin(String),
+    /// `id` is registered but never finished loading, so it has no enabled
+    /// flag for [`DynamicVenues::set_enabled`] to toggle — mirrors
+    /// [`DynamicIndicatorError::NotToggleable`] exactly.
+    #[error("`{0}` never finished loading and has nothing to enable or disable")]
+    NotToggleable(String),
+    /// This registry's own shared `reqwest::Client` could not be built.
+    #[error("could not build the HTTP client every dynamic venue shares: {0}")]
+    HttpClientInit(String),
+}
+
+/// A registered venue's identity, returned by a successful
+/// [`DynamicVenues::register`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicVenueInfo {
+    /// This venue's stable id — the source half of every instrument id it
+    /// contributes, exactly like a compiled-in [`MarketDataSource::id`].
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+}
+
+/// One registered venue's own live, shared state.
+///
+/// Held behind an [`Arc`] by both the [`DynamicVenues`] registry entry and
+/// every [`DynamicVenueSource`] handed out from it, so enabling or
+/// disabling a venue from the Plugins page is observed immediately by
+/// every `MarketDataSource`/`BarSource` handle already registered into
+/// `senken-marketdata`/`senken-loader` — there is no second registration
+/// step to re-run.
+struct VenueShared {
+    plugin: LoadedVenuePlugin,
+    id: String,
+    name: String,
+    /// Probed once, right after loading — `senken_plugin::BarSource::supported`
+    /// returns a plain `&[BarSpec]` with no error path, so there is nowhere
+    /// to report a fresh guest call's own trap on every symbol-picker call.
+    supported: Vec<BarSpec>,
+    max_rows: usize,
+    /// `true` unless a user has explicitly disabled this venue. Reading
+    /// this is the *only* thing that changes when it flips — see this
+    /// module's own [`DynamicVenueSource`] docs for why the venue itself
+    /// stays registered either way.
+    enabled: AtomicBool,
+}
+
+/// A component that has already proven it links against this host's
+/// capability-zero surface, described its instruments, and answered its
+/// own `supported-specs`/`max-rows` — everything [`DynamicVenueSource`]
+/// needs to stand in for an ordinary compiled-in [`MarketDataSource`]/
+/// [`BarSource`] pair.
+enum DynamicVenueEntry {
+    Loaded {
+        shared: Arc<VenueShared>,
+        origin: PluginOrigin,
+    },
+    /// The component names an unsupported `senken:plugin-api` version —
+    /// mirrors [`DynamicIndicatorEntry::Incompatible`] exactly.
+    Incompatible {
+        origin: PluginOrigin,
+        found_version: String,
+        supported_version: String,
+    },
+    /// The component never loaded, or loaded but failed one of the probe
+    /// calls (`supported-specs`, `max-rows`) this bridge makes once at
+    /// registration time — mirrors [`DynamicIndicatorEntry::FailedToLoad`].
+    FailedToLoad {
+        origin: PluginOrigin,
+        reason: String,
+    },
+}
+
+/// One registered venue's full status, for the Plugins page — mirrors
+/// [`DynamicIndicatorStatus`] exactly, reusing [`DynamicIndicatorState`]
+/// itself: a dynamically loaded component's lifecycle (loaded and active,
+/// user-disabled, incompatible, failed to load, or auto-disabled by its own
+/// circuit breaker) is the identical five-state machine whether it is an
+/// indicator or a venue.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicVenueStatus {
+    /// This entry's identity: a real descriptor id once one has been read,
+    /// otherwise a content hash of the bytes that failed.
+    pub id: String,
+    /// This venue's declared name — `None` for `Incompatible`/`FailedToLoad`,
+    /// neither of which ever produced one.
+    pub name: Option<String>,
+    /// Where these bytes came from.
+    pub origin: PluginOrigin,
+    /// Which of the five states this entry is in right now.
+    pub state: DynamicIndicatorState,
+    /// This plugin's current runtime health — `None` for
+    /// `Incompatible`/`FailedToLoad`.
+    pub health: Option<PluginHealth>,
+    /// This plugin's own ring log, oldest first.
+    pub logs: Vec<PluginLogLine>,
+}
+
+/// Venue plugins loaded at runtime from an uploaded `.wasm` component,
+/// presented as ordinary [`MarketDataSource`]/[`BarSource`] implementations
+/// so the rest of the application never has to know a given source is
+/// dynamic — see `DynamicVenueSource`.
+///
+/// **Disabling a venue never removes it from [`Self::marketdata_sources`]/
+/// [`Self::bar_sources`].** This is the one place this bridge's behaviour
+/// deliberately diverges from [`DynamicIndicators`]: an indicator that is
+/// disabled disappears from its catalog outright (a chart falls back to a
+/// host-drawn placeholder), but bars a venue already fetched must stay
+/// readable with that venue turned off — storage is a user's own data, not
+/// the plugin's, and disabling a plugin must never make previously-fetched
+/// history unreachable. So a disabled venue's registration stays put; what
+/// actually changes is that `DynamicVenueSource::instruments` reports an
+/// empty catalog and `DynamicVenueSource::bars` refuses every fetch,
+/// exactly the "reported with capabilities off, but not deregistered"
+/// contract a compiled-in source's own disable already follows.
+///
+/// Cheap to clone: every clone shares the same [`PluginHost`], HTTP client
+/// and registered-entry table.
+#[derive(Clone)]
+pub struct DynamicVenues {
+    host: PluginHost,
+    /// Shared by every registered venue's own [`VenueClient`] — one
+    /// connection pool for the whole registry, the same way
+    /// `senken_plugin::ActivationContext`'s own `shared_http_client`
+    /// serves every compiled-in plugin from one pool.
+    http_client: reqwest::Client,
+    entries: Arc<RwLock<HashMap<String, DynamicVenueEntry>>>,
+}
+
+impl std::fmt::Debug for DynamicVenues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self
+            .entries
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        f.debug_struct("DynamicVenues")
+            .field("registered", &count)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How long this registry's shared `reqwest::Client` waits for a whole
+/// request/response, and to establish the connection — the same values
+/// `senken_plugin::ActivationContext`'s own compiled-in-plugin client uses,
+/// so a dynamic venue's own timeouts are not a second, differently-tuned
+/// policy living beside the one every compiled-in adapter already gets.
+const DYNAMIC_VENUE_HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DYNAMIC_VENUE_HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl DynamicVenues {
+    /// Builds an empty registry with its own capability-zero, memory-capped
+    /// plugin host and one shared `reqwest::Client`.
+    ///
+    /// # Errors
+    /// [`DynamicVenueError::Host`] if the underlying
+    /// `senken_plugin_host::PluginHost` cannot be built;
+    /// [`DynamicVenueError::HttpClientInit`] if the shared HTTP client
+    /// cannot be built (a TLS backend failing to initialise, in practice).
+    pub fn new() -> Result<Self, DynamicVenueError> {
+        let host = PluginHost::new(PluginLimits::default())?;
+        let http_client = reqwest::Client::builder()
+            .timeout(DYNAMIC_VENUE_HTTP_REQUEST_TIMEOUT)
+            .connect_timeout(DYNAMIC_VENUE_HTTP_CONNECT_TIMEOUT)
+            .user_agent(concat!("senken/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|error| DynamicVenueError::HttpClientInit(error.to_string()))?;
+        Ok(Self {
+            host,
+            http_client,
+            entries: Arc::default(),
+        })
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, DynamicVenueEntry>> {
+        self.entries.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, DynamicVenueEntry>> {
+        self.entries.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Loads `wasm` as a [`PluginOrigin::Uploaded`] registration — see
+    /// [`Self::register_with_origin`] for the full contract.
+    ///
+    /// # Errors
+    /// See [`Self::register_with_origin`].
+    pub fn register(&self, wasm: &[u8]) -> Result<DynamicVenueInfo, DynamicVenueError> {
+        self.register_with_origin(wasm, PluginOrigin::Uploaded)
+    }
+
+    /// Loads `wasm` exactly like [`Self::register_with_origin`], with
+    /// `base_url_override` forwarded to
+    /// [`PluginHost::load_venue`](senken_plugin_host::PluginHost::load_venue)
+    /// unchanged: `Some` replaces the plugin's own declared origin, `None`
+    /// uses it as-is. This is the same override a compiled-in adapter's own
+    /// `with_url` builder already offers — a regional mirror, or a test
+    /// double standing in for the real venue — applied to the dynamic path,
+    /// and it is what [`Self::register_with_origin`] itself calls with
+    /// `None`.
+    ///
+    /// # Errors
+    /// See [`Self::register_with_origin`].
+    pub fn register_with_origin_and_base_url(
+        &self,
+        wasm: &[u8],
+        origin: PluginOrigin,
+        base_url_override: Option<String>,
+    ) -> Result<DynamicVenueInfo, DynamicVenueError> {
+        let group = LimitGroup::new(&content_hash_id("venue", wasm));
+        let client = VenueClient::new(self.http_client.clone(), group);
+        let plugin = match self.host.load_venue(wasm, client, base_url_override) {
+            Ok(plugin) => plugin,
+            Err(host_error) => {
+                self.record_load_failure(wasm, origin, &host_error);
+                return Err(DynamicVenueError::Host(host_error));
+            }
+        };
+
+        let id = plugin.descriptor().id.clone();
+        let name = plugin.descriptor().name.clone();
+
+        let supported = match plugin.supported_specs() {
+            Ok(specs) => specs.into_iter().filter_map(bar_spec_from_wit).collect(),
+            Err(call_error) => {
+                self.record_probe_failure(wasm, origin, &call_error);
+                return Err(DynamicVenueError::Call(call_error));
+            }
+        };
+        let max_rows = match plugin.max_rows() {
+            Ok(rows) => usize::try_from(rows).unwrap_or(usize::MAX),
+            Err(call_error) => {
+                self.record_probe_failure(wasm, origin, &call_error);
+                return Err(DynamicVenueError::Call(call_error));
+            }
+        };
+
+        let shared = Arc::new(VenueShared {
+            plugin,
+            id: id.clone(),
+            name: name.clone(),
+            supported,
+            max_rows,
+            enabled: AtomicBool::new(true),
+        });
+        self.write()
+            .insert(id.clone(), DynamicVenueEntry::Loaded { shared, origin });
+        Ok(DynamicVenueInfo { id, name })
+    }
+
+    /// Loads `wasm`, registering it under its own descriptor id, enabled by
+    /// default, with a fresh [`LimitGroup`] scoped to this one plugin —
+    /// keyed by a content hash of the bytes rather than the descriptor's
+    /// own id, so the group exists (and can be inspected) even for the
+    /// vanishingly unlikely case of two different uploads racing to
+    /// register the same id. Uses the plugin's own declared origin as-is —
+    /// see [`Self::register_with_origin_and_base_url`] for the override.
+    ///
+    /// Re-uploading the same id replaces the earlier registration outright,
+    /// exactly like [`DynamicIndicators::register_with_origin`] — the old
+    /// entry's own `Arc<VenueShared>` is simply dropped from the map, which
+    /// drops its `LoadedVenuePlugin` and, with it, its `Store`.
+    ///
+    /// A component that fails to load, or loads but fails one of the two
+    /// probe calls this bridge makes once (`supported-specs`, `max-rows`),
+    /// is never simply dropped: it is recorded as `DynamicVenueEntry::Incompatible`
+    /// or `DynamicVenueEntry::FailedToLoad` — see [`Self::all`] to read it
+    /// back — even though this call still fails for its immediate caller.
+    ///
+    /// # Errors
+    /// [`DynamicVenueError::Host`] if the component fails to load;
+    /// [`DynamicVenueError::Call`] if it loads but fails a probe call.
+    pub fn register_with_origin(
+        &self,
+        wasm: &[u8],
+        origin: PluginOrigin,
+    ) -> Result<DynamicVenueInfo, DynamicVenueError> {
+        self.register_with_origin_and_base_url(wasm, origin, None)
+    }
+
+    fn record_load_failure(&self, wasm: &[u8], origin: PluginOrigin, error: &PluginHostError) {
+        let id = content_hash_id("FailedVenue", wasm);
+        let entry = if let PluginHostError::Incompatible { found, supported } = error {
+            DynamicVenueEntry::Incompatible {
+                origin,
+                found_version: found.clone(),
+                supported_version: supported.clone(),
+            }
+        } else {
+            DynamicVenueEntry::FailedToLoad {
+                origin,
+                reason: error.to_string(),
+            }
+        };
+        self.write().insert(id, entry);
+    }
+
+    fn record_probe_failure(&self, wasm: &[u8], origin: PluginOrigin, error: &VenueCallError) {
+        let id = content_hash_id("FailedVenue", wasm);
+        self.write().insert(
+            id,
+            DynamicVenueEntry::FailedToLoad {
+                origin,
+                reason: error.to_string(),
+            },
+        );
+    }
+
+    /// Every registered venue, presented as a [`MarketDataSource`] — a
+    /// disabled one included, reporting an empty catalog rather than being
+    /// absent from this list at all. See this type's own docs for why.
+    #[must_use]
+    pub fn marketdata_sources(&self) -> Vec<Arc<dyn MarketDataSource>> {
+        self.read()
+            .values()
+            .filter_map(|entry| match entry {
+                DynamicVenueEntry::Loaded { shared, .. } => Some(Arc::new(DynamicVenueSource {
+                    shared: Arc::clone(shared),
+                })
+                    as Arc<dyn MarketDataSource>),
+                DynamicVenueEntry::Incompatible { .. } | DynamicVenueEntry::FailedToLoad { .. } => {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Every registered venue, presented as a [`BarSource`] — see
+    /// [`Self::marketdata_sources`], which this mirrors exactly.
+    #[must_use]
+    pub fn bar_sources(&self) -> Vec<Arc<dyn BarSource>> {
+        self.read()
+            .values()
+            .filter_map(|entry| match entry {
+                DynamicVenueEntry::Loaded { shared, .. } => Some(Arc::new(DynamicVenueSource {
+                    shared: Arc::clone(shared),
+                })
+                    as Arc<dyn BarSource>),
+                DynamicVenueEntry::Incompatible { .. } | DynamicVenueEntry::FailedToLoad { .. } => {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Every registered entry, regardless of state — see
+    /// [`DynamicIndicators::all`], which this mirrors exactly.
+    #[must_use]
+    pub fn all(&self) -> Vec<DynamicVenueStatus> {
+        self.read()
+            .iter()
+            .map(|(id, entry)| Self::status_for(id, entry))
+            .collect()
+    }
+
+    fn status_for(id: &str, entry: &DynamicVenueEntry) -> DynamicVenueStatus {
+        match entry {
+            DynamicVenueEntry::Loaded { shared, origin } => {
+                let health = shared.plugin.health();
+                let state = if !shared.enabled.load(Ordering::Relaxed) {
+                    DynamicIndicatorState::Disabled
+                } else if let CircuitState::Open { reason } = &health.circuit {
+                    DynamicIndicatorState::AutoDisabled {
+                        reason: reason.clone(),
+                    }
+                } else {
+                    DynamicIndicatorState::Active
+                };
+                DynamicVenueStatus {
+                    id: id.to_owned(),
+                    name: Some(shared.name.clone()),
+                    origin: *origin,
+                    state,
+                    logs: shared.plugin.logs(),
+                    health: Some(health),
+                }
+            }
+            DynamicVenueEntry::Incompatible {
+                origin,
+                found_version,
+                supported_version,
+            } => DynamicVenueStatus {
+                id: id.to_owned(),
+                name: None,
+                origin: *origin,
+                state: DynamicIndicatorState::Incompatible {
+                    found_version: found_version.clone(),
+                    supported_version: supported_version.clone(),
+                },
+                health: None,
+                logs: Vec::new(),
+            },
+            DynamicVenueEntry::FailedToLoad { origin, reason } => DynamicVenueStatus {
+                id: id.to_owned(),
+                name: None,
+                origin: *origin,
+                state: DynamicIndicatorState::FailedToLoad {
+                    reason: reason.clone(),
+                },
+                health: None,
+                logs: Vec::new(),
+            },
+        }
+    }
+
+    /// Flips `id`'s enabled flag — see this type's own docs for what
+    /// "disabled" actually changes for a venue (never removal from
+    /// [`Self::marketdata_sources`]/[`Self::bar_sources`]).
+    ///
+    /// Setting `enabled: true` also resets this plugin's circuit breaker,
+    /// mirroring [`DynamicIndicators::set_enabled`] exactly and for the
+    /// same reason.
+    ///
+    /// # Errors
+    /// [`DynamicVenueError::UnknownPlugin`] if nothing is registered under
+    /// `id`; [`DynamicVenueError::NotToggleable`] if it is registered but
+    /// never finished loading.
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), DynamicVenueError> {
+        let entries = self.read();
+        match entries
+            .get(id)
+            .ok_or_else(|| DynamicVenueError::UnknownPlugin(id.to_owned()))?
+        {
+            DynamicVenueEntry::Loaded { shared, .. } => {
+                shared.enabled.store(enabled, Ordering::Relaxed);
+                if enabled {
+                    shared.plugin.reset_circuit_breaker();
+                }
+                Ok(())
+            }
+            DynamicVenueEntry::Incompatible { .. } | DynamicVenueEntry::FailedToLoad { .. } => {
+                Err(DynamicVenueError::NotToggleable(id.to_owned()))
+            }
+        }
+    }
+}
+
+/// One dynamically loaded venue, presented as an ordinary
+/// [`MarketDataSource`]/[`BarSource`] pair — the type
+/// [`DynamicVenues::marketdata_sources`]/[`DynamicVenues::bar_sources`]
+/// hand back, so `senken-marketdata`/`senken-loader` (and everything built
+/// on them) never has to know a given source came from a `.wasm` file
+/// rather than compiled-in Rust.
+struct DynamicVenueSource {
+    shared: Arc<VenueShared>,
+}
+
+#[async_trait::async_trait]
+impl MarketDataSource for DynamicVenueSource {
+    fn id(&self) -> &str {
+        &self.shared.id
+    }
+
+    fn name(&self) -> &str {
+        &self.shared.name
+    }
+
+    async fn instruments(&self) -> Result<Vec<Instrument>, SourceError> {
+        if !self.shared.enabled.load(Ordering::Relaxed) {
+            // Not an error: a disabled source's catalog is simply empty,
+            // exactly the "capabilities off but still listed" contract a
+            // compiled-in source already follows once disabled (see
+            // `DynamicVenues`'s own docs for why this venue is not removed
+            // from the registry at all).
+            return Ok(Vec::new());
+        }
+        let shared = Arc::clone(&self.shared);
+        let instruments = run_venue_call(move || shared.plugin.instruments())
+            .await
+            .map_err(source_error_from_venue_call_error)?;
+        Ok(instruments.into_iter().map(instrument_from_wit).collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl BarSource for DynamicVenueSource {
+    fn source_id(&self) -> &str {
+        &self.shared.id
+    }
+
+    fn supported(&self) -> &[BarSpec] {
+        &self.shared.supported
+    }
+
+    fn max_rows(&self) -> usize {
+        self.shared.max_rows
+    }
+
+    async fn bars(
+        &self,
+        symbol: &SourceSymbol,
+        spec: BarSpec,
+        range: TimeRange,
+    ) -> Result<Vec<Bar>, SourceError> {
+        if !self.shared.enabled.load(Ordering::Relaxed) {
+            // The server must keep refusing a dead source's own fetches —
+            // hiding it in a client is not enforcement. See `DynamicVenues`'s
+            // own docs for why this venue stays registered regardless.
+            return Err(SourceError::rejected("this venue is currently disabled"));
+        }
+        let wit_spec =
+            bar_spec_to_wit(spec).map_err(|error| SourceError::decode(error.to_string()))?;
+        let source_symbol = symbol.as_str().to_owned();
+        let range_start = range.start().as_nanos();
+        let range_end = range.end().as_nanos();
+        let shared = Arc::clone(&self.shared);
+        let bars = run_venue_call(move || {
+            shared
+                .plugin
+                .bars(&source_symbol, wit_spec, range_start, range_end)
+        })
+        .await
+        .map_err(source_error_from_venue_call_error)?;
+        Ok(bars.iter().map(bar_from_wit).collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{BarSpec, BarUnit, DynamicIndicatorError, DynamicIndicators, Volume, bar_to_wit};
@@ -1323,5 +2016,269 @@ mod tests {
             catalog.set_enabled("Sma", false).unwrap_err(),
             DynamicIndicatorError::UnknownPlugin(id) if id == "Sma"
         ));
+    }
+}
+
+/// Proves [`DynamicVenues`] end to end against a genuine compiled
+/// `venue-plugin` component — the same one `senken-plugin-host`'s own
+/// `tests/venue.rs` proves the host-side loading path with — rather than
+/// against a description of what a loaded venue would do.
+#[cfg(test)]
+mod dynamic_venues_tests {
+    use super::{DynamicVenueError, DynamicVenues, PluginOrigin};
+    use senken_core::TimeRange;
+    use senken_core::UnixNanos;
+    use senken_marketdata::SourceSymbol;
+    use senken_series::{BarSpec, BarUnit};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use wiremock::matchers::{method, path as path_matcher};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    static BUILD_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Builds `senken-plugin-host`'s own `fixture-{name}` test fixture and
+    /// returns the path to its compiled component.
+    ///
+    /// Duplicates (rather than depends on) `senken-plugin-host`'s own
+    /// `tests/support::build_fixture`: that helper is private test code of
+    /// a different crate, not a reusable library export, and this crate
+    /// has no other reason to add a dependency on `senken-plugin-host`'s
+    /// test-only surface. The fixture itself is not duplicated — this
+    /// builds the exact same crate on disk, so both crates' tests prove
+    /// their own layer against the identical compiled bytes.
+    fn build_fixture(name: &str) -> PathBuf {
+        let _guard = BUILD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../plugin-host/tests/fixtures")
+            .join(name);
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "--target", "wasm32-wasip2"])
+            .current_dir(&fixture_dir)
+            .status()
+            .expect("spawning `cargo build` for a test fixture must succeed");
+        assert!(status.success(), "fixture `{name}` failed to build");
+        let binary_name = format!("fixture_{}.wasm", name.replace('-', "_"));
+        let wasm_path = fixture_dir
+            .join("target/wasm32-wasip2/debug")
+            .join(&binary_name);
+        assert!(
+            wasm_path.is_file(),
+            "expected {} to exist after building fixture `{name}`",
+            wasm_path.display()
+        );
+        wasm_path
+    }
+
+    /// OKX's own recorded responses — see `crates/plugin-host/tests/
+    /// venue.rs` for the same bytes proving the layer directly below this
+    /// one.
+    const INSTRUMENTS: &[u8] =
+        include_bytes!("../../../plugins/okx/tests/fixtures/instruments.json");
+
+    fn mock_server_body() -> &'static [u8] {
+        INSTRUMENTS
+    }
+
+    async fn mock_okx_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/v5/public/instruments"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(mock_server_body(), "application/json"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/v5/market/history-candles"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                include_bytes!("../../../plugins/okx/tests/fixtures/candles_1m.json").as_slice(),
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[test]
+    fn a_venue_that_tries_a_socket_is_recorded_as_failed_rather_than_dropped() {
+        let wasm = std::fs::read(build_fixture("venue-tries-socket")).unwrap();
+        let venues = DynamicVenues::new().unwrap();
+
+        let err = venues
+            .register(&wasm)
+            .expect_err("a component that can reach for a socket must never load");
+        assert!(matches!(err, DynamicVenueError::Host(_)));
+
+        let statuses = venues.all();
+        assert_eq!(
+            statuses.len(),
+            1,
+            "the failed attempt must still be recorded"
+        );
+        assert!(matches!(
+            statuses[0].state,
+            super::DynamicIndicatorState::FailedToLoad { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_registered_venue_serves_instruments_and_bars_through_both_registries() {
+        let server = mock_okx_server().await;
+        let wasm = std::fs::read(build_fixture("venue-example")).unwrap();
+        let venues = DynamicVenues::new().unwrap();
+
+        let info = venues
+            .register_with_origin_and_base_url(&wasm, PluginOrigin::Uploaded, Some(server.uri()))
+            .expect("a well-behaved venue component must register");
+        assert_eq!(info.id, "example-okx");
+
+        let marketdata_sources = venues.marketdata_sources();
+        let source = marketdata_sources
+            .iter()
+            .find(|source| source.id() == "example-okx")
+            .expect("the registered venue must appear as a MarketDataSource");
+        let instruments = source.instruments().await.unwrap();
+        let btc = instruments
+            .iter()
+            .find(|instrument| instrument.symbol == "BTCUSDT")
+            .expect("BTC-USDT must survive the fixture's own minimal parser");
+        assert_eq!(btc.source_symbol, "BTC-USDT");
+
+        let bar_sources = venues.bar_sources();
+        let bar_source = bar_sources
+            .iter()
+            .find(|source| source.source_id() == "example-okx")
+            .expect("the registered venue must appear as a BarSource");
+        assert!(!bar_source.supported().is_empty());
+        assert!(bar_source.max_rows() > 0);
+
+        let range =
+            TimeRange::new(UnixNanos::from_nanos(0), UnixNanos::from_nanos(i64::MAX)).unwrap();
+        let bars = bar_source
+            .bars(
+                &SourceSymbol::assume("BTC-USDT"),
+                BarSpec::new(1, BarUnit::Minute),
+                range,
+            )
+            .await
+            .unwrap();
+        assert_eq!(bars.len(), 4, "the unconfirmed newest row must be dropped");
+        assert_eq!(bars[0].open, 780_343);
+    }
+
+    #[tokio::test]
+    async fn disabling_a_venue_empties_its_catalog_and_rejects_bars_but_keeps_it_registered() {
+        let server = mock_okx_server().await;
+        let wasm = std::fs::read(build_fixture("venue-example")).unwrap();
+        let venues = DynamicVenues::new().unwrap();
+        venues
+            .register_with_origin_and_base_url(&wasm, PluginOrigin::Uploaded, Some(server.uri()))
+            .unwrap();
+
+        let source_before = venues
+            .marketdata_sources()
+            .into_iter()
+            .find(|source| source.id() == "example-okx")
+            .unwrap();
+        assert!(!source_before.instruments().await.unwrap().is_empty());
+
+        venues.set_enabled("example-okx", false).unwrap();
+
+        // The registration itself must survive disabling — a venue's own
+        // stored bars must stay addressable through it after the venue
+        // goes quiet, not just before.
+        assert_eq!(
+            venues.all().len(),
+            1,
+            "disabling must not deregister the venue"
+        );
+        let marketdata_after = venues.marketdata_sources();
+        let source_after = marketdata_after
+            .iter()
+            .find(|source| source.id() == "example-okx")
+            .expect("a disabled venue must still be present in the registry");
+        assert!(
+            source_after.instruments().await.unwrap().is_empty(),
+            "a disabled venue's instrument catalog must be empty"
+        );
+
+        let bar_source = venues
+            .bar_sources()
+            .into_iter()
+            .find(|source| source.source_id() == "example-okx")
+            .unwrap();
+        let range =
+            TimeRange::new(UnixNanos::from_nanos(0), UnixNanos::from_nanos(i64::MAX)).unwrap();
+        let err = bar_source
+            .bars(
+                &SourceSymbol::assume("BTC-USDT"),
+                BarSpec::new(1, BarUnit::Minute),
+                range,
+            )
+            .await
+            .expect_err("a disabled venue must refuse a bar fetch, not silently succeed");
+        assert!(matches!(
+            err,
+            senken_marketdata::source::SourceError::Rejected { .. }
+        ));
+
+        venues.set_enabled("example-okx", true).unwrap();
+        let marketdata_reenabled = venues.marketdata_sources();
+        let source_reenabled = marketdata_reenabled
+            .iter()
+            .find(|source| source.id() == "example-okx")
+            .unwrap();
+        assert!(
+            !source_reenabled.instruments().await.unwrap().is_empty(),
+            "re-enabling must restore the catalog without a fresh upload"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dynamic_venues_limit_group_budget_actually_holds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/api/v5/public/instruments"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(INSTRUMENTS, "application/json")
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+
+        let wasm = std::fs::read(build_fixture("venue-example")).unwrap();
+        let venues = DynamicVenues::new().unwrap();
+        venues
+            .register_with_origin_and_base_url(&wasm, PluginOrigin::Uploaded, Some(server.uri()))
+            .unwrap();
+        let source = std::sync::Arc::clone(
+            venues
+                .marketdata_sources()
+                .first()
+                .expect("the venue must have registered"),
+        );
+
+        let first = {
+            let source = std::sync::Arc::clone(&source);
+            tokio::spawn(async move { source.instruments().await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let second = {
+            let source = std::sync::Arc::clone(&source);
+            tokio::spawn(async move { source.instruments().await })
+        };
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), second)
+                .await
+                .is_err(),
+            "a second call must wait behind the first for the venue's own \
+             LimitGroup permit rather than running alongside it"
+        );
+        first.await.unwrap().unwrap();
     }
 }

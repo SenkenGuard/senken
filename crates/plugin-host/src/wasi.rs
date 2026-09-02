@@ -157,3 +157,63 @@ impl WasiView for PluginState {
         }
     }
 }
+
+/// One venue-plugin call's `Store<T>` data — the venue-world counterpart to
+/// [`PluginState`], sharing this module's own capability-zero WASI surface
+/// ([`add_sandboxed_wasi_to_linker`] is generic over `T: WasiView`, so
+/// nothing about it changes for this type) but carrying
+/// [`crate::http_host::HostHttp`] instead of [`BuiltinState`]: a venue
+/// plugin never calls a built-in indicator, and an indicator never fetches
+/// a URL, so neither state type carries a field the other's world has no
+/// use for.
+///
+/// A separate type from [`PluginState`] rather than one struct with both
+/// fields as `Option`s: `wit/senken.wit`'s `venue-plugin` world does not
+/// import `builtins`, and `indicator-plugin`/`compiled-indicator` do not
+/// import `http`, so a component instantiated against either `Linker` can
+/// only ever reach the field its own world actually declared — an `Option`
+/// that is always `Some` for one call site and always `None` for the other
+/// would just be this same fact, spelled with a runtime check instead of by
+/// the type.
+pub(crate) struct VenuePluginState {
+    ctx: WasiCtx,
+    table: ResourceTable,
+    /// See [`PluginState::limits`] — the identical memory ceiling, applied
+    /// the identical way.
+    pub(crate) limits: MemoryLimiter,
+    /// This call's host-side implementation of `wit/senken.wit`'s `http`
+    /// interface — the one path to the network this `Store` grants.
+    pub(crate) http: crate::http_host::HostHttp,
+}
+
+impl VenuePluginState {
+    /// A fresh state whose stdout and stderr both append to `log`, capped
+    /// at `max_memory_bytes` of linear memory, fetching through `http` —
+    /// otherwise identical to [`PluginState::new`].
+    pub(crate) fn new(
+        log: &PluginLog,
+        max_memory_bytes: usize,
+        health: Arc<RuntimeHealth>,
+        http: crate::http_host::HostHttp,
+    ) -> Self {
+        let ctx = WasiCtx::builder()
+            .stdout(log.stdout())
+            .stderr(log.stderr())
+            .build();
+        Self {
+            ctx,
+            table: ResourceTable::new(),
+            limits: MemoryLimiter::new(max_memory_bytes, health),
+            http,
+        }
+    }
+}
+
+impl WasiView for VenuePluginState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.ctx,
+            table: &mut self.table,
+        }
+    }
+}

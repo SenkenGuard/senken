@@ -43,7 +43,24 @@ bytes = "1.12.1"
 async-trait = { workspace = true }
 # `wasmtime_wasi::cli::StdoutStream::async_stream` returns a boxed
 # `tokio::io::AsyncWrite`; `io-util` is the feature that type lives behind.
-tokio = { workspace = true, features = ["io-util"] }
+# `rt-multi-thread` backs `src/http_host.rs`'s own dedicated runtime, which
+# drives every venue plugin's `senken_venue::VenueClient::get` call — see
+# that module's own docs for why a venue plugin's `fetch` host call needs a
+# runtime of its own rather than reusing whatever runtime is already
+# polling the caller.
+tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
+# Backs `src/http_host.rs`'s host implementation of `wit/senken.wit`'s
+# `http` interface: the same rate/concurrency/circuit budget a compiled-in
+# venue adapter shares across its sources (`senken_venue::LimitGroup`), and
+# the retrying client built on top of it (`senken_venue::VenueClient`) — a
+# venue plugin's fetch is charged against exactly the same kind of budget a
+# native plugin's `HttpActivationContext::venue_client` already builds, not
+# a second, parallel implementation of rate limiting.
+senken-venue = { workspace = true }
+# `senken_venue::SourceError` is what `VenueClient::get` fails with; this
+# crate's own `http_host::fetch_error_from_source_error` restates it as
+# `wit/senken.wit`'s `fetch-error` at the plugin boundary.
+senken-marketdata = { workspace = true }
 # Backs `wit/senken.wit`'s `builtins` import (see `src/builtins.rs`) with
 # the real, already-tested indicator state machines a plugin's `ema(close,
 # 20)` and its nine siblings call into. This crate — the layer that
@@ -71,3 +88,11 @@ num-traits = "0.2"
 # compiled to that target. `senken-indicators`/`senken-series`/`senken-core`
 # are already ordinary dependencies above and so need no dev-only entry.
 senken-indicator-lang = { workspace = true }
+# `tests/venue.rs` stands up a real HTTP server so a `venue-plugin`
+# fixture's `fetch` calls have something real to hit — the same technique
+# `senken-venue`'s and every compiled-in venue plugin's own tests already
+# use, proving this crate's host-side `fetch` bridge against genuine bytes
+# rather than a description of a response.
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+reqwest = { workspace = true }
