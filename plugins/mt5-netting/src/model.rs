@@ -1,4 +1,4 @@
-//! The netting account as a [`SettlementModel`].
+//! The netting account as a [`SettlementModel`](senken_sim_core::SettlementModel).
 
 use senken_core::decimal::Scaled;
 use senken_sim_core::money::{basis_points, notional, weighted_average};

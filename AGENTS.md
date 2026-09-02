@@ -176,6 +176,15 @@ reverse; the runtime depends on everything and nothing depends on it.
 | `alerts` | standalone alert evaluation |
 | `trade` | the `TradeAdapter` contract, orders/positions/balances, adapter capabilities, dynamic settings schemas, attached accounts |
 | `sim-core` | the shared simulation kernel: fixed-point money, fill pricing, resting-order triggers, and the `SettlementModel` seam four simulators differ at |
+
+Four settlement models sit on that kernel, one per trading system, in
+`plugins/`: `mt5-hedging` (tickets, per-symbol margin, swap, margin call
+and stop out), `mt5-netting` (one position per symbol, four transitions,
+two identifiers), `futures` (liquidation from a supplied bracket table,
+funding, one-way or hedge) and `spot` (asset balances, no positions at
+all). **Adding the second, third and fourth each required no edit to
+`sim-core`** — that is the check that the seam is in the right place, and
+it is the one to re-run when a fifth is added.
 | `venue` | HTTP, retry, rate limiting |
 | `plugin` | the plugin contract |
 | `acl` | `Action`, `Resource`, `Scope`, `decide` — no I/O |

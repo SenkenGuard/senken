@@ -1,4 +1,4 @@
-//! The futures account as a [`SettlementModel`].
+//! The futures account as a [`SettlementModel`](senken_sim_core::SettlementModel).
 
 use std::collections::BTreeMap;
 

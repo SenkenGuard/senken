@@ -1,4 +1,4 @@
-//! The spot account as a [`SettlementModel`].
+//! The spot account as a [`SettlementModel`](senken_sim_core::SettlementModel).
 
 use senken_sim_core::money::{BPS_DIVISOR, rescale};
 use senken_sim_core::{FillContext, Settled, SettlementModel};

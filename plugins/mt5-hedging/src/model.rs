@@ -1,4 +1,4 @@
-//! The hedging account as a [`SettlementModel`].
+//! The hedging account as a [`SettlementModel`](senken_sim_core::SettlementModel).
 //!
 //! Implementing the kernel's seam rather than only calling into it is what
 //! makes this system substitutable for the other three: a caller that
