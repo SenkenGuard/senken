@@ -1,12 +1,14 @@
 <script lang="ts">
-	// The order ticket, rendered from the adapter's own declared
-	// capabilities.
+	// The order ticket, rendered from the account's own resolved access.
 	//
 	// Which order kinds appear, whether there is a time-in-force row, and
-	// whether reduce-only exists at all are read from
-	// `AdapterCapabilities` — so a spot account shows no leverage controls
-	// and an adapter with no stop orders shows no STOP button, without this
-	// file knowing which adapter it is drawing for.
+	// whether reduce-only exists at all are read from `access.capabilities`
+	// — the adapter's own declared capabilities, **narrowed to this
+	// account** — so a spot account shows no leverage controls, an adapter
+	// with no stop orders shows no STOP button, and a read-only login (an
+	// MT5 investor password, an exchange key with no trade scope) shows
+	// exactly the controls it would if it could trade, just disabled: a
+	// form that accepts a size it will never send is a lie.
 	//
 	// # What the user types is what is sent
 	//
@@ -17,7 +19,7 @@
 	import { cn } from '$lib/utils.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import type {
-		AdapterDto,
+		AccountAccessDto,
 		OrderKindTagDto,
 		OrderSideDto,
 		PlaceOrderRequest,
@@ -29,14 +31,17 @@
 	let {
 		instrument,
 		account,
-		adapter,
+		access,
 		mid,
 		submitting = false,
 		onPlace
 	}: {
 		instrument: string;
 		account: TradeAccountDto | null;
-		adapter: AdapterDto | null;
+		/** This account's resolved access — `null` while it is still
+		 * loading, which is read the same as unrestricted rather than
+		 * blocking the ticket on a lookup that has not answered yet. */
+		access: AccountAccessDto | null;
 		/** The pane's last close, used only to prefill a limit price. It is
 		 * a display value from the chart; the value that trades is whatever
 		 * the user leaves in the box. */
@@ -54,15 +59,18 @@
 	let reduceOnly = $state(false);
 	let localError = $state<string | null>(null);
 
-	const kinds = $derived<OrderKindTagDto[]>(adapter?.capabilities.order_kinds ?? ['market']);
-	const tifs = $derived<TimeInForceDto[]>(adapter?.capabilities.time_in_force ?? ['gtc']);
-	const quantityUnit = $derived(adapter?.capabilities.quantity_unit ?? 'base');
+	const readOnly = $derived(access?.level === 'read_only');
+	const kinds = $derived<OrderKindTagDto[]>(access?.capabilities.order_kinds ?? ['market']);
+	const tifs = $derived<TimeInForceDto[]>(access?.capabilities.time_in_force ?? ['gtc']);
+	const quantityUnit = $derived(access?.capabilities.quantity_unit ?? 'base');
 	const supportsReduceOnly = $derived(
-		adapter?.capabilities.features.includes('reduce_only') ?? false
+		access?.capabilities.features.includes('reduce_only') ?? false
 	);
 	const needsLimit = $derived(kind === 'limit' || kind === 'stop_limit');
 	const needsTrigger = $derived(kind === 'stop' || kind === 'stop_limit');
-	const tradable = $derived(!!account && account.owned && account.enabled && !!instrument);
+	const tradable = $derived(
+		!!account && account.owned && account.enabled && !readOnly && !!instrument
+	);
 
 	const unitLabel: Record<string, string> = {
 		base: 'UNITS',
@@ -130,8 +138,10 @@
 		{#each [{ value: 'buy' as const, label: 'BUY' }, { value: 'sell' as const, label: 'SELL' }] as option (option.value)}
 			<button
 				type="button"
+				disabled={readOnly}
 				class={cn(
-					'flex-1 cursor-pointer py-2 text-center font-mono text-[10px] tracking-[0.18em]',
+					'flex-1 py-2 text-center font-mono text-[10px] tracking-[0.18em]',
+					readOnly ? 'cursor-not-allowed' : 'cursor-pointer',
 					side === option.value
 						? option.value === 'buy'
 							? 'bg-gain/12 text-gain'
@@ -149,8 +159,10 @@
 		{#each kinds as candidate (candidate)}
 			<button
 				type="button"
+				disabled={readOnly}
 				class={cn(
-					'flex-1 cursor-pointer border py-1.5 text-center font-mono text-[8.5px] tracking-[0.14em]',
+					'flex-1 border py-1.5 text-center font-mono text-[8.5px] tracking-[0.14em]',
+					readOnly ? 'cursor-not-allowed' : 'cursor-pointer',
 					kind === candidate ? 'border-foreground bg-ink/10 text-foreground' : 'border-ink/10 text-dim'
 				)}
 				onclick={() => {
@@ -166,20 +178,38 @@
 	{#if needsTrigger}
 		<div class="flex flex-col gap-1.5">
 			<span class={labelClass}>TRIGGER</span>
-			<Input bind:value={triggerPrice} inputmode="decimal" class={fieldClass} placeholder="0.00" />
+			<Input
+				bind:value={triggerPrice}
+				disabled={readOnly}
+				inputmode="decimal"
+				class={fieldClass}
+				placeholder="0.00"
+			/>
 		</div>
 	{/if}
 
 	{#if needsLimit}
 		<div class="flex flex-col gap-1.5">
 			<span class={labelClass}>LIMIT PRICE</span>
-			<Input bind:value={limitPrice} inputmode="decimal" class={fieldClass} placeholder="0.00" />
+			<Input
+				bind:value={limitPrice}
+				disabled={readOnly}
+				inputmode="decimal"
+				class={fieldClass}
+				placeholder="0.00"
+			/>
 		</div>
 	{/if}
 
 	<div class="flex flex-col gap-1.5">
 		<span class={labelClass}>SIZE · {unitLabel[quantityUnit] ?? 'UNITS'}</span>
-		<Input bind:value={quantity} inputmode="decimal" class={fieldClass} placeholder="0.00" />
+		<Input
+			bind:value={quantity}
+			disabled={readOnly}
+			inputmode="decimal"
+			class={fieldClass}
+			placeholder="0.00"
+		/>
 	</div>
 
 	{#if tifs.length > 1}
@@ -187,6 +217,7 @@
 			<span class={labelClass}>TIME IN FORCE</span>
 			<select
 				bind:value={timeInForce}
+				disabled={readOnly}
 				class="h-[30px] w-full appearance-none border border-ink/16 bg-transparent px-2.5 font-mono text-[11.5px] text-foreground outline-none"
 			>
 				{#each tifs as tif (tif)}
@@ -197,8 +228,13 @@
 	{/if}
 
 	{#if supportsReduceOnly}
-		<label class="flex cursor-pointer items-center gap-2">
-			<input type="checkbox" bind:checked={reduceOnly} class="size-3 accent-current" />
+		<label class={cn('flex items-center gap-2', readOnly ? 'cursor-not-allowed' : 'cursor-pointer')}>
+			<input
+				type="checkbox"
+				bind:checked={reduceOnly}
+				disabled={readOnly}
+				class="size-3 accent-current"
+			/>
 			<span class="font-mono text-[9px] tracking-[0.14em] text-dim2">REDUCE ONLY</span>
 		</label>
 	{/if}
@@ -224,8 +260,16 @@
 			NOT YOUR ACCOUNT
 		{:else if !account.enabled}
 			ACCOUNT DISABLED
+		{:else if readOnly}
+			READ-ONLY ACCOUNT
 		{:else}
 			PLACE {side.toUpperCase()} ORDER
 		{/if}
 	</button>
+
+	{#if readOnly && access?.note}
+		<span class="font-mono text-[9px] leading-[1.6] text-dim" data-ticket-readonly-note>
+			{access.note}
+		</span>
+	{/if}
 </div>

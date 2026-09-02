@@ -89,6 +89,8 @@
 	import { wsEventsStore, priceFromEvent } from '$lib/api/ws-events.svelte';
 	import { isUnsupportedFor, quoteFromEvent, indicatorFrameFor } from '$lib/api/ws-frames';
 	import { ensureSourcesLoaded, hasLiveFeed, hasQuoteFeed } from '$lib/api/sources.svelte';
+	import { tradeStore } from '$lib/state/trade.svelte';
+	import { tradeLinesFor } from '$lib/charts/trade-lines';
 
 	/** A freshly drawn object's starting style — the same default plot colour
 	 * `$lib/charts/layer-style.ts` already uses, so a new drawing and a new
@@ -916,6 +918,12 @@
 			mo?.disconnect();
 			overlaySeries.clear();
 			overlayInstrumentSeries.clear();
+			// The handles themselves are disposed by `chart.remove()` below; this
+			// only drops this component's own references so a pane recreated on
+			// the same instrument (a sub-pane layer add/remove, see this file's
+			// `destroyed` doc) starts its diff from empty rather than pointing at
+			// price lines that no longer exist.
+			tradeLineHandles.clear();
 			if (onPointerDown) container?.removeEventListener('mousedown', onPointerDown);
 			if (onPointerMove) window.removeEventListener('mousemove', onPointerMove);
 			if (onPointerUp) window.removeEventListener('mouseup', onPointerUp);
@@ -1918,6 +1926,75 @@
 				title: 'ASK'
 			})
 		];
+	});
+
+	/** Position and working-order price lines, keyed by `TradeLine.key` so a
+	 * redraw diffs rather than clears and rebuilds — with the shared store's
+	 * five-second refresh (`state/trade.svelte.ts`), a full clear-and-redraw
+	 * would flicker every line on screen roughly twelve times a minute. */
+	let tradeLineHandles = new Map<string, ReturnType<NonNullable<typeof series>['createPriceLine']>>();
+
+	// Reads `tradeStore` fresh on every run — never a snapshot from when this
+	// pane mounted. `tradeStore.active`/`tradeStore.portfolios` are the exact
+	// values the engine page and the order ticket read too, so a fill neither
+	// this pane nor this tab caused (the auto-refresh timer, or an order
+	// placed from the engine page) still moves this pane's lines the moment
+	// the store updates — the bug class `AGENTS.md` names is a stale
+	// *opening* value, and this effect never captures one.
+	$effect(() => {
+		if (!series) return;
+		if (!paneSettings.tradeLines) {
+			for (const handle of tradeLineHandles.values()) {
+				try {
+					series.removePriceLine(handle);
+				} catch {
+					// the series was rebuilt underneath us; nothing to remove
+				}
+			}
+			tradeLineHandles.clear();
+			return;
+		}
+		const account = tradeStore.active;
+		const portfolio = account ? tradeStore.portfolios[account.id] : undefined;
+		const wanted = tradeLinesFor(
+			instrument,
+			portfolio?.positions ?? [],
+			portfolio?.orders ?? [],
+			priceScale
+		);
+		const T = themeColors(isDark());
+		const colorFor = (line: (typeof wanted)[number]) =>
+			line.tone === 'gain' ? T.gain : line.tone === 'loss' ? T.loss : T.axis;
+
+		const wantedKeys = new Set<string>();
+		for (const line of wanted) {
+			wantedKeys.add(line.key);
+			// LineStyle.Solid = 0, LineStyle.Dashed = 2 (see `LINE_STYLE_MAP` in
+			// `$lib/charts/layer-style.ts` for the same mapping).
+			const options = {
+				price: line.price,
+				title: line.title,
+				color: colorFor(line),
+				lineWidth: 1 as const,
+				lineStyle: line.dashed ? 2 : 0,
+				axisLabelVisible: true
+			};
+			const existing = tradeLineHandles.get(line.key);
+			if (existing) {
+				existing.applyOptions(options);
+			} else {
+				tradeLineHandles.set(line.key, series.createPriceLine(options));
+			}
+		}
+		for (const [key, handle] of tradeLineHandles) {
+			if (wantedKeys.has(key)) continue;
+			try {
+				series.removePriceLine(handle);
+			} catch {
+				// the series was rebuilt underneath us; nothing to remove
+			}
+			tradeLineHandles.delete(key);
+		}
 	});
 
 	// Overlay indicators: SMA/EMA/WMA/BollingerBands/Vwap/Atr

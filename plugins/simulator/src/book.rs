@@ -30,8 +30,8 @@ use senken_core::UnixNanos;
 use senken_core::decimal::Scaled;
 use senken_marketdata::InstrumentId;
 use senken_trade::{
-    Fill, Liquidity, Order, OrderId, OrderKind, OrderSide, OrderStatus, PositionSide, TimeInForce,
-    TradeAccountId, TradeError,
+    Fill, Liquidity, Order, OrderAmendment, OrderId, OrderKind, OrderSide, OrderStatus,
+    PositionSide, TimeInForce, TradeAccountId, TradeError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -393,6 +393,31 @@ pub fn is_triggered(kind: OrderKind, side: OrderSide, mark: Scaled) -> bool {
     match (side, is_limit) {
         (OrderSide::Buy, true) | (OrderSide::Sell, false) => mark.value <= level.value,
         (OrderSide::Sell, true) | (OrderSide::Buy, false) => mark.value >= level.value,
+    }
+}
+
+/// Applies an amendment's supplied prices onto `kind`, keeping whichever
+/// field the amendment left `None` unchanged.
+///
+/// Every field `amendment` carries is assumed to already fit `kind` — the
+/// engine refuses a limit price for a market order, or a trigger for a
+/// plain limit, before this is ever called. `Market` has no price to amend
+/// at all, and `OrderKind` is `#[non_exhaustive]`: a kind this build has not
+/// been taught is left exactly as it was rather than guessed at.
+#[must_use]
+pub fn apply_amendment(kind: OrderKind, amendment: OrderAmendment) -> OrderKind {
+    match kind {
+        OrderKind::Limit { price } => OrderKind::Limit {
+            price: amendment.limit_price.unwrap_or(price),
+        },
+        OrderKind::Stop { trigger } => OrderKind::Stop {
+            trigger: amendment.trigger_price.unwrap_or(trigger),
+        },
+        OrderKind::StopLimit { trigger, price } => OrderKind::StopLimit {
+            trigger: amendment.trigger_price.unwrap_or(trigger),
+            price: amendment.limit_price.unwrap_or(price),
+        },
+        other => other,
     }
 }
 

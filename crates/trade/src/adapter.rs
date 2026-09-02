@@ -34,10 +34,10 @@ use senken_core::UnixNanos;
 use senken_core::decimal::Scaled;
 use senken_marketdata::{Instrument, InstrumentId};
 
-use crate::capability::{AdapterCapabilities, AdapterKind, InstrumentCoverage};
+use crate::capability::{AccountAccess, AdapterCapabilities, AdapterKind, InstrumentCoverage};
 use crate::error::TradeError;
 use crate::id::{OrderId, TradeAccountId};
-use crate::order::{Fill, Order, OrderFilter, OrderRequest};
+use crate::order::{Fill, Order, OrderAmendment, OrderFilter, OrderRequest};
 use crate::portfolio::{AccountBalances, AdapterHealth, Position};
 use crate::settings::{ActionForm, SettingsSchema, SettingsValues};
 
@@ -338,6 +338,26 @@ pub trait TradeAdapter: Send + Sync {
         Ok(())
     }
 
+    /// This account's access, defaulting to the adapter's own capabilities
+    /// with nothing withheld.
+    ///
+    /// Called before every operation that changes state. An adapter whose
+    /// venue distinguishes a read-only login — MetaTrader 5's investor
+    /// password, an exchange key minted without trade scope — reports it
+    /// here, so the restriction is shown on screen rather than discovered
+    /// from a rejection at the venue after a price has moved.
+    ///
+    /// # Errors
+    /// [`TradeError`] only when the check could not be performed at all.
+    async fn account_access(
+        &self,
+        ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+    ) -> Result<AccountAccess, TradeError> {
+        let _ = (ctx, account);
+        Ok(AccountAccess::trading(self.capabilities()))
+    }
+
     /// Whether this account can be used right now.
     ///
     /// # Errors
@@ -436,6 +456,25 @@ pub trait TradeAdapter: Send + Sync {
     ) -> Result<Order, TradeError> {
         let _ = (ctx, account, order_id);
         Err(TradeError::unsupported(self.id(), "cancelling orders"))
+    }
+
+    /// Amends a resting order in place, returning it as it now stands.
+    ///
+    /// The default refuses, which is correct for an adapter that did not
+    /// declare [`AdapterFeature::ModifyOrders`](crate::AdapterFeature).
+    ///
+    /// # Errors
+    /// [`TradeError::UnknownOrder`], [`TradeError::OrderNotOpen`], or the
+    /// venue's own failure.
+    async fn modify_order(
+        &self,
+        ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+        order_id: &OrderId,
+        amendment: OrderAmendment,
+    ) -> Result<Order, TradeError> {
+        let _ = (ctx, account, order_id, amendment);
+        Err(TradeError::unsupported(self.id(), "amending orders"))
     }
 
     /// Runs one of [`actions`](Self::actions).

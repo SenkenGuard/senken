@@ -611,7 +611,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * `GET /api/trade/accounts/{account_id}`: the account, its resolved access
+         *     and its health, in one round trip — what an account screen needs on
+         *     open, where three separate requests answered the same question before.
+         */
+        get: operations["account_state"];
         put?: never;
         post?: never;
         /**
@@ -661,6 +666,29 @@ export interface paths {
         get: operations["account_balances"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/trade/accounts/{account_id}/close`: closes an open position
+         *     by sending an opposite market order for exactly the size the adapter
+         *     reports right now.
+         * @description Owner-only, through `account_for_trading`, exactly like `place_order` —
+         *     this is itself an order, and moves money the same way.
+         */
+        post: operations["close_position"];
         delete?: never;
         options?: never;
         head?: never;
@@ -741,7 +769,11 @@ export interface paths {
         delete: operations["cancel_order"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * `PATCH /api/trade/accounts/{account_id}/orders/{order_id}`: amends a
+         *     resting order's size, limit price or trigger price in place.
+         */
+        patch: operations["amend_order"];
         trace?: never;
     };
     "/api/trade/accounts/{account_id}/positions": {
@@ -1209,6 +1241,23 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * @description One account's resolved access — `senken_trade::AccountAccess` over the
+         *     wire, narrower than [`AdapterDto::capabilities`] when the venue
+         *     distinguishes a restricted login (MetaTrader 5's investor password, an
+         *     exchange key minted without trade scope).
+         */
+        AccountAccessDto: {
+            /** @description The adapter's capabilities, narrowed to this account. */
+            capabilities: Record<string, never>;
+            /** @description `trade` or `read_only`. */
+            level: string;
+            /**
+             * @description Product copy explaining a restriction, shown to the user. Absent
+             *     when the account is unrestricted.
+             */
+            note?: string | null;
+        };
+        /**
          * @description `POST /api/trade/accounts/{account_id}/actions/{action_id}` response
          *     body.
          */
@@ -1307,6 +1356,18 @@ export interface components {
              * @description How many rows exist in total, under the same scope as `rows`.
              */
             total: number;
+        };
+        /**
+         * @description `PATCH /api/trade/accounts/{account_id}/orders/{order_id}` request body.
+         *
+         *     Every field is optional; a field left absent leaves that part of the
+         *     order alone, exactly as [`senken_trade::OrderAmendment`] does — this is
+         *     that type's own shape over the wire, not a re-declaration of it.
+         */
+        AmendOrderRequest: {
+            limit_price?: null | components["schemas"]["ScaledDto"];
+            quantity?: null | components["schemas"]["ScaledDto"];
+            trigger_price?: null | components["schemas"]["ScaledDto"];
         };
         /** @description One asset's balance. */
         AssetBalanceDto: {
@@ -1524,6 +1585,18 @@ export interface components {
              *     trait's own docs.
              */
             supported: boolean;
+        };
+        /**
+         * @description `POST /api/trade/accounts/{account_id}/close` request body.
+         *
+         *     The instrument travels in the body rather than the path: an
+         *     [`senken_marketdata::InstrumentId`] contains a colon, and path-encoding
+         *     it invites exactly the double-decoding mistakes that make one endpoint
+         *     disagree with another about the same instrument.
+         */
+        CloseRequest: {
+            /** @description The instrument to close, as `source:symbol`. */
+            instrument: string;
         };
         /** @description `POST /api/indicators/compute` request body. */
         ComputeIndicatorRequest: {
@@ -3019,6 +3092,19 @@ export interface components {
             secrets_set: Record<string, never>;
             /** @description The stored values, credentials redacted to `null`. */
             settings: Record<string, never>;
+        };
+        /**
+         * @description `GET /api/trade/accounts/{account_id}` response body: the account, its
+         *     resolved access and its health, in the one round trip a screen needs —
+         *     replacing three a client previously had to make.
+         */
+        TradeAccountStateDto: {
+            /** @description What this account may do right now. */
+            access: components["schemas"]["AccountAccessDto"];
+            /** @description The account. */
+            account: components["schemas"]["TradeAccountDto"];
+            /** @description Whether the account can be reached right now. */
+            health: Record<string, never>;
         };
         /** @description `GET /api/trade/accounts` response body. */
         TradeAccountsPage: {
@@ -4703,6 +4789,51 @@ export interface operations {
             };
         };
     };
+    account_state: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradeAccountStateDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     delete_account: {
         parameters: {
             query?: never;
@@ -4860,6 +4991,55 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BalancesDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    close_position: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloseRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDto"];
                 };
             };
             400: {
@@ -5086,6 +5266,56 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    amend_order: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendOrderRequest"];
+            };
+        };
         responses: {
             200: {
                 headers: {

@@ -341,6 +341,32 @@ pub struct Fill {
     pub executed_at: UnixNanos,
 }
 
+/// What an amendment changes. Every field is optional; `None` leaves that
+/// part of the order alone.
+///
+/// A price is amended by kind, not by field name: amending the trigger of
+/// an order that has no trigger is a caller mistake, and the engine refuses
+/// it rather than adding a trigger the order never had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct OrderAmendment {
+    /// The new size, replacing the order's current one.
+    pub quantity: Option<Scaled>,
+    /// The new resting price, for an order that has one.
+    pub limit_price: Option<Scaled>,
+    /// The new trigger price, for an order that has one.
+    pub trigger_price: Option<Scaled>,
+}
+
+impl OrderAmendment {
+    /// `true` when nothing would change — refused rather than sent, since a
+    /// no-op amendment still costs a venue round trip and can still lose
+    /// queue position.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.quantity.is_none() && self.limit_price.is_none() && self.trigger_price.is_none()
+    }
+}
+
 /// Which orders a listing should return.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -355,7 +381,7 @@ pub enum OrderFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::{OrderKind, OrderKindTag, OrderSide, OrderStatus, TimeInForce};
+    use super::{OrderAmendment, OrderKind, OrderKindTag, OrderSide, OrderStatus, TimeInForce};
     use senken_core::decimal::Scaled;
 
     #[test]
@@ -438,5 +464,17 @@ mod tests {
     #[test]
     fn time_in_force_defaults_to_resting_until_cancelled() {
         assert_eq!(TimeInForce::default(), TimeInForce::Gtc);
+    }
+
+    #[test]
+    fn an_amendment_with_nothing_set_reports_itself_empty() {
+        assert!(OrderAmendment::default().is_empty());
+        assert!(
+            !OrderAmendment {
+                quantity: Some(Scaled::new(3, 100)),
+                ..Default::default()
+            }
+            .is_empty()
+        );
     }
 }

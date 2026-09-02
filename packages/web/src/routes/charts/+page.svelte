@@ -86,10 +86,18 @@
 	import DateJumpDialog from '$lib/components/terminal/date-jump-dialog.svelte';
 	import DrawingToolbar from '$lib/components/terminal/drawing-toolbar.svelte';
 	import AlertsPanel from '$lib/components/terminal/alerts-panel.svelte';
-	import { loadTrade, selectAccount, tradeStore } from '$lib/state/trade.svelte';
-	import { iconForKind, isWorking, modeOf, formatTime } from '$lib/trade/view';
+	import {
+		afterMutation,
+		loadTrade,
+		refreshPortfolios,
+		selectAccount,
+		tradeStore,
+		watchTrade
+	} from '$lib/state/trade.svelte';
+	import { iconForKind, isAccountTradable, isWorking, modeOf, formatTime } from '$lib/trade/view';
 	import { formatScaledForDisplay } from '$lib/trade/scaled';
 	import type { OrderDto, PlaceOrderRequest } from '$lib/api/types';
+	import AmendDialog from '$lib/components/trade/amend-dialog.svelte';
 	import WatchlistTab from '$lib/components/terminal/watchlist-tab.svelte';
 	import NotesTab from '$lib/components/terminal/notes-tab.svelte';
 	import * as Popover from '$lib/components/ui/popover/index.js';
@@ -131,8 +139,16 @@
 		});
 		// The trade panel needs the adapter catalogue before it can draw a
 		// ticket at all — which controls exist is read from the active
-		// account's adapter, not assumed.
-		void loadTrade().then(() => refreshOrders());
+		// account's adapter, not assumed. Every account's portfolio (not
+		// just this one) is fetched here too: `tradeStore.portfolios` is
+		// shared with the engine page, so this page's own order list is
+		// simply derived from it below rather than fetched separately.
+		void loadTrade().then(() => refreshPortfolios());
+		// 'active': this panel shows one account's ticket and its orders, and
+		// a trader sits on this page for hours. Refreshing the other nine
+		// accounts from here would be four venue requests each, every five
+		// seconds, for data nothing on screen is showing.
+		return watchTrade('active');
 	});
 
 	const layout = $derived(chartWorkspaceStore.layout);
@@ -222,11 +238,11 @@
 	let panelOpen = $state(false);
 	let chartPanel = $state<ChartPanelKey>('engine');
 
-	// The trade panel's own state. Orders are whatever the account's adapter
-	// last reported — never a local list this page appends to, because the
-	// adapter is the system of record and a resting order it filled while
-	// nobody was looking would otherwise still read as working here.
-	let orders = $state<OrderDto[]>([]);
+	// The trade panel's own UI state. The order list itself is not here —
+	// it is derived from `tradeStore.portfolios` below (see `tradeAccount`'s
+	// neighbouring declarations), the shared copy the engine page also
+	// reads, so a fill or a cancel neither screen caused still shows up
+	// here without a local list of this page's own to go stale.
 	let placing = $state(false);
 	let orderError = $state<string | null>(null);
 
@@ -559,20 +575,29 @@
 	const tradeAdapter = $derived(
 		tradeAccount ? (tradeStore.adapter(tradeAccount.adapter_id) ?? null) : null
 	);
+	const tradeAccess = $derived(tradeAccount ? (tradeStore.access[tradeAccount.id] ?? null) : null);
+	const tradeAccountTradable = $derived(
+		tradeAccount ? isAccountTradable(tradeAccount, tradeStore.access) : false
+	);
+	/** Whatever the account's adapter last reported, read out of the shared
+	 * store rather than a list this page appends to itself — a resting
+	 * order that filled while nobody was looking on this page still shows
+	 * as filled, because it is the same portfolio the engine page saw fill
+	 * it. */
+	const orders = $derived(tradeAccount ? (tradeStore.portfolios[tradeAccount.id]?.orders ?? []) : []);
+	/** `true` while the active account's portfolio has never been fetched —
+	 * distinct from a fetch that came back with genuinely no orders, so the
+	 * panel does not claim "no orders" before it has actually asked. */
+	const ordersLoading = $derived(
+		tradeAccount ? tradeStore.portfolios[tradeAccount.id] === undefined : false
+	);
 
-	/** Re-reads the order list from whichever account is active **now**,
-	 * rather than from the one this panel opened with. */
-	async function refreshOrders() {
-		const account = tradeStore.active;
-		if (!account) {
-			orders = [];
-			return;
-		}
-		try {
-			orders = await apiClient.tradeAccountOrders(account.id, 'all');
-		} catch (error) {
-			orderError = describeError(error);
-		}
+	let amendDialogOpen = $state(false);
+	let amendDialogOrder = $state<OrderDto | null>(null);
+
+	function openAmend(order: OrderDto) {
+		amendDialogOrder = order;
+		amendDialogOpen = true;
 	}
 
 	async function placeOrder(request: PlaceOrderRequest) {
@@ -582,7 +607,7 @@
 		orderError = null;
 		try {
 			await apiClient.placeOrder(account.id, request);
-			await refreshOrders();
+			await afterMutation(account.id);
 		} catch (error) {
 			orderError = describeError(error);
 		} finally {
@@ -596,7 +621,7 @@
 		orderError = null;
 		try {
 			await apiClient.cancelOrder(account.id, orderId);
-			await refreshOrders();
+			await afterMutation(account.id);
 		} catch (error) {
 			orderError = describeError(error);
 		}
@@ -620,8 +645,11 @@
 							meta: account.owned ? modeOf(adapter) : 'NOT YOURS',
 							metaTone: adapter?.trades_real_money ? 'loss' : 'gain',
 							onPick: () => {
+								// No fetch needed here: `tradeStore.portfolios` already
+								// holds every account's orders (the shared refresh
+								// covers all of them), so switching the active account
+								// just changes which key `orders` above reads.
 								selectAccount(account.id);
-								void refreshOrders();
 								closeCommand();
 							}
 						};
@@ -1343,7 +1371,7 @@
 							<OrderTicket
 								instrument={activePane?.instrument ?? ''}
 								account={tradeAccount}
-								adapter={tradeAdapter}
+								access={tradeAccess}
 								{mid}
 								submitting={placing}
 								onPlace={(request) => void placeOrder(request)}
@@ -1358,7 +1386,7 @@
 							<div class="min-h-0 flex-1 overflow-auto">
 								{#if orders.length === 0}
 									<div class="py-5.5 text-center font-mono text-[9px] tracking-[0.16em] text-dim">
-										NO ORDERS ON THIS ACCOUNT
+										{ordersLoading ? 'LOADING…' : 'NO ORDERS ON THIS ACCOUNT'}
 									</div>
 								{:else}
 									{#each orders as o (o.id)}
@@ -1386,7 +1414,14 @@
 													>
 														{o.status.replace('_', ' ').toUpperCase()}
 													</span>
-													{#if isWorking(o) && tradeAccount?.owned}
+													{#if isWorking(o) && tradeAccountTradable}
+														<button
+															type="button"
+															class="cursor-pointer font-mono text-[8.5px] tracking-[0.14em] text-dim hover:text-foreground"
+															onclick={() => openAmend(o)}
+														>
+															AMEND
+														</button>
 														<button
 															type="button"
 															class="cursor-pointer font-mono text-[8.5px] tracking-[0.14em] text-dim hover:text-loss"
@@ -1503,6 +1538,16 @@
 		onClose={() => (dateJumpDlg = null)}
 		onJump={(targetNanos) => dateJumpDlg && jumpPaneToDate(dateJumpDlg.pane, targetNanos)}
 	/>
+
+	{#if amendDialogOrder && tradeAccount}
+		{@const amendAccountId = tradeAccount.id}
+		<AmendDialog
+			bind:open={amendDialogOpen}
+			accountId={amendAccountId}
+			order={amendDialogOrder}
+			onamended={() => void afterMutation(amendAccountId)}
+		/>
+	{/if}
 
 {:else}
 	<!-- No layout ever loaded (the initial `defaultWorkspace`/`getLayout`

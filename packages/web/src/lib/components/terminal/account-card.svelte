@@ -6,7 +6,8 @@
 	import { cn } from '$lib/utils.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
-	import type { AccountCardData } from '$lib/trade/view';
+	import { LiveDot } from '$lib/components/ui/live-dot/index.js';
+	import { healthDotClass, type AccountCardData } from '$lib/trade/view';
 
 	let { card, onclick }: { card: AccountCardData; onclick: () => void } = $props();
 </script>
@@ -44,12 +45,44 @@
 		>
 			{card.mode}
 		</Badge>
-	</div>
-	<span class="font-mono text-[15px] text-foreground">{card.equity}</span>
-	<div class="flex items-center justify-between">
-		<span class="font-mono text-[8.5px] tracking-[0.14em] text-dim">{card.adapterName}</span>
-		<span class={cn('font-mono text-[9.5px]', card.pnlTone === 'gain' ? 'text-gain' : 'text-loss')}>
-			{card.pnl}
+		{#if card.readOnly}
+			<Badge
+				class="h-auto flex-none rounded-none border-ink/18 px-[4px] py-[1px] font-mono text-[7.5px] tracking-[0.14em] text-dim2"
+				variant="outline"
+				data-account-readonly
+			>
+				READ-ONLY
+			</Badge>
+		{/if}
+		<span class="contents" data-account-health={card.health}>
+			<LiveDot class={cn('ml-auto', healthDotClass[card.health])} pulse={card.health === 'degraded'} />
 		</span>
 	</div>
+	<span class="font-mono text-[15px] text-foreground">
+		{card.equity}{card.currency ? ` ${card.currency}` : ''}
+	</span>
+	{#if !card.adapterInstalled}
+		<span class="font-mono text-[8.5px] tracking-[0.1em] text-loss" data-adapter-missing>
+			ADAPTER NOT INSTALLED
+		</span>
+	{:else}
+		<div class="flex items-center justify-between">
+			<span class="font-mono text-[8.5px] tracking-[0.14em] text-dim">{card.adapterName}</span>
+			<span
+				class={cn('font-mono text-[9.5px]', card.pnlTone === 'gain' ? 'text-gain' : 'text-loss')}
+			>
+				{card.pnl}
+			</span>
+		</div>
+	{/if}
+	{#if card.healthReason}
+		<span class="font-mono text-[8px] leading-tight text-dim" data-health-reason>
+			{card.healthReason}
+		</span>
+	{/if}
+	{#if card.portfolioError}
+		<span class="font-mono text-[8px] leading-tight text-loss" data-portfolio-error>
+			{card.portfolioError}
+		</span>
+	{/if}
 </Card.Root>

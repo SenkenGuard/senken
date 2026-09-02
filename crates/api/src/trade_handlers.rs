@@ -21,8 +21,8 @@ use axum::{Extension, Json};
 use senken_marketdata::InstrumentId;
 use senken_series::Clock;
 use senken_trade::{
-    AccountRef, ClientOrderId, OrderFilter, OrderId, OrderKind, OrderKindTag, OrderRequest,
-    SettingsValues, TradeAccountId, TradeAdapter, TradeContext, TradeError,
+    AccountRef, ClientOrderId, OrderAmendment, OrderFilter, OrderId, OrderKind, OrderKindTag,
+    OrderRequest, SettingsValues, TradeAccountId, TradeAdapter, TradeContext, TradeError,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -31,10 +31,10 @@ use crate::AppState;
 use crate::HandlerError;
 use crate::auth::Authed;
 use crate::dto::{
-    ActionOutcomeDto, AdapterDto, AdaptersResponse, BalancesDto, CreateTradeAccountRequest,
-    FillDto, HealthDto, IdResponse, OrderDto, PlaceOrderRequest, PositionDto,
-    ReplaceSettingsRequest, RunActionRequest, TradeAccountDto, TradeAccountSettingsDto,
-    TradeAccountsPage, UpdateTradeAccountRequest,
+    ActionOutcomeDto, AdapterDto, AdaptersResponse, AmendOrderRequest, BalancesDto, CloseRequest,
+    CreateTradeAccountRequest, FillDto, HealthDto, IdResponse, OrderDto, PlaceOrderRequest,
+    PositionDto, ReplaceSettingsRequest, RunActionRequest, TradeAccountDto,
+    TradeAccountSettingsDto, TradeAccountStateDto, TradeAccountsPage, UpdateTradeAccountRequest,
 };
 use crate::pagination::{PaginationQuery, normalize_pagination};
 use crate::trade_context::{CatalogInstruments, StoredMarkPrice};
@@ -240,6 +240,44 @@ pub(crate) async fn create_account(
     }
 
     Ok((StatusCode::CREATED, Json(IdResponse { id: id.to_string() })))
+}
+
+/// `GET /api/trade/accounts/{account_id}`: the account, its resolved access
+/// and its health, in one round trip — what an account screen needs on
+/// open, where three separate requests answered the same question before.
+#[utoipa::path(
+    get,
+    path = "/api/trade/accounts/{account_id}",
+    params(("account_id" = String, Path)),
+    responses(
+        (status = 200, body = TradeAccountStateDto),
+        (status = 400, body = crate::dto::ErrorBody),
+        (status = 401, body = crate::dto::ErrorBody),
+        (status = 403, body = crate::dto::ErrorBody),
+    )
+)]
+pub(crate) async fn account_state(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(account_id): Path<String>,
+) -> Result<Json<TradeAccountStateDto>, HandlerError> {
+    let id = parse_account_id(&account_id)?;
+    let (adapter, account, settings) = resolve_for_read(&state, &ctx, id)?;
+    let marks = StoredMarkPrice::new(state.clone());
+    let instruments = CatalogInstruments::new(state.clone());
+    let call_ctx = context(&marks, &instruments);
+    let account_ref = AccountRef {
+        id,
+        label: &account.label,
+        settings: &settings,
+    };
+    let access = adapter.account_access(&call_ctx, account_ref).await?;
+    let health = adapter.health(&call_ctx, account_ref).await?;
+    Ok(Json(TradeAccountStateDto {
+        account: TradeAccountDto::from_summary(account, ctx.user.user_id()),
+        access: access.into(),
+        health,
+    }))
 }
 
 /// `PATCH /api/trade/accounts/{account_id}`: rename, or enable/disable.
@@ -694,6 +732,54 @@ pub(crate) async fn place_order(
     Ok((StatusCode::CREATED, Json(order.into())))
 }
 
+/// `POST /api/trade/accounts/{account_id}/close`: closes an open position
+/// by sending an opposite market order for exactly the size the adapter
+/// reports right now.
+///
+/// Owner-only, through `account_for_trading`, exactly like `place_order` —
+/// this is itself an order, and moves money the same way.
+#[utoipa::path(
+    post,
+    path = "/api/trade/accounts/{account_id}/close",
+    request_body = CloseRequest,
+    params(("account_id" = String, Path)),
+    responses(
+        (status = 201, body = OrderDto),
+        (status = 400, body = crate::dto::ErrorBody),
+        (status = 401, body = crate::dto::ErrorBody),
+        (status = 403, body = crate::dto::ErrorBody),
+    )
+)]
+pub(crate) async fn close_position(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path(account_id): Path<String>,
+    Json(body): Json<CloseRequest>,
+) -> Result<(StatusCode, Json<OrderDto>), HandlerError> {
+    let id = parse_account_id(&account_id)?;
+    let instrument = InstrumentId::parse(&body.instrument)
+        .map_err(|source| HandlerError::BadRequest(source.to_string()))?;
+
+    let (_, account, settings) = resolve_for_trading(&state, &ctx, id)?;
+    let marks = StoredMarkPrice::new(state.clone());
+    let instruments = CatalogInstruments::new(state.clone());
+    let order = state
+        .runtime
+        .trade()
+        .close_position(
+            &account.adapter_id,
+            &context(&marks, &instruments),
+            AccountRef {
+                id,
+                label: &account.label,
+                settings: &settings,
+            },
+            &instrument,
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(order.into())))
+}
+
 /// `DELETE /api/trade/accounts/{account_id}/orders/{order_id}`: cancels a
 /// resting order.
 #[utoipa::path(
@@ -713,11 +799,14 @@ pub(crate) async fn cancel_order(
     Path((account_id, order_id)): Path<(String, String)>,
 ) -> Result<Json<OrderDto>, HandlerError> {
     let id = parse_account_id(&account_id)?;
-    let (adapter, account, settings) = resolve_for_trading(&state, &ctx, id)?;
+    let (_, account, settings) = resolve_for_trading(&state, &ctx, id)?;
     let marks = StoredMarkPrice::new(state.clone());
     let instruments = CatalogInstruments::new(state.clone());
-    let order = adapter
+    let order = state
+        .runtime
+        .trade()
         .cancel_order(
+            &account.adapter_id,
             &context(&marks, &instruments),
             AccountRef {
                 id,
@@ -725,6 +814,53 @@ pub(crate) async fn cancel_order(
                 settings: &settings,
             },
             &OrderId::new(order_id),
+        )
+        .await?;
+    Ok(Json(order.into()))
+}
+
+/// `PATCH /api/trade/accounts/{account_id}/orders/{order_id}`: amends a
+/// resting order's size, limit price or trigger price in place.
+#[utoipa::path(
+    patch,
+    path = "/api/trade/accounts/{account_id}/orders/{order_id}",
+    request_body = AmendOrderRequest,
+    params(("account_id" = String, Path), ("order_id" = String, Path)),
+    responses(
+        (status = 200, body = OrderDto),
+        (status = 400, body = crate::dto::ErrorBody),
+        (status = 401, body = crate::dto::ErrorBody),
+        (status = 403, body = crate::dto::ErrorBody),
+    )
+)]
+pub(crate) async fn amend_order(
+    State(state): State<AppState>,
+    Extension(ctx): Authed,
+    Path((account_id, order_id)): Path<(String, String)>,
+    Json(body): Json<AmendOrderRequest>,
+) -> Result<Json<OrderDto>, HandlerError> {
+    let id = parse_account_id(&account_id)?;
+    let (_, account, settings) = resolve_for_trading(&state, &ctx, id)?;
+    let marks = StoredMarkPrice::new(state.clone());
+    let instruments = CatalogInstruments::new(state.clone());
+    let amendment = OrderAmendment {
+        quantity: body.quantity.map(Into::into),
+        limit_price: body.limit_price.map(Into::into),
+        trigger_price: body.trigger_price.map(Into::into),
+    };
+    let order = state
+        .runtime
+        .trade()
+        .modify_order(
+            &account.adapter_id,
+            &context(&marks, &instruments),
+            AccountRef {
+                id,
+                label: &account.label,
+                settings: &settings,
+            },
+            &OrderId::new(order_id),
+            amendment,
         )
         .await?;
     Ok(Json(order.into()))
@@ -773,8 +909,11 @@ pub(crate) async fn run_action(
 
     let marks = StoredMarkPrice::new(state.clone());
     let instruments = CatalogInstruments::new(state.clone());
-    let outcome = adapter
+    let outcome = state
+        .runtime
+        .trade()
         .run_action(
+            &account.adapter_id,
             &context(&marks, &instruments),
             AccountRef {
                 id,
@@ -1296,6 +1435,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn getting_account_state_returns_the_account_its_access_and_its_health_together() {
+        let (_runtime_dir, runtime) = runtime_with_simulator();
+        let (handle, identity, _dir) = serve_unfenced_test_server_with(runtime).await;
+        let addr = handle.local_addr();
+        let admin = admin_of(&identity);
+        let token = trader(addr, &identity, &admin, "alice@example.com").await;
+        let id = attach_simulator(addr, &token, "Growth").await;
+
+        let body =
+            body_json(get_auth(format!("http://{addr}/api/trade/accounts/{id}"), &token).await)
+                .await;
+
+        assert_eq!(body["account"]["label"], "Growth");
+        assert_eq!(body["access"]["level"], "trade");
+        assert_eq!(body["access"]["note"], serde_json::Value::Null);
+        assert_eq!(body["health"]["state"], "connected");
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn placing_an_order_on_a_read_only_account_is_forbidden_and_names_the_reason() {
+        let (_runtime_dir, runtime) = runtime_with_simulator();
+        let (handle, identity, _dir) = serve_unfenced_test_server_with(runtime).await;
+        let addr = handle.local_addr();
+        let admin = admin_of(&identity);
+        let token = trader(addr, &identity, &admin, "alice@example.com").await;
+
+        let created = post_json_auth(
+            format!("http://{addr}/api/trade/accounts"),
+            &token,
+            serde_json::json!({
+                "adapter_id": "simulator",
+                "label": "Investor",
+                "settings": {
+                    "starting_balance": "50000.00",
+                    "currency": "USD",
+                    "access": "read_only"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(created.status(), reqwest::StatusCode::CREATED);
+        let id = body_json(created).await["id"].as_str().unwrap().to_owned();
+
+        let order = post_json_auth(
+            format!("http://{addr}/api/trade/accounts/{id}/orders"),
+            &token,
+            serde_json::json!({
+                "instrument": "okx-spot:BTCUSDT",
+                "side": "buy",
+                "kind": "market",
+                "quantity": { "scale": 3, "value": "250" }
+            }),
+        )
+        .await;
+        assert_eq!(order.status(), reqwest::StatusCode::FORBIDDEN);
+        let message = body_json(order).await["error"].as_str().unwrap().to_owned();
+        assert!(
+            message.contains("read-only"),
+            "the 403 body must name the reason, got {message}"
+        );
+
+        // Reads are unaffected — the same account still answers a read with
+        // 200, because a read-only account exists to be read.
+        let positions = get_auth(
+            format!("http://{addr}/api/trade/accounts/{id}/positions"),
+            &token,
+        )
+        .await;
+        assert_eq!(positions.status(), reqwest::StatusCode::OK);
+
+        // The combined state endpoint reports the restriction too.
+        let state =
+            body_json(get_auth(format!("http://{addr}/api/trade/accounts/{id}"), &token).await)
+                .await;
+        assert_eq!(state["access"]["level"], "read_only");
+        assert!(
+            state["access"]["note"]
+                .as_str()
+                .unwrap()
+                .contains("read-only")
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn every_trade_endpoint_refuses_an_anonymous_caller() {
         let (_runtime_dir, runtime) = runtime_with_simulator();
         let (handle, _identity, _dir) = serve_unfenced_test_server_with(runtime).await;
@@ -1738,6 +1965,235 @@ mod end_to_end_tests {
             .as_array()
             .unwrap()
             .is_empty()
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_over_http_uses_the_positions_current_size_and_leaves_nothing_open() {
+        let (handle, _runtime_dir, account, token) = opened_position().await;
+        let addr = handle.local_addr();
+        let instrument = test_instrument();
+
+        let closed = post_json_auth(
+            format!("http://{addr}/api/trade/accounts/{account}/close"),
+            &token,
+            serde_json::json!({ "instrument": instrument }),
+        )
+        .await;
+        assert_eq!(closed.status(), reqwest::StatusCode::CREATED);
+        let order = body_json(closed).await;
+        assert_eq!(order["side"], "sell", "closing a long sells");
+        assert_eq!(order["status"], "filled");
+        assert_eq!(
+            order["quantity"]["value"], "2",
+            "the close must send exactly the size held, not a size the caller chose"
+        );
+
+        assert!(
+            body_json(
+                get_auth(
+                    format!("http://{addr}/api/trade/accounts/{account}/positions"),
+                    &token,
+                )
+                .await,
+            )
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty(),
+            "a full close must leave no position behind"
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_an_instrument_with_no_open_position_is_a_bad_request() {
+        let (handle, _runtime_dir, account, token) = opened_position().await;
+        let addr = handle.local_addr();
+
+        let response = post_json_auth(
+            format!("http://{addr}/api/trade/accounts/{account}/close"),
+            &token,
+            serde_json::json!({ "instrument": "okx-spot:ETHUSDT" }),
+        )
+        .await;
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn amending_a_resting_order_over_http_changes_its_price_and_size() {
+        let runtime_dir = tempfile::TempDir::new().unwrap();
+        let (runtime, _bar_source) = runtime_with_fake_venue_and_simulator(runtime_dir.path());
+        let (handle, identity, _dir) = serve_unfenced_test_server_with(runtime).await;
+        let addr = handle.local_addr();
+        let admin = admin_of(&identity);
+        let admin_token = login_token(addr, DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD).await;
+        let token = trader(addr, &identity, &admin, "alice@example.com").await;
+        let instrument = test_instrument();
+
+        let account = body_json(
+            post_json_auth(
+                format!("http://{addr}/api/trade/accounts"),
+                &token,
+                serde_json::json!({
+                    "adapter_id": "simulator",
+                    "label": "E2E",
+                    "settings": { "starting_balance": "50000.00" }
+                }),
+            )
+            .await,
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // History loaded so the mark is known (100) — a limit resting well
+        // below it stays open rather than filling immediately.
+        let now = senken_loader::SystemClock.now().as_nanos();
+        let aligned_now = now - now.rem_euclid(MINUTE);
+        let job_id = body_json(
+            post_json_auth(
+                format!("http://{addr}/api/bars/ensure"),
+                &admin_token,
+                serde_json::json!({
+                    "instrument": instrument,
+                    "spec": "1m",
+                    "from": aligned_now - 180 * MINUTE,
+                    "to": aligned_now,
+                }),
+            )
+            .await,
+        )
+        .await["job_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        wait_for_job(addr, &admin_token, &job_id).await;
+
+        let order = body_json(
+            post_json_auth(
+                format!("http://{addr}/api/trade/accounts/{account}/orders"),
+                &token,
+                serde_json::json!({
+                    "instrument": instrument,
+                    "side": "buy",
+                    "kind": "limit",
+                    "quantity": { "scale": 0, "value": "1" },
+                    "limit_price": { "scale": 0, "value": "50" }
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(order["status"], "open");
+        let order_id = order["id"].as_str().unwrap().to_owned();
+
+        let amended = reqwest::Client::new()
+            .patch(format!(
+                "http://{addr}/api/trade/accounts/{account}/orders/{order_id}"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({
+                    "quantity": { "scale": 0, "value": "3" },
+                    "limit_price": { "scale": 0, "value": "60" }
+                }))
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(amended.status(), reqwest::StatusCode::OK);
+        let body = body_json(amended).await;
+        assert_eq!(body["quantity"]["value"], "3");
+        assert_eq!(body["limit_price"]["value"], "60");
+        assert_eq!(
+            body["status"], "open",
+            "60 is still below the mark of 100, so it must not have filled"
+        );
+
+        // And the amendment is what is actually stored, not just echoed.
+        let stored = body_json(
+            get_auth(
+                format!("http://{addr}/api/trade/accounts/{account}/orders?status=open"),
+                &token,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(stored[0]["limit_price"]["value"], "60");
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_and_amend_are_both_forbidden_on_a_read_only_account() {
+        let runtime_dir = tempfile::TempDir::new().unwrap();
+        let (runtime, _bar_source) = runtime_with_fake_venue_and_simulator(runtime_dir.path());
+        let (handle, identity, _dir) = serve_unfenced_test_server_with(runtime).await;
+        let addr = handle.local_addr();
+        let admin = admin_of(&identity);
+        let token = trader(addr, &identity, &admin, "alice@example.com").await;
+        let instrument = test_instrument();
+
+        let account = body_json(
+            post_json_auth(
+                format!("http://{addr}/api/trade/accounts"),
+                &token,
+                serde_json::json!({
+                    "adapter_id": "simulator",
+                    "label": "Investor",
+                    "settings": {
+                        "starting_balance": "50000.00",
+                        "access": "read_only"
+                    }
+                }),
+            )
+            .await,
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let close = post_json_auth(
+            format!("http://{addr}/api/trade/accounts/{account}/close"),
+            &token,
+            serde_json::json!({ "instrument": instrument }),
+        )
+        .await;
+        assert_eq!(
+            close.status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "a read-only account must be refused before its positions are even read"
+        );
+
+        let amend = reqwest::Client::new()
+            .patch(format!(
+                "http://{addr}/api/trade/accounts/{account}/orders/does-not-matter"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(
+                    &serde_json::json!({ "quantity": { "scale": 0, "value": "1" } }),
+                )
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            amend.status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "a read-only account must be refused before its orders are even read"
         );
 
         handle.shutdown().await.unwrap();

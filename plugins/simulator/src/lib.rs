@@ -37,11 +37,11 @@ use senken_core::decimal::Scaled;
 use senken_plugin::{ActivationContext, Plugin, PluginError, PluginManifest};
 use senken_storage::{Snapshot, Storage};
 use senken_trade::{
-    AccountBalances, AccountRef, ActionOutcome, AdapterAction, AdapterCapabilities, AdapterFeature,
-    AdapterHealth, AdapterKind, ChoiceOption, FieldKind, Fill, InstrumentCoverage, Liquidity,
-    Order, OrderFilter, OrderId, OrderKindTag, OrderRequest, OrderStatus, Position, PositionMode,
-    PositionSide, QuantityUnit, SettingField, SettingsSchema, SettingsValues, TimeInForce,
-    TradeAccountId, TradeAdapter, TradeContext, TradeError,
+    AccountAccess, AccountBalances, AccountRef, ActionOutcome, AdapterAction, AdapterCapabilities,
+    AdapterFeature, AdapterHealth, AdapterKind, ChoiceOption, FieldKind, Fill, InstrumentCoverage,
+    Liquidity, Order, OrderAmendment, OrderFilter, OrderId, OrderKindTag, OrderRequest,
+    OrderStatus, Position, PositionMode, PositionSide, QuantityUnit, SettingField, SettingsSchema,
+    SettingsValues, TimeInForce, TradeAccountId, TradeAdapter, TradeContext, TradeError,
 };
 
 /// The simulated books and the rules that move between them.
@@ -70,6 +70,12 @@ const KEY_STARTING_BALANCE: &str = "starting_balance";
 const KEY_LEVERAGE: &str = "leverage";
 const KEY_FEE_BPS: &str = "fee_bps";
 const KEY_SLIPPAGE_BPS: &str = "slippage_bps";
+const KEY_ACCESS: &str = "access";
+
+/// [`KEY_ACCESS`]'s read-only option value — a paper account shared with
+/// someone who should see it and not trade it, the same shape a broker's
+/// investor login has.
+const ACCESS_READ_ONLY: &str = "read_only";
 
 /// Action ids.
 const ACTION_DEPOSIT: &str = "deposit";
@@ -285,6 +291,7 @@ impl TradeAdapter for SimulatorAdapter {
             .with_position_mode(PositionMode::Netting)
             .with_margin()
             .with_feature(AdapterFeature::CancelOrders)
+            .with_feature(AdapterFeature::ModifyOrders)
     }
 
     fn coverage(&self) -> InstrumentCoverage {
@@ -357,6 +364,21 @@ impl TradeAdapter for SimulatorAdapter {
             .with_help(
                 "How far a market order fills from the mark. Always against you, never for you.",
             ),
+            SettingField::new(
+                KEY_ACCESS,
+                "Access",
+                FieldKind::Choice {
+                    default: Some("trade".to_owned()),
+                    options: vec![
+                        ChoiceOption::new("trade", "Trading"),
+                        ChoiceOption::new(ACCESS_READ_ONLY, "Read-only (investor)"),
+                    ],
+                },
+            )
+            .with_help(
+                "A read-only account can be opened and read but takes no orders — the same \
+                 shape a broker's investor login has.",
+            ),
         ])
     }
 
@@ -404,6 +426,20 @@ impl TradeAdapter for SimulatorAdapter {
         self.persist(&snapshot);
         let _ = ctx;
         Ok(())
+    }
+
+    async fn account_access(
+        &self,
+        _ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+    ) -> Result<AccountAccess, TradeError> {
+        if account.settings.text(KEY_ACCESS) == Some(ACCESS_READ_ONLY) {
+            return Ok(AccountAccess::read_only(
+                self.capabilities(),
+                Some("This account was attached read-only.".to_owned()),
+            ));
+        }
+        Ok(AccountAccess::trading(self.capabilities()))
     }
 
     async fn close_account(&self, account: AccountRef<'_>) -> Result<(), TradeError> {
@@ -706,6 +742,56 @@ impl TradeAdapter for SimulatorAdapter {
         drop(books);
         self.persist(&snapshot);
         Ok(reported)
+    }
+
+    async fn modify_order(
+        &self,
+        ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+        order_id: &OrderId,
+        amendment: OrderAmendment,
+    ) -> Result<Order, TradeError> {
+        let terms = terms_of(account.settings);
+        self.settle(ctx, account.id, terms).await?;
+
+        {
+            let mut books = self.lock();
+            let book = books
+                .get_mut(&account.id)
+                .ok_or(TradeError::UnknownAccount)?;
+            let order = book
+                .orders
+                .iter_mut()
+                .find(|order| order.id == *order_id)
+                .ok_or(TradeError::UnknownOrder)?;
+            if !order.status.is_open() {
+                return Err(TradeError::OrderNotOpen);
+            }
+            if let Some(quantity) = amendment.quantity {
+                order.quantity = quantity;
+            }
+            order.kind = crate::book::apply_amendment(order.kind, amendment);
+            order.updated_at = ctx.now();
+            let snapshot = books.clone();
+            drop(books);
+            self.persist(&snapshot);
+        }
+
+        // A limit or stop the current mark already satisfies must fill
+        // right away rather than sit there until the account is next read
+        // for some other reason — `settle` otherwise only ever runs on a
+        // read, and an amendment is itself the event that can make a
+        // resting order tradable.
+        self.settle(ctx, account.id, terms).await?;
+
+        let books = self.lock();
+        let book = books.get(&account.id).ok_or(TradeError::UnknownAccount)?;
+        let order = book
+            .orders
+            .iter()
+            .find(|order| order.id == *order_id)
+            .ok_or(TradeError::UnknownOrder)?;
+        Ok(crate::book::to_order(order, account.id))
     }
 
     async fn run_action(

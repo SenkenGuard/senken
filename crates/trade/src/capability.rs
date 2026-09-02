@@ -184,6 +184,80 @@ pub enum AdapterFeature {
     Fills,
 }
 
+/// What an account may do, as distinct from what its adapter can.
+///
+/// [`AdapterCapabilities`] is the most an adapter can ever do — what an
+/// adapter card shows before any account exists. This is that, narrowed to
+/// one account: a MetaTrader 5 investor login, an exchange key minted
+/// without trade scope, a demo account past its trial all report the same
+/// adapter but a different access level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AccessLevel {
+    /// Orders may be placed, amended and cancelled.
+    Trade,
+    /// Balances, positions and orders may be read; nothing may be sent.
+    ReadOnly,
+}
+
+/// One account's resolved access.
+///
+/// Carries the whole capability set, not just the level, because an account
+/// can be narrower than its adapter in more ways than one — a venue that
+/// allows stop orders on futures accounts but not on cash ones, a
+/// sub-account with lower leverage. [`AccessLevel::ReadOnly`] is the case
+/// that matters most, and this general shape costs nothing extra.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountAccess {
+    /// What this account may do right now.
+    pub level: AccessLevel,
+    /// The adapter's capabilities, **narrowed to this account**.
+    pub capabilities: AdapterCapabilities,
+    /// One line of product copy explaining a restriction, shown to the
+    /// user. `None` when the account is unrestricted.
+    pub note: Option<String>,
+}
+
+impl AccountAccess {
+    /// Full trading access, with `capabilities` exactly as the adapter
+    /// declared them.
+    #[must_use]
+    pub fn trading(capabilities: AdapterCapabilities) -> Self {
+        Self {
+            level: AccessLevel::Trade,
+            capabilities,
+            note: None,
+        }
+    }
+
+    /// Read-only access. `capabilities` is still carried — an order ticket
+    /// narrows its controls to it even though nothing on this account can be
+    /// sent — and `note` is the line shown to the user explaining why.
+    #[must_use]
+    pub fn read_only(capabilities: AdapterCapabilities, note: Option<String>) -> Self {
+        Self {
+            level: AccessLevel::ReadOnly,
+            capabilities,
+            note,
+        }
+    }
+
+    /// `true` only for [`AccessLevel::Trade`], the sole level an order may
+    /// be sent under.
+    ///
+    /// Any other level refuses, including one this build has not been
+    /// taught about yet: `AccessLevel` is `#[non_exhaustive]`, and a variant
+    /// added later must not become tradable just because nothing here
+    /// rejects it by name — matching the single variant that grants access,
+    /// rather than listing the ones that do not, is what keeps that true
+    /// without this function being revisited.
+    #[must_use]
+    pub fn is_trading(&self) -> bool {
+        matches!(self.level, AccessLevel::Trade)
+    }
+}
+
 /// Everything an adapter declares about how it trades.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterCapabilities {
@@ -283,7 +357,8 @@ impl AdapterCapabilities {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdapterCapabilities, AdapterFeature, AdapterKind, InstrumentCoverage, QuantityUnit,
+        AccessLevel, AccountAccess, AdapterCapabilities, AdapterFeature, AdapterKind,
+        InstrumentCoverage, QuantityUnit,
     };
     use crate::order::{OrderKindTag, TimeInForce};
     use senken_marketdata::InstrumentId;
@@ -350,5 +425,55 @@ mod tests {
         assert_eq!(QuantityUnit::Base.label(), "units");
         assert_eq!(QuantityUnit::Lots.label(), "lots");
         assert_eq!(QuantityUnit::Contracts.label(), "contracts");
+    }
+
+    #[test]
+    fn trading_access_carries_the_adapters_capabilities_unrestricted_and_no_note() {
+        let access = AccountAccess::trading(AdapterCapabilities::market_only());
+        assert_eq!(access.level, AccessLevel::Trade);
+        assert!(access.is_trading());
+        assert_eq!(access.note, None);
+        assert_eq!(access.capabilities, AdapterCapabilities::market_only());
+    }
+
+    #[test]
+    fn read_only_access_carries_its_note_and_still_carries_capabilities() {
+        // The order ticket narrows its controls to `capabilities` even
+        // though nothing on this account can be sent, so it must still be
+        // the real, narrowed set rather than an empty one.
+        let narrowed = AdapterCapabilities::market_only().with_order_kinds(vec![]);
+        let access = AccountAccess::read_only(
+            narrowed.clone(),
+            Some("This account was attached read-only.".to_owned()),
+        );
+        assert_eq!(access.level, AccessLevel::ReadOnly);
+        assert!(!access.is_trading());
+        assert_eq!(
+            access.note.as_deref(),
+            Some("This account was attached read-only.")
+        );
+        assert_eq!(access.capabilities, narrowed);
+    }
+
+    #[test]
+    fn only_the_trade_level_reports_itself_as_trading() {
+        // `is_trading` matches the one variant that grants access rather
+        // than listing the ones that do not — the property this test
+        // exists to pin down, so a variant `AccessLevel` grows later stays
+        // refused by construction rather than by someone remembering to add
+        // it to a list here.
+        assert!(AccountAccess::trading(AdapterCapabilities::market_only()).is_trading());
+        assert!(!AccountAccess::read_only(AdapterCapabilities::market_only(), None).is_trading());
+    }
+
+    #[test]
+    fn an_access_level_this_build_does_not_recognise_fails_to_deserialise_rather_than_being_guessed_at()
+     {
+        // `AccessLevel` is `#[non_exhaustive]`; a variant a newer build
+        // could write (and this one has not been taught) must not silently
+        // parse into something — least of all into `Trade`, which is the
+        // one failure mode that would let a restricted account trade.
+        let error = serde_json::from_str::<AccessLevel>(r#""margin_call""#).unwrap_err();
+        assert!(error.to_string().contains("unknown variant"), "got {error}");
     }
 }

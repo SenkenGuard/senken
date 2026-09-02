@@ -21,18 +21,38 @@ built from the Claude Design reference.
 - `src/lib/state/` — module-level rune stores for state shared across
   routes (the command palette and AI panel's open/closed state, and
   `trade.svelte.ts`: the registered trade adapters, the accounts this user
-  has attached, and which one the order ticket sends to).
+  has attached, each one's resolved access and health, and the one shared
+  copy of every account's portfolio — balances, positions, orders, fills —
+  that the engine page and the charts page's order ticket both read and
+  neither owns).
 - `src/lib/trade/` — the trade engine's client half: `scaled.ts` (formatting
   and parsing the `{ scale, value }` pairs the API speaks, as strings —
   never through a `Number`), `form.ts` (an adapter's declared settings
-  schema turned into form state and back), and `view.ts` (the engine page's
-  view models).
+  schema turned into form state and back), `view.ts` (the engine and
+  dashboard pages' view models — including the currency-safe totals in
+  `sumByCurrency`/`aggregateStats`/`dashboardEquity`, since there is no FX
+  rate anywhere in this system to blend one currency into another),
+  `poller.ts` (the auto-refresh timer's interval/visibility/no-overlap
+  rules, tested against fake timers), `watch-scope.ts` (what the current
+  set of mounted trade screens need refreshed, so the timer's own tick can
+  ask for only that), and `portfolio-refresh.ts` (refreshing every
+  currently-attached account's portfolio, always re-reading the account
+  list fresh rather than one captured when a screen mounted).
+- `src/lib/charts/trade-lines.ts` — turns an account's open positions and
+  working orders into the entry/stop/target lines `chart-pane.svelte` draws
+  on the price axis; lives beside the chart's other pure view-model modules
+  rather than under `src/lib/trade/` because nothing else there touches
+  chart layout.
 - `src/lib/components/trade/` — the dynamic form builder a plugin's declared
   settings and actions are rendered through. A plugin ships data, never
   markup.
 - `src/lib/mock/` — what is left of the local fixtures. Most pages read the
-  real API now; each remaining fixture documents at its own definition why
-  it has no server field yet.
+  real API now, including the home page's equity/positions/risk widgets,
+  which read the same `tradeStore` portfolios the engine page does through
+  `lib/trade/view.ts`'s `dashboardEquity`/`dashboardPositions`/`dashboardRisk`
+  — the dashboard has no fabricated equity curve or fabricated positions
+  left in it. Each remaining fixture documents at its own definition why it
+  has no server field yet.
 - Icons are **lucide** (`@lucide/svelte`) throughout, not the reference's
   Phosphor — shadcn is already configured for lucide (`components.json`) and
   it was already installed, so this avoids mixing two icon sets.

@@ -53,6 +53,7 @@ import type {
 	DeleteStorageResponse,
 	AdaptersResponse,
 	TradeAccountsPage,
+	TradeAccountStateDto,
 	CreateTradeAccountRequest,
 	UpdateTradeAccountRequest,
 	TradeAccountSettingsDto,
@@ -62,6 +63,8 @@ import type {
 	OrderDto,
 	FillDto,
 	PlaceOrderRequest,
+	CloseRequest,
+	AmendOrderRequest,
 	HealthDto,
 	RunActionRequest,
 	ActionOutcomeDto
@@ -675,6 +678,14 @@ class ApiClient {
 		});
 	}
 
+	/** `GET /api/trade/accounts/{id}`: the account, its resolved access and
+	 * its health, in one round trip. */
+	async tradeAccountState(id: string): Promise<TradeAccountStateDto> {
+		return this.request<TradeAccountStateDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}`
+		);
+	}
+
 	/** `PATCH /api/trade/accounts/{id}`: rename, or enable/disable. */
 	async updateTradeAccount(id: string, body: UpdateTradeAccountRequest): Promise<void> {
 		await this.request<void>(`/api/trade/accounts/${encodeURIComponent(id)}`, {
@@ -752,6 +763,25 @@ class ApiClient {
 			`/api/trade/accounts/${encodeURIComponent(id)}/orders/${encodeURIComponent(orderId)}`,
 			{ method: 'DELETE' }
 		);
+	}
+
+	/** `PATCH /api/trade/accounts/{id}/orders/{orderId}`: amends a resting
+	 * order's size, limit price or trigger price in place. */
+	async amendOrder(id: string, orderId: string, body: AmendOrderRequest): Promise<OrderDto> {
+		return this.request<OrderDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/orders/${encodeURIComponent(orderId)}`,
+			{ method: 'PATCH', body: JSON.stringify(body) }
+		);
+	}
+
+	/** `POST /api/trade/accounts/{id}/close`: closes an open position by
+	 * sending an opposite market order for exactly the size the adapter
+	 * reports held right now — never a size this client chose. */
+	async closePosition(id: string, body: CloseRequest): Promise<OrderDto> {
+		return this.request<OrderDto>(`/api/trade/accounts/${encodeURIComponent(id)}/close`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
 	}
 
 	/** `POST /api/trade/accounts/{id}/actions/{actionId}`. */

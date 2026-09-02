@@ -82,16 +82,16 @@ pub use crate::adapter::{
     TradeAdapter, TradeContext,
 };
 pub use crate::capability::{
-    AdapterCapabilities, AdapterFeature, AdapterKind, InstrumentCoverage, PositionMode,
-    QuantityUnit,
+    AccessLevel, AccountAccess, AdapterCapabilities, AdapterFeature, AdapterKind,
+    InstrumentCoverage, PositionMode, QuantityUnit,
 };
 pub use crate::error::{BoxError, TradeError};
 pub use crate::id::{
     ClientOrderId, ClientOrderIdError, MAX_CLIENT_ORDER_ID_LEN, OrderId, TradeAccountId,
 };
 pub use crate::order::{
-    Fill, Liquidity, Order, OrderFilter, OrderKind, OrderKindTag, OrderRequest, OrderSide,
-    OrderStatus, TimeInForce,
+    Fill, Liquidity, Order, OrderAmendment, OrderFilter, OrderKind, OrderKindTag, OrderRequest,
+    OrderSide, OrderStatus, TimeInForce,
 };
 pub use crate::portfolio::{AccountBalances, AdapterHealth, AssetBalance, Position, PositionSide};
 pub use crate::settings::{

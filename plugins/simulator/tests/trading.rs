@@ -7,19 +7,20 @@
 //! network, a clock, or a scheduler, so a fill either happens because the
 //! rule says so or it does not happen at all.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use senken_core::UnixNanos;
 use senken_core::decimal::Scaled;
 use senken_marketdata::{Instrument, InstrumentId};
-use senken_plugin_simulator::SimulatorAdapter;
 use senken_plugin_simulator::money::CASH_SCALE;
+use senken_plugin_simulator::{ADAPTER_ID, SimulatorAdapter};
 use senken_storage::Storage;
 use senken_trade::{
-    AccountRef, InstrumentSource, MarkPrice, MarkPriceSource, OrderFilter, OrderKind, OrderRequest,
-    OrderSide, OrderStatus, PositionSide, SettingsInput, SettingsSchema, SettingsValues,
-    TradeAccountId, TradeAdapter, TradeContext, TradeError,
+    AccessLevel, AccountRef, InstrumentSource, MarkPrice, MarkPriceSource, OrderAmendment,
+    OrderFilter, OrderKind, OrderRequest, OrderSide, OrderStatus, PositionSide, SettingsInput,
+    SettingsSchema, SettingsValues, TradeAccountId, TradeAdapter, TradeContext, TradeEngine,
+    TradeError,
 };
 use tempfile::TempDir;
 
@@ -103,7 +104,7 @@ fn settings(adapter: &SimulatorAdapter, input: &SettingsInput) -> SettingsValues
 
 struct Fixture {
     _dir: TempDir,
-    adapter: SimulatorAdapter,
+    adapter: Arc<SimulatorAdapter>,
     mark: MovingMark,
     catalog: Catalog,
     id: TradeAccountId,
@@ -117,7 +118,7 @@ impl Fixture {
         let dir = TempDir::new().unwrap();
         let storage = Storage::new(dir.path());
         storage.init().unwrap();
-        let adapter = SimulatorAdapter::new(storage);
+        let adapter = Arc::new(SimulatorAdapter::new(storage));
         let values = settings(&adapter);
         let fixture = Self {
             _dir: dir,
@@ -153,6 +154,17 @@ impl Fixture {
             label: "Test",
             settings,
         }
+    }
+
+    /// A [`TradeEngine`] with this fixture's own adapter registered — for
+    /// the tests that exercise `close_position`, which lives on the engine
+    /// rather than on the adapter itself.
+    fn engine(&self) -> TradeEngine {
+        let mut engine = TradeEngine::new();
+        engine
+            .register(Arc::clone(&self.adapter) as Arc<dyn TradeAdapter>)
+            .unwrap();
+        engine
     }
 }
 
@@ -859,4 +871,317 @@ async fn every_instrument_is_covered_whatever_venue_it_came_from() {
             "{id} must be paper-tradable"
         );
     }
+}
+
+/// Settings identical to [`clean_settings`] but with the account set to
+/// read-only — the same shape a broker's investor login has.
+fn read_only_settings(adapter: &SimulatorAdapter) -> SettingsValues {
+    settings(
+        adapter,
+        &SettingsInput::new()
+            .with("fee_bps", 0.into())
+            .with("slippage_bps", 0.into())
+            .with("access", "read_only".into()),
+    )
+}
+
+#[tokio::test]
+async fn the_access_setting_flips_what_account_access_reports() {
+    let (f, trade_settings) = Fixture::open(at(10_000), clean_settings).await;
+    let trading = f
+        .adapter
+        .account_access(&f.ctx(), f.account(&trade_settings))
+        .await
+        .unwrap();
+    assert_eq!(trading.level, AccessLevel::Trade);
+    assert!(trading.is_trading());
+    assert_eq!(trading.note, None);
+
+    let (f, ro_settings) = Fixture::open(at(10_000), read_only_settings).await;
+    let read_only = f
+        .adapter
+        .account_access(&f.ctx(), f.account(&ro_settings))
+        .await
+        .unwrap();
+    assert_eq!(read_only.level, AccessLevel::ReadOnly);
+    assert!(!read_only.is_trading());
+    assert!(
+        read_only.note.is_some(),
+        "a restriction shown on screen needs a reason attached to it"
+    );
+}
+
+#[tokio::test]
+async fn a_read_only_simulator_account_still_reports_its_balances_and_positions() {
+    // Opened trading so it actually holds a position, then re-saved
+    // read-only — the exact edit a settings screen performs, and
+    // `open_account` runs again on every one.
+    let (f, trade_settings) = Fixture::open(at(10_000), clean_settings).await;
+    f.adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&trade_settings),
+            OrderRequest::market(instrument(), OrderSide::Buy, qty(1_000)),
+        )
+        .await
+        .unwrap();
+
+    let ro_settings = read_only_settings(&f.adapter);
+    f.adapter
+        .open_account(&f.ctx(), f.account(&ro_settings))
+        .await
+        .unwrap();
+
+    let balances = f
+        .adapter
+        .balances(&f.ctx(), f.account(&ro_settings))
+        .await
+        .unwrap();
+    // No fee, no slippage and the mark never moved off the entry price, so
+    // equity must be exactly the schema's own default starting balance
+    // ($100,000.00) re-expressed at the simulator's cash scale.
+    assert_eq!(balances.equity.value, 10_000_000 * 1_000_000);
+
+    let positions = f
+        .adapter
+        .positions(&f.ctx(), f.account(&ro_settings))
+        .await
+        .unwrap();
+    assert_eq!(
+        positions.len(),
+        1,
+        "a read-only account still exists to be read"
+    );
+}
+
+#[tokio::test]
+async fn amending_a_resting_limit_changes_its_price() {
+    let (f, settings) = Fixture::open(at(10_000), clean_settings).await;
+    let order = f
+        .adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&settings),
+            OrderRequest::limit(instrument(), OrderSide::Buy, qty(1_000), price(at(9_000))),
+        )
+        .await
+        .unwrap();
+
+    let amended = f
+        .adapter
+        .modify_order(
+            &f.ctx(),
+            f.account(&settings),
+            &order.id,
+            OrderAmendment {
+                limit_price: Some(price(at(9_200))),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        amended.kind,
+        OrderKind::Limit {
+            price: price(at(9_200))
+        }
+    );
+    let stored = f
+        .adapter
+        .orders(&f.ctx(), f.account(&settings), OrderFilter::Open)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored[0].kind,
+        OrderKind::Limit {
+            price: price(at(9_200))
+        },
+        "the amendment must actually be persisted, not just echoed back"
+    );
+}
+
+#[tokio::test]
+async fn an_amendment_the_current_mark_already_satisfies_fills_immediately() {
+    let (f, settings) = Fixture::open(at(10_000), clean_settings).await;
+    let order = f
+        .adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&settings),
+            OrderRequest::limit(instrument(), OrderSide::Buy, qty(1_000), price(at(9_000))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(order.status, OrderStatus::Open);
+
+    // The market comes down to 9 300 — still above the resting 9 000, so
+    // nothing has filled yet.
+    f.mark.set(at(9_300));
+    assert!(
+        f.adapter
+            .positions(&f.ctx(), f.account(&settings))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Amending the limit up to 9 500 is a price the market at 9 300 already
+    // satisfies. If the simulator only re-checked resting orders on the
+    // next unrelated read, this order would sit there filled-but-for-the-
+    // fact-nobody-looked; the property under test is that amending is
+    // itself enough to re-settle.
+    let amended = f
+        .adapter
+        .modify_order(
+            &f.ctx(),
+            f.account(&settings),
+            &order.id,
+            OrderAmendment {
+                limit_price: Some(price(at(9_500))),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        amended.status,
+        OrderStatus::Filled,
+        "the mark already satisfies the amended price, so it must fill right away"
+    );
+    assert_eq!(
+        amended.average_price,
+        Some(price(at(9_500))),
+        "a limit fills at its own (amended) price, not the mark that satisfied it"
+    );
+    assert_eq!(
+        f.adapter
+            .positions(&f.ctx(), f.account(&settings))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn amending_a_filled_order_is_refused() {
+    let (f, settings) = Fixture::open(at(10_000), clean_settings).await;
+    let order = f
+        .adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&settings),
+            OrderRequest::market(instrument(), OrderSide::Buy, qty(1_000)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(order.status, OrderStatus::Filled);
+
+    let error = f
+        .adapter
+        .modify_order(
+            &f.ctx(),
+            f.account(&settings),
+            &order.id,
+            OrderAmendment {
+                quantity: Some(qty(500)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, TradeError::OrderNotOpen), "got {error:?}");
+}
+
+#[tokio::test]
+async fn closing_through_the_engine_leaves_no_position_and_banks_the_difference() {
+    let (f, settings) = Fixture::open(at(10_000), clean_settings).await;
+    f.adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&settings),
+            OrderRequest::market(instrument(), OrderSide::Buy, qty(1_000)),
+        )
+        .await
+        .unwrap();
+    f.mark.set(at(11_000));
+    let opening = f
+        .adapter
+        .balances(&f.ctx(), f.account(&settings))
+        .await
+        .unwrap();
+
+    f.engine()
+        .close_position(ADAPTER_ID, &f.ctx(), f.account(&settings), &instrument())
+        .await
+        .unwrap();
+
+    let closed = f
+        .adapter
+        .balances(&f.ctx(), f.account(&settings))
+        .await
+        .unwrap();
+    assert_eq!(
+        closed.balance.value - opening.balance.value,
+        1_000 * 100_000_000,
+        "the 1 000 of profit must land in cash"
+    );
+    assert!(
+        f.adapter
+            .positions(&f.ctx(), f.account(&settings))
+            .await
+            .unwrap()
+            .is_empty(),
+        "a full close must leave no position behind"
+    );
+}
+
+#[tokio::test]
+async fn closing_after_the_position_grows_between_the_read_and_the_close_uses_the_new_size() {
+    let (f, settings) = Fixture::open(at(10_000), clean_settings).await;
+    f.adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&settings),
+            OrderRequest::market(instrument(), OrderSide::Buy, qty(1_000)),
+        )
+        .await
+        .unwrap();
+
+    // The table is drawn here: this is the size a screen would have read.
+    let drawn = f
+        .adapter
+        .positions(&f.ctx(), f.account(&settings))
+        .await
+        .unwrap();
+    assert_eq!(drawn[0].quantity, qty(1_000));
+
+    // A second fill lands before the CLOSE button is pressed.
+    f.adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&settings),
+            OrderRequest::market(instrument(), OrderSide::Buy, qty(500)),
+        )
+        .await
+        .unwrap();
+
+    f.engine()
+        .close_position(ADAPTER_ID, &f.ctx(), f.account(&settings), &instrument())
+        .await
+        .unwrap();
+
+    // If the close had used the 1 000 the table drew rather than the 1 500
+    // actually held, this would still show a 500-unit long.
+    assert!(
+        f.adapter
+            .positions(&f.ctx(), f.account(&settings))
+            .await
+            .unwrap()
+            .is_empty(),
+        "the close must use the size the adapter reports now, not the one the screen opened with"
+    );
 }

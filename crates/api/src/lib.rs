@@ -486,7 +486,9 @@ fn mount_trade_routes(mut api: Router<AppState>, state: &AppState) -> Router<App
         api,
         state,
         "/trade/accounts/{account_id}",
-        patch(trade_handlers::update_account).delete(trade_handlers::delete_account),
+        get(trade_handlers::account_state)
+            .patch(trade_handlers::update_account)
+            .delete(trade_handlers::delete_account),
         EndpointPermission::Authenticated,
     );
     api = mount(
@@ -528,7 +530,14 @@ fn mount_trade_routes(mut api: Router<AppState>, state: &AppState) -> Router<App
         api,
         state,
         "/trade/accounts/{account_id}/orders/{order_id}",
-        delete(trade_handlers::cancel_order),
+        delete(trade_handlers::cancel_order).patch(trade_handlers::amend_order),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/close",
+        post(trade_handlers::close_position),
         EndpointPermission::Authenticated,
     );
     api = mount(

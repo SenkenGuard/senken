@@ -279,6 +279,9 @@ impl From<senken_trade::TradeError> for HandlerError {
             TradeError::Settings(source) => Self::BadRequest(source.to_string()),
             TradeError::UnknownAccount => Self::BadRequest("no such trading account".to_owned()),
             TradeError::UnknownOrder => Self::BadRequest("no such order".to_owned()),
+            TradeError::UnknownPosition(instrument) => {
+                Self::BadRequest(format!("no open position for {instrument}"))
+            }
             TradeError::UnknownAdapter(id) => {
                 Self::BadRequest(format!("no trade adapter `{id}` is registered"))
             }
@@ -287,6 +290,9 @@ impl From<senken_trade::TradeError> for HandlerError {
             ),
             TradeError::AccountDisabled => {
                 Self::Forbidden("this account is switched off".to_owned())
+            }
+            TradeError::ReadOnly { note, .. } => {
+                Self::Forbidden(note.unwrap_or_else(|| "this account is read-only".to_owned()))
             }
             TradeError::OrderNotOpen => Self::Conflict("that order is no longer open".to_owned()),
             TradeError::NoMarkPrice(instrument) => Self::BadRequest(format!(

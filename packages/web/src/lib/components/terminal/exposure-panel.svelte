@@ -32,7 +32,10 @@
 					></div>
 				</div>
 				<span class="w-[42px] flex-none text-right font-mono text-[9.5px] text-dim2">{x.pct}%</span>
-				<span class="w-24 flex-none text-right font-mono text-[10.5px] text-foreground">{x.equity}</span>
+				<span class="w-28 flex-none text-right font-mono text-[10.5px] text-foreground">
+					{x.equity}
+					<span class="text-dim2">{x.currency}</span>
+				</span>
 			</div>
 		{/each}
 	</div>

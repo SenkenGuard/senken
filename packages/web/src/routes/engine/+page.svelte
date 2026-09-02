@@ -6,15 +6,16 @@
 	// adapter's own actions), and ADAPTERS (what is registered, and what to
 	// attach an account to).
 	//
-	// # Nothing here is cached
+	// # Portfolios are shared, not owned by this page
 	//
-	// Balances, positions, orders and fills are read through each adapter on
-	// every load. The broker behind an account is the system of record for
-	// them, so this page shows what the adapter answered rather than a copy
-	// that could disagree. `refreshPortfolios` re-reads from the account
-	// list *as it currently is*, never from the ids the page opened with —
-	// an account attached or removed since then would otherwise be missed or
-	// asked about forever.
+	// Balances, positions, orders and fills live in `tradeStore.portfolios`
+	// (`lib/state/trade.svelte.ts`), not in a local variable here — the
+	// chart panel's trade tab reads the very same map, so an order placed
+	// from the chart, or a resting order the simulator filled on its own,
+	// shows up here without this page having caused either. `watchTrade()`
+	// keeps it fresh while this page is mounted; every mutation this page
+	// makes awaits `afterMutation(accountId)` for an immediate update rather
+	// than waiting on the next auto-refresh tick.
 	import { onMount } from 'svelte';
 	import { cn } from '$lib/utils.js';
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
@@ -29,26 +30,32 @@
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { apiClient } from '$lib/api/client';
 	import { describeError } from '$lib/api/errors';
-	import type { AdapterActionDto, AdapterDto, TradeAccountDto } from '$lib/api/types';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
+	import type { AdapterActionDto, AdapterDto, OrderDto, TradeAccountDto } from '$lib/api/types';
 	import {
+		afterMutation,
 		loadTrade,
 		refreshAccounts,
+		refreshPortfolios,
 		selectAccount,
-		tradeStore
+		tradeStore,
+		watchTrade
 	} from '$lib/state/trade.svelte';
 	import {
 		accountCards,
 		accountStats,
 		adapterCards,
 		aggregateStats,
-		emptyPortfolio,
+		anyPortfolioLoading,
 		engineTable,
 		exposureByAdapter,
+		healthDotClass,
 		iconForKind,
+		isAccountTradable,
 		modeOf,
-		type EngineTableTab,
-		type Portfolio
+		type EngineTableTab
 	} from '$lib/trade/view';
+	import { LiveDot } from '$lib/components/ui/live-dot/index.js';
 	import StatStrip from '$lib/components/terminal/stat-strip.svelte';
 	import ExposurePanel from '$lib/components/terminal/exposure-panel.svelte';
 	import AccountCard from '$lib/components/terminal/account-card.svelte';
@@ -56,6 +63,7 @@
 	import ExecutionsTable from '$lib/components/terminal/executions-table.svelte';
 	import AccountDialog from '$lib/components/trade/account-dialog.svelte';
 	import ActionDialog from '$lib/components/trade/action-dialog.svelte';
+	import AmendDialog from '$lib/components/trade/amend-dialog.svelte';
 	import { openCommand, closeCommand } from '$lib/state/command-palette.svelte';
 
 	type EngineView = 'overview' | 'accounts' | 'adapters';
@@ -68,7 +76,6 @@
 
 	let engineView = $state<EngineView>('overview');
 	let engineTab = $state<EngineTableTab>('positions');
-	let portfolios = $state<Record<string, Portfolio>>({});
 	let refreshing = $state(false);
 	let notice = $state<string | null>(null);
 
@@ -77,6 +84,11 @@
 	let accountDialogAccount = $state<TradeAccountDto | null>(null);
 	let actionDialogOpen = $state(false);
 	let actionDialogAction = $state<AdapterActionDto | null>(null);
+	let closeConfirm = $state<{ accountId: string; instrument: string } | null>(null);
+	let closing = $state(false);
+	let amendDialogOpen = $state(false);
+	let amendDialogAccountId = $state<string | null>(null);
+	let amendDialogOrder = $state<OrderDto | null>(null);
 
 	const isOverview = $derived(engineView === 'overview');
 	const isAccountsView = $derived(engineView === 'accounts');
@@ -89,6 +101,13 @@
 	const activeAdapter = $derived(
 		activeAccount ? tradeStore.adapter(activeAccount.adapter_id) : undefined
 	);
+	const activeAccess = $derived(
+		activeAccount ? (tradeStore.access[activeAccount.id] ?? null) : null
+	);
+	const activeIsReadOnly = $derived(activeAccess?.level === 'read_only');
+	const activeHealth = $derived(
+		activeAccount ? (tradeStore.health[activeAccount.id] ?? null) : null
+	);
 	const distinctAdapterCount = $derived(new Set(accounts.map((a) => a.adapter_id)).size);
 
 	/** The rows the table shows: every visible account in OVERVIEW, just the
@@ -96,25 +115,33 @@
 	 * ACCOUNT column does not need a second lookup. */
 	const scoped = $derived.by(() => {
 		const inScope = isOverview ? accounts : activeAccount ? [activeAccount] : [];
-		const positions = inScope.flatMap((account) =>
-			(portfolios[account.id]?.positions ?? []).map((row) => ({
+		const loading = anyPortfolioLoading(inScope, tradeStore.portfolios);
+		const positions = inScope.flatMap((account) => {
+			const tradable = isAccountTradable(account, tradeStore.access);
+			return (tradeStore.portfolios[account.id]?.positions ?? []).map((row) => ({
 				...row,
-				accountLabel: account.label
-			}))
-		);
-		const orders = inScope.flatMap((account) =>
-			(portfolios[account.id]?.orders ?? []).map((row) => ({
+				accountId: account.id,
+				accountLabel: account.label,
+				tradable
+			}));
+		});
+		const orders = inScope.flatMap((account) => {
+			const tradable = isAccountTradable(account, tradeStore.access);
+			return (tradeStore.portfolios[account.id]?.orders ?? []).map((row) => ({
 				...row,
-				accountLabel: account.label
-			}))
-		);
+				accountId: account.id,
+				accountLabel: account.label,
+				tradable
+			}));
+		});
 		const fills = inScope.flatMap((account) =>
-			(portfolios[account.id]?.fills ?? []).map((row) => ({
+			(tradeStore.portfolios[account.id]?.fills ?? []).map((row) => ({
 				...row,
+				accountId: account.id,
 				accountLabel: account.label
 			}))
 		);
-		return { positions, orders, fills };
+		return { positions, orders, fills, loading };
 	});
 
 	const currentTable = $derived(
@@ -123,12 +150,16 @@
 			isOverview ? 'all' : 'account',
 			scoped.positions,
 			scoped.orders,
-			scoped.fills
+			scoped.fills,
+			scoped.loading
 		)
 	);
 
 	onMount(() => {
 		void reload();
+		// 'all': this page's OVERVIEW totals every visible account, so it is
+		// the one screen that genuinely needs every account refreshed.
+		return watchTrade('all');
 	});
 
 	async function reload() {
@@ -136,36 +167,15 @@
 		await refreshPortfolios();
 	}
 
-	/** Re-reads every visible account's portfolio, from the account list as
-	 * it currently is. */
-	async function refreshPortfolios() {
+	/** The REFRESH button's manual full refresh — the store's own
+	 * `refreshPortfolios`, wrapped only for this page's spinner. */
+	async function manualRefresh() {
 		refreshing = true;
-		const next: Record<string, Portfolio> = {};
-		await Promise.all(
-			tradeStore.accounts.map(async (account) => {
-				const portfolio = emptyPortfolio();
-				try {
-					const [balances, positions, orders, fills] = await Promise.all([
-						apiClient.tradeAccountBalances(account.id),
-						apiClient.tradeAccountPositions(account.id),
-						apiClient.tradeAccountOrders(account.id, 'all'),
-						apiClient.tradeAccountFills(account.id)
-					]);
-					portfolio.balances = balances;
-					portfolio.positions = positions;
-					portfolio.orders = orders;
-					portfolio.fills = fills;
-				} catch (error) {
-					// One account's adapter being unreachable must not blank
-					// the whole page; the failure is kept against that
-					// account and shown on its own card.
-					portfolio.error = describeError(error);
-				}
-				next[account.id] = portfolio;
-			})
-		);
-		portfolios = next;
-		refreshing = false;
+		try {
+			await refreshPortfolios();
+		} finally {
+			refreshing = false;
+		}
 	}
 
 	async function detach(account: TradeAccountDto) {
@@ -198,7 +208,63 @@
 		actionDialogOpen = true;
 	}
 
+	/** Splits a `TableRow.key` (`accountId:resourceId`) back into its two
+	 * halves. Only the first colon is the boundary: an order id is opaque
+	 * venue text and an instrument is itself `source:symbol`, but an account
+	 * id (a UUID) never contains one, so everything after it is the whole
+	 * resource id unambiguously. */
+	function splitRowKey(key: string): [accountId: string, resourceId: string] {
+		const at = key.indexOf(':');
+		return [key.slice(0, at), key.slice(at + 1)];
+	}
+
+	function onTableAction(rowKey: string, actionKey: string) {
+		const [accountId, resourceId] = splitRowKey(rowKey);
+		if (actionKey === 'close') {
+			closeConfirm = { accountId, instrument: resourceId };
+		} else if (actionKey === 'cancel') {
+			void cancelTableOrder(accountId, resourceId);
+		} else if (actionKey === 'amend') {
+			const order = tradeStore.portfolios[accountId]?.orders.find((o) => o.id === resourceId);
+			if (!order) return;
+			amendDialogAccountId = accountId;
+			amendDialogOrder = order;
+			amendDialogOpen = true;
+		}
+	}
+
+	async function cancelTableOrder(accountId: string, orderId: string) {
+		try {
+			await apiClient.cancelOrder(accountId, orderId);
+			await afterMutation(accountId);
+		} catch (error) {
+			notice = describeError(error);
+		}
+	}
+
+	async function confirmClose() {
+		if (!closeConfirm) return;
+		closing = true;
+		try {
+			await apiClient.closePosition(closeConfirm.accountId, {
+				instrument: closeConfirm.instrument
+			});
+			notice = 'Position closed.';
+			const { accountId } = closeConfirm;
+			closeConfirm = null;
+			await afterMutation(accountId);
+		} catch (error) {
+			notice = describeError(error);
+		} finally {
+			closing = false;
+		}
+	}
+
 	async function onAccountSaved() {
+		// A saved dialog can mean a brand-new account was just attached —
+		// `refreshPortfolios` re-reads `tradeStore.accounts` fresh, so the
+		// account `refreshAccounts` just added is fetched in this same call
+		// rather than waiting for the next auto-refresh tick.
 		await refreshAccounts();
 		await refreshPortfolios();
 	}
@@ -223,7 +289,7 @@
 							icon: iconForKind(adapter?.kind ?? 'exchange'),
 							title: account.label,
 							sub: `${adapter?.name ?? account.adapter_id} · ${modeOf(adapter)}`,
-							meta: portfolios[account.id]?.balances
+							meta: tradeStore.portfolios[account.id]?.balances
 								? formatEquity(account.id)
 								: '—',
 							metaTone: account.id === tradeStore.activeId ? 'gain' : 'dim2',
@@ -238,9 +304,9 @@
 	}
 
 	function formatEquity(accountId: string): string {
-		const balances = portfolios[accountId]?.balances;
-		if (!balances) return '—';
-		return `${accountStats(portfolios[accountId]).find((s) => s.label === 'EQUITY')?.value ?? '—'} ${balances.currency}`;
+		// `accountStats`' EQUITY entry already carries the account's own
+		// currency alongside the figure — nothing left to append here.
+		return accountStats(tradeStore.portfolios[accountId]).find((s) => s.label === 'EQUITY')?.value ?? '—';
 	}
 
 	function openAdapterPicker() {
@@ -297,7 +363,7 @@
 			<button
 				type="button"
 				class="flex h-[26px] cursor-pointer items-center gap-[7px] border border-ink/14 px-[11px] text-dim2"
-				onclick={() => void refreshPortfolios()}
+				onclick={() => void manualRefresh()}
 				disabled={refreshing}
 				data-refresh-portfolios
 			>
@@ -342,6 +408,25 @@
 					>
 						{modeOf(activeAdapter)}
 					</Badge>
+					{#if activeIsReadOnly}
+						<Badge
+							class="h-auto flex-none rounded-none border-ink/18 px-[4px] py-[1px] font-mono text-[7.5px] tracking-[0.14em] text-dim2"
+							variant="outline"
+							data-account-readonly
+						>
+							READ-ONLY
+						</Badge>
+					{/if}
+					<span
+						class="contents"
+						data-account-health={activeHealth?.state ?? 'unknown'}
+						title={activeHealth && activeHealth.state !== 'connected' ? activeHealth.reason : undefined}
+					>
+						<LiveDot
+							class={healthDotClass[activeHealth?.state ?? 'unknown']}
+							pulse={activeHealth?.state === 'degraded'}
+						/>
+					</span>
 					<ChevronDownIcon class="size-2.5 text-dim" />
 				</button>
 			</div>
@@ -381,9 +466,9 @@
 		{/if}
 
 		{#if isOverview}
-			<StatStrip stats={aggregateStats(accounts, portfolios)} size="lg" />
+			<StatStrip stats={aggregateStats(accounts, tradeStore.portfolios)} size="lg" />
 			<ExposurePanel
-				items={exposureByAdapter(accounts, adapters, portfolios)}
+				items={exposureByAdapter(accounts, adapters, tradeStore.portfolios)}
 				accounts={accounts.length}
 				adapters={distinctAdapterCount}
 			/>
@@ -393,14 +478,14 @@
 			<div
 				class="flex flex-none items-stretch gap-[9px] overflow-x-auto border-b border-ink/9 bg-background px-3 py-2.5"
 			>
-				{#each accountCards(accounts, adapters, portfolios, activeAccount?.id ?? null) as card (card.id)}
+				{#each accountCards(accounts, adapters, tradeStore.portfolios, activeAccount?.id ?? null, tradeStore.access, tradeStore.health) as card (card.id)}
 					<AccountCard {card} onclick={() => selectAccount(card.id)} />
 				{/each}
 			</div>
-			<StatStrip stats={accountStats(portfolios[activeAccount?.id ?? ''])} size="md" />
+			<StatStrip stats={accountStats(tradeStore.portfolios[activeAccount?.id ?? ''])} size="md" />
 
 			{#if activeAccount}
-				{@const portfolio = portfolios[activeAccount.id]}
+				{@const portfolio = tradeStore.portfolios[activeAccount.id]}
 				{#if portfolio?.error}
 					<div class="flex-none border-b border-ink/9 bg-loss/8 px-4 py-2">
 						<span class="font-mono text-[9.5px] text-loss">{portfolio.error}</span>
@@ -418,20 +503,22 @@
 							<SettingsIcon class="size-[12px]" />
 							<span class="font-mono text-[9px] tracking-[0.18em]">SETTINGS</span>
 						</button>
-						{#each activeAdapter?.actions ?? [] as action (action.id)}
-							<button
-								type="button"
-								class={cn(
-									'flex h-[26px] cursor-pointer items-center border px-[11px] font-mono text-[9px] tracking-[0.18em]',
-									action.destructive
-										? 'border-loss/50 text-loss'
-										: 'border-ink/14 text-dim2'
-								)}
-								onclick={() => openAction(action)}
-							>
-								{action.label.toUpperCase()}
-							</button>
-						{/each}
+						{#if !activeIsReadOnly}
+							{#each activeAdapter?.actions ?? [] as action (action.id)}
+								<button
+									type="button"
+									class={cn(
+										'flex h-[26px] cursor-pointer items-center border px-[11px] font-mono text-[9px] tracking-[0.18em]',
+										action.destructive
+											? 'border-loss/50 text-loss'
+											: 'border-ink/14 text-dim2'
+									)}
+									onclick={() => openAction(action)}
+								>
+									{action.label.toUpperCase()}
+								</button>
+							{/each}
+						{/if}
 						<div class="flex-1"></div>
 						<button
 							type="button"
@@ -454,23 +541,35 @@
 		{/if}
 
 		{#if isAdaptersView}
-			<div class="min-h-0 flex-1 overflow-auto bg-background p-3.5">
-				<div class="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3">
-					{#each adapterCards(adapters, accounts, portfolios, activeAccount?.id ?? null) as card (card.key)}
-						<AdapterCard
-							adapter={card}
-							onSelectAccount={(id) => {
-								selectAccount(id);
-								selectView('accounts');
-							}}
-							onAttach={(key) => {
-								const adapter = tradeStore.adapter(key);
-								if (adapter) openAttach(adapter);
-							}}
-						/>
-					{/each}
+			{#if adapters.length === 0}
+				<div class="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+					<p class="font-mono text-[11px] tracking-[0.08em] text-dim2">
+						No trade adapter is registered on this build.
+					</p>
+					<p class="max-w-md font-mono text-[9.5px] leading-[1.7] text-dim">
+						An adapter ships as a plugin — including the built-in simulator. This server was
+						started without one, so there is nothing here to attach an account to yet.
+					</p>
 				</div>
-			</div>
+			{:else}
+				<div class="min-h-0 flex-1 overflow-auto bg-background p-3.5">
+					<div class="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3">
+						{#each adapterCards(adapters, accounts, tradeStore.portfolios, activeAccount?.id ?? null) as card (card.key)}
+							<AdapterCard
+								adapter={card}
+								onSelectAccount={(id) => {
+									selectAccount(id);
+									selectView('accounts');
+								}}
+								onAttach={(key) => {
+									const adapter = tradeStore.adapter(key);
+									if (adapter) openAttach(adapter);
+								}}
+							/>
+						{/each}
+					</div>
+				</div>
+			{/if}
 		{/if}
 
 		{#if showTable}
@@ -479,10 +578,49 @@
 				activeTab={engineTab}
 				ontabchange={(t) => (engineTab = t)}
 				table={currentTable}
+				onaction={onTableAction}
 			/>
 		{/if}
 	{/if}
 </div>
+
+<AlertDialog.Root
+	open={closeConfirm !== null}
+	onOpenChange={(open) => {
+		if (!open) closeConfirm = null;
+	}}
+>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Close position</AlertDialog.Title>
+			<AlertDialog.Description data-close-confirm>
+				Sends a market order for the account's full position on {closeConfirm?.instrument}.
+				This cannot be undone.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel disabled={closing}>Cancel</AlertDialog.Cancel>
+			<Button
+				variant="destructive"
+				class="rounded-none font-mono text-[9.5px] tracking-[0.16em]"
+				disabled={closing}
+				onclick={() => void confirmClose()}
+			>
+				{closing ? 'CLOSING…' : 'CLOSE'}
+			</Button>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>
+
+{#if amendDialogAccountId && amendDialogOrder}
+	{@const amendAccountId = amendDialogAccountId}
+	<AmendDialog
+		bind:open={amendDialogOpen}
+		accountId={amendAccountId}
+		order={amendDialogOrder}
+		onamended={() => void afterMutation(amendAccountId)}
+	/>
+{/if}
 
 {#if accountDialogAdapter}
 	<AccountDialog
@@ -501,7 +639,7 @@
 		accountLabel={activeAccount.label}
 		onran={(message) => {
 			notice = message;
-			void refreshPortfolios();
+			void afterMutation(activeAccount.id);
 		}}
 	/>
 {/if}

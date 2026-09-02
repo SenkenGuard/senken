@@ -17,8 +17,9 @@
 
 use senken_core::decimal::Scaled;
 use senken_trade::{
-    AccountBalances, AdapterAction, AdapterCapabilities, AdapterHealth, AdapterKind, Fill,
-    InstrumentCoverage, Order, Position, SettingsInput, SettingsSchema, TradeAccountSummary,
+    AccessLevel, AccountAccess, AccountBalances, AdapterAction, AdapterCapabilities, AdapterHealth,
+    AdapterKind, Fill, InstrumentCoverage, Order, Position, SettingsInput, SettingsSchema,
+    TradeAccountSummary,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -169,6 +170,47 @@ pub(crate) struct TradeAccountsPage {
     pub rows: Vec<TradeAccountDto>,
     /// How many rows exist in total, under the same scope as `rows`.
     pub total: u64,
+}
+
+/// One account's resolved access — `senken_trade::AccountAccess` over the
+/// wire, narrower than [`AdapterDto::capabilities`] when the venue
+/// distinguishes a restricted login (MetaTrader 5's investor password, an
+/// exchange key minted without trade scope).
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct AccountAccessDto {
+    /// `trade` or `read_only`.
+    #[schema(value_type = String)]
+    pub level: AccessLevel,
+    /// The adapter's capabilities, narrowed to this account.
+    #[schema(value_type = Object)]
+    pub capabilities: AdapterCapabilities,
+    /// Product copy explaining a restriction, shown to the user. Absent
+    /// when the account is unrestricted.
+    pub note: Option<String>,
+}
+
+impl From<AccountAccess> for AccountAccessDto {
+    fn from(access: AccountAccess) -> Self {
+        Self {
+            level: access.level,
+            capabilities: access.capabilities,
+            note: access.note,
+        }
+    }
+}
+
+/// `GET /api/trade/accounts/{account_id}` response body: the account, its
+/// resolved access and its health, in the one round trip a screen needs —
+/// replacing three a client previously had to make.
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct TradeAccountStateDto {
+    /// The account.
+    pub account: TradeAccountDto,
+    /// What this account may do right now.
+    pub access: AccountAccessDto,
+    /// Whether the account can be reached right now.
+    #[schema(value_type = Object)]
+    pub health: AdapterHealth,
 }
 
 /// `POST /api/trade/accounts` request body.
@@ -474,6 +516,36 @@ pub(crate) struct PlaceOrderRequest {
     /// A caller-chosen idempotency key.
     #[serde(default)]
     pub client_order_id: Option<String>,
+}
+
+/// `POST /api/trade/accounts/{account_id}/close` request body.
+///
+/// The instrument travels in the body rather than the path: an
+/// [`senken_marketdata::InstrumentId`] contains a colon, and path-encoding
+/// it invites exactly the double-decoding mistakes that make one endpoint
+/// disagree with another about the same instrument.
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct CloseRequest {
+    /// The instrument to close, as `source:symbol`.
+    pub instrument: String,
+}
+
+/// `PATCH /api/trade/accounts/{account_id}/orders/{order_id}` request body.
+///
+/// Every field is optional; a field left absent leaves that part of the
+/// order alone, exactly as [`senken_trade::OrderAmendment`] does — this is
+/// that type's own shape over the wire, not a re-declaration of it.
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct AmendOrderRequest {
+    /// The new size, replacing the order's current one.
+    #[serde(default)]
+    pub quantity: Option<ScaledDto>,
+    /// The new resting price, for an order that has one.
+    #[serde(default)]
+    pub limit_price: Option<ScaledDto>,
+    /// The new trigger price, for an order that has one.
+    #[serde(default)]
+    pub trigger_price: Option<ScaledDto>,
 }
 
 /// `GET /api/trade/accounts/{account_id}/health` response body.

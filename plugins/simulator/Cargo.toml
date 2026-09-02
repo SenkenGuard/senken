@@ -32,5 +32,9 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# The `engine` feature is test-only: `TradeEngine::close_position` is what
+# these tests exercise for closing, and a headless adapter build never
+# needs the registry at all.
+senken-trade = { workspace = true, features = ["engine"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

@@ -83,7 +83,7 @@
 				</span>
 			</div>
 			<span class={cn('flex-none font-mono text-[9.5px]', ac.selected ? 'text-foreground' : 'text-dim2')}>
-				{ac.equity}
+				{ac.equity}{ac.currency ? ` ${ac.currency}` : ''}
 			</span>
 		</button>
 	{/each}

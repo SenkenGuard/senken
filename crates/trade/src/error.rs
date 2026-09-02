@@ -42,6 +42,19 @@ pub enum TradeError {
     #[error("this account is disabled")]
     AccountDisabled,
 
+    /// The account may be read but not traded — a read-only login (an
+    /// investor password, an API key minted without trade scope), reported
+    /// by the adapter itself rather than discovered from a rejection at the
+    /// venue.
+    #[error("this account is read-only{}", note.as_ref().map(|n| format!(": {n}")).unwrap_or_default())]
+    ReadOnly {
+        /// The adapter that reported the restriction.
+        adapter: String,
+        /// One line of product copy explaining why, when the adapter gave
+        /// one.
+        note: Option<String>,
+    },
+
     /// The caller already has an account by this name on this adapter.
     #[error("you already have an account with that name on this adapter")]
     DuplicateLabel,
@@ -94,6 +107,15 @@ pub enum TradeError {
     /// No order with this id exists on this account.
     #[error("no order found for that id")]
     UnknownOrder,
+
+    /// No open position exists for this instrument.
+    ///
+    /// A close is built from the position the adapter reports, so this is
+    /// what a "close" on an instrument nobody holds refuses with — never a
+    /// generic `InvalidRequest`, since a client needs to tell "there is
+    /// nothing to close" apart from "the request itself was malformed".
+    #[error("no open position for {0}")]
+    UnknownPosition(InstrumentId),
 
     /// The order exists but cannot be changed any more — already filled,
     /// already cancelled, already expired.

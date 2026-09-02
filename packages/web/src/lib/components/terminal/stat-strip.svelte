@@ -48,6 +48,15 @@
 			>
 				{st.value}
 			</span>
+			{#if st.detail}
+				<div class="flex flex-col gap-px" data-stat-detail>
+					{#each st.detail as line (line)}
+						<span class="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[9px] text-dim2">
+							{line}
+						</span>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	{/each}
 </div>

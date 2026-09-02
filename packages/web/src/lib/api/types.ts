@@ -275,6 +275,21 @@ export interface AdaptersResponse {
 }
 export type TradeAccountDto = Schemas['TradeAccountDto'];
 export type TradeAccountsPage = Schemas['TradeAccountsPage'];
+
+/** `trade` (orders may be placed, amended and cancelled) or `read_only`
+ * (balances, positions and orders may be read; nothing may be sent) — a
+ * MetaTrader 5 investor login and an exchange key minted without trade
+ * scope both resolve to the latter. */
+export type AccessLevelDto = 'trade' | 'read_only';
+
+/** `AccountAccessDto` with its `Object`-typed `capabilities` given its real
+ * shape, for the same orphan-rule reason `AdapterDto` above does. Narrower
+ * than the adapter's own `AdapterCapabilitiesDto` when this particular
+ * account is restricted. */
+export type AccountAccessDto = Omit<Schemas['AccountAccessDto'], 'capabilities' | 'level'> & {
+	level: AccessLevelDto;
+	capabilities: AdapterCapabilitiesDto;
+};
 export type CreateTradeAccountRequest = Omit<Schemas['CreateTradeAccountRequest'], 'settings'> & {
 	settings: SettingsInputDto;
 };
@@ -294,6 +309,13 @@ export type PositionDto = Schemas['PositionDto'];
 export type OrderDto = Schemas['OrderDto'];
 export type FillDto = Schemas['FillDto'];
 export type PlaceOrderRequest = Schemas['PlaceOrderRequest'];
+/** `POST /api/trade/accounts/{id}/close` request body — the instrument to
+ * close, as `source:symbol`. The size sent is never the caller's to choose:
+ * the server closes exactly what the adapter currently reports held. */
+export type CloseRequest = Schemas['CloseRequest'];
+/** `PATCH /api/trade/accounts/{id}/orders/{orderId}` request body. Every
+ * field is optional; a field left out leaves that part of the order alone. */
+export type AmendOrderRequest = Schemas['AmendOrderRequest'];
 export interface AdapterHealthDto {
 	state: 'connected' | 'degraded' | 'disconnected';
 	reason?: string;
@@ -302,6 +324,15 @@ export interface AdapterHealthDto {
 export interface HealthDto {
 	health: AdapterHealthDto;
 }
+
+/** `GET /api/trade/accounts/{id}` response body: the account, its resolved
+ * access and its health in one round trip, replacing three requests a
+ * screen previously needed. `Object`-typed `health` given its real shape
+ * for the same orphan-rule reason as `AccountAccessDto`'s `capabilities`. */
+export type TradeAccountStateDto = Omit<Schemas['TradeAccountStateDto'], 'access' | 'health'> & {
+	access: AccountAccessDto;
+	health: AdapterHealthDto;
+};
 export interface RunActionRequest {
 	params: SettingsInputDto;
 }
