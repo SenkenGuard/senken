@@ -73,7 +73,7 @@ const SPOT_KLINE_URL: &str = "https://open-api.bingx.com/openApi/spot/v2/market/
 /// `limit=1000` on this endpoint, with the wide-window case answering
 /// HTTP 200 and a *different* window rather than an error — see the
 /// module docs.
-const MAX_ROWS: usize = 1000;
+pub(crate) const MAX_ROWS: usize = 1000;
 
 /// The weight charged against this source's [`senken_venue::LimitGroup`]
 /// per call — this project's own conservative proactive budget, not a
@@ -131,7 +131,7 @@ const INTERVALS: &[(u32, BarUnit, &str)] = &[
 ];
 
 /// The specs this source can fetch — every entry of [`INTERVALS`].
-fn supported_specs() -> Vec<BarSpec> {
+pub(crate) fn supported_specs() -> Vec<BarSpec> {
     INTERVALS
         .iter()
         .map(|&(step, unit, _)| BarSpec::new(step, unit))
@@ -140,7 +140,7 @@ fn supported_specs() -> Vec<BarSpec> {
 
 /// BingX's interval string for `spec`, or `None` when `spec` is not one
 /// this source has mapped.
-fn interval_of(spec: BarSpec) -> Option<&'static str> {
+pub(crate) fn interval_of(spec: BarSpec) -> Option<&'static str> {
     INTERVALS
         .iter()
         .find(|&&(step, unit, _)| step == spec.step.get() && unit == spec.unit)

@@ -20,6 +20,7 @@ use crate::api::{Envelope, RawInverse, RawLinear, RawSpot, SpotData};
 mod api;
 mod bars;
 mod book;
+mod contracts;
 mod feed;
 
 pub use bars::{BingxBarSource, bar_source_spot};
@@ -248,7 +249,36 @@ impl Plugin for BingxPlugin {
         context.register_bar_source(Arc::new(bar_source_spot(client.clone())));
         // Depth, declared the same way as everything above rather than
         // wired into the HTTP layer by hand.
-        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client)));
+        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client.clone())));
+
+        // The two perpetual markets each have their own API root and their
+        // own socket, and only one of them reports a base volume — see
+        // `contracts`' own docs.
+        for (market, ws) in [
+            (
+                crate::contracts::Market::Linear,
+                "wss://open-api-swap.bingx.com/swap-market",
+            ),
+            (
+                crate::contracts::Market::Inverse,
+                "wss://open-api-cswap-ws.bingx.com/market",
+            ),
+        ] {
+            context.register_bar_source(Arc::new(crate::contracts::bar_source_contract(
+                market,
+                client.clone(),
+                Arc::new(senken_plugin::SystemClock),
+            )));
+            context.register_book_source(Arc::new(crate::contracts::book_source_contract(
+                market,
+                client.clone(),
+            )));
+            context.register_feed_source(Arc::new(crate::feed::BingxFeedSource::for_market(
+                market.source_id_public(),
+                ws,
+            )));
+        }
+        let _ = &client;
         context.register_feed_source(Arc::new(crate::feed::BingxFeedSource::new()));
         Ok(())
     }

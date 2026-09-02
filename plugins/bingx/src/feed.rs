@@ -50,13 +50,27 @@ const SEPARATOR: char = '-';
 
 /// `BingX`'s public spot trade stream.
 pub(crate) struct BingxTradesProtocol {
+    /// Which socket this market streams from — the three markets are
+    /// three hosts.
+    url: String,
     source_id: Box<str>,
     symbols: Arc<dyn SymbolMap>,
 }
 
 impl BingxTradesProtocol {
+    #[cfg(test)]
     pub(crate) fn new(source_id: impl Into<Box<str>>, symbols: Arc<dyn SymbolMap>) -> Self {
+        Self::for_market(source_id, BINGX_WS_URL, symbols)
+    }
+
+    /// A protocol streaming from `url`.
+    pub(crate) fn for_market(
+        source_id: impl Into<Box<str>>,
+        url: impl Into<String>,
+        symbols: Arc<dyn SymbolMap>,
+    ) -> Self {
         Self {
+            url: url.into(),
             source_id: source_id.into(),
             symbols,
         }
@@ -72,7 +86,7 @@ impl BingxTradesProtocol {
 
 impl VenueProtocol for BingxTradesProtocol {
     fn url(&self) -> &str {
-        BINGX_WS_URL
+        &self.url
     }
 
     fn venue(&self) -> &'static str {
@@ -97,24 +111,28 @@ impl VenueProtocol for BingxTradesProtocol {
         let Ok(frame) = serde_json::from_str::<Frame>(text) else {
             return Vec::new();
         };
-        let Some(data) = frame.data else {
+        let Some(payload) = frame.data else {
             return Vec::new();
         };
-        if data.event != "trade" {
+        if !frame.data_type.ends_with(TRADE_STREAM) {
             return Vec::new();
         }
-        let Ok(instrument) = InstrumentId::new(
-            &self.source_id,
-            &normalise_symbol(&data.symbol, &[SEPARATOR]),
-        ) else {
-            return Vec::new();
-        };
-        let Some(ts) = senken_core::UnixNanos::from_millis(data.executed_at) else {
-            return Vec::new();
-        };
-        trade(ts, &data.price, &data.qty)
-            .map(|update| vec![(instrument, LiveUpdate::Price(update))])
-            .unwrap_or_default()
+        payload
+            .trades()
+            .iter()
+            .filter_map(|entry| {
+                let instrument = InstrumentId::new(
+                    &self.source_id,
+                    &normalise_symbol(&entry.symbol, &[SEPARATOR]),
+                )
+                .ok()?;
+                let ts = senken_core::UnixNanos::from_millis(entry.executed_at)?;
+                Some((
+                    instrument,
+                    LiveUpdate::Price(trade(ts, &entry.price, &entry.qty)?),
+                ))
+            })
+            .collect()
     }
 
     fn decode_binary(&self, bytes: &[u8]) -> Option<String> {
@@ -135,14 +153,42 @@ impl VenueProtocol for BingxTradesProtocol {
 /// `data`, so it decodes to `None`.
 #[derive(Debug, Deserialize)]
 struct Frame {
+    /// The stream this frame belongs to, `BTC-USDT@trade`. It is the only
+    /// thing both markets agree on: the perpetual streams carry no `e`
+    /// field on a trade at all, so a decoder keying on that reads nothing
+    /// from them — and, since an unrecognised frame is not an error,
+    /// reports a connected and permanently silent market.
+    #[serde(default, rename = "dataType")]
+    data_type: String,
     #[serde(default)]
-    data: Option<Trade>,
+    data: Option<Payload>,
+}
+
+/// The suffix the trade stream's `dataType` ends with.
+const TRADE_STREAM: &str = "@trade";
+
+/// The spot stream sends one trade as an object; the two perpetual
+/// streams send an array of them. Confirmed live 2026-09-02 — and the
+/// difference is silent, because a decoder expecting the wrong one reads
+/// no trades at all and reports no error.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Payload {
+    One(Box<Trade>),
+    Many(Vec<Trade>),
+}
+
+impl Payload {
+    fn trades(&self) -> &[Trade] {
+        match self {
+            Self::One(trade) => std::slice::from_ref(trade),
+            Self::Many(trades) => trades,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct Trade {
-    #[serde(rename = "e")]
-    event: String,
     #[serde(rename = "s")]
     symbol: String,
     #[serde(rename = "p")]
@@ -158,12 +204,23 @@ struct Trade {
 /// stream from a different host that no capture here has reached.
 pub(crate) struct BingxFeedSource {
     source_ids: Vec<String>,
+    url: String,
 }
 
 impl BingxFeedSource {
     pub(crate) fn new() -> Self {
         Self {
             source_ids: vec![crate::SPOT_ID.to_owned()],
+            url: BINGX_WS_URL.to_owned(),
+        }
+    }
+
+    /// A feed for one of `BingX`'s perpetual markets — each on its own
+    /// host, both gzip-compressed like spot. Confirmed live 2026-09-02.
+    pub(crate) fn for_market(source_id: &str, url: impl Into<String>) -> Self {
+        Self {
+            source_ids: vec![source_id.to_owned()],
+            url: url.into(),
         }
     }
 }
@@ -178,7 +235,11 @@ impl FeedSource for BingxFeedSource {
     }
 
     fn protocol(&self, symbols: Arc<dyn SymbolMap>) -> Arc<dyn VenueProtocol> {
-        Arc::new(BingxTradesProtocol::new(crate::SPOT_ID, symbols))
+        Arc::new(BingxTradesProtocol::for_market(
+            self.source_ids[0].as_str(),
+            self.url.clone(),
+            symbols,
+        ))
     }
 }
 
@@ -290,5 +351,30 @@ mod tests {
     fn garbage_input_yields_no_updates_rather_than_a_panic() {
         assert!(protocol().parse_message("not json").is_empty());
         assert!(protocol().parse_message("{}").is_empty());
+    }
+
+    /// The perpetual streams send `data` as an **array** where spot sends
+    /// a single object. A decoder built for one reads nothing from the
+    /// other, and reports no error while doing it — which is how a market
+    /// ends up registered, connected and permanently silent. Captured
+    /// live 2026-09-02 from `open-api-swap.bingx.com`.
+    #[test]
+    fn a_perpetual_frame_sends_its_trades_as_an_array() {
+        let protocol = BingxTradesProtocol::for_market(
+            crate::LINEAR_ID,
+            "wss://open-api-swap.bingx.com/swap-market",
+            Arc::new(DashedMap),
+        );
+        // Verbatim: note there is no `"e"` field at all, unlike spot's.
+        let frame = r#"{"code":0,"dataType":"BTC-USDT@trade","data":[{"q":"0.0009","p":"76398.3","T":1788348255196,"m":false,"s":"BTC-USDT"}]}"#;
+
+        let updates = protocol.parse_message(frame);
+
+        assert_eq!(updates.len(), 1);
+        let (id, LiveUpdate::Price(update)) = &updates[0] else {
+            panic!("a perpetual trade frame must decode to a price update");
+        };
+        assert_eq!(id, &InstrumentId::new(crate::LINEAR_ID, "BTCUSDT").unwrap());
+        assert_eq!(update.price, 763_983);
     }
 }

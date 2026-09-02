@@ -24,7 +24,7 @@ mod bars;
 mod book;
 mod feed;
 
-pub use bars::{BitgetBarSource, bar_source_spot};
+pub use bars::{BitgetBarSource, bar_source_futures, bar_source_spot};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "bitget-spot";
@@ -265,7 +265,33 @@ impl Plugin for BitgetPlugin {
         )));
         // Depth, declared the same way as everything above rather than
         // wired into the HTTP layer by hand.
-        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client)));
+        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client.clone())));
+
+        // The three futures product types share one host, one candle
+        // endpoint and one socket — only the `productType` differs.
+        // Confirmed live 2026-09-02 for all three.
+        for (source_id, product_type) in [
+            (USDT_ID, "USDT-FUTURES"),
+            (USDC_ID, "USDC-FUTURES"),
+            (COIN_ID, "COIN-FUTURES"),
+        ] {
+            context.register_bar_source(Arc::new(bar_source_futures(
+                source_id,
+                product_type,
+                client.clone(),
+                Arc::new(senken_plugin::SystemClock),
+            )));
+            context.register_book_source(Arc::new(crate::book::book_source_futures(
+                source_id,
+                product_type,
+                client.clone(),
+            )));
+            context.register_feed_source(Arc::new(crate::feed::BitgetFeedSource::for_market(
+                source_id,
+                product_type,
+            )));
+        }
+        let _ = &client;
         context.register_feed_source(Arc::new(crate::feed::BitgetFeedSource::new()));
         Ok(())
     }

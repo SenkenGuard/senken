@@ -53,6 +53,7 @@ use senken_marketdata::source::SourceError;
 use senken_subscription::{BookLevel, BookSnapshot, BookSource};
 use senken_venue::{VenueClient, common_scale};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::OK;
 
@@ -67,8 +68,20 @@ const MAX_DEPTH: usize = 20;
 /// venue-documented number (see module docs).
 const BOOK_FETCH_COST: u32 = 5;
 
-/// One level: `[price, size]`, both strings.
-type RawLevel = (String, String);
+/// One level: `[price, size]`.
+///
+/// [`RawValue`] rather than `String` because the two markets disagree:
+/// spot writes `["77615","0.02"]` and every futures product type writes
+/// `[76594.4,9.2045]` — bare numbers. Confirmed live 2026-09-02. A
+/// decoder expecting strings rejects the futures book outright.
+type RawLevel = (Box<RawValue>, Box<RawValue>);
+
+/// One cell's digits, whether the venue quoted them or not.
+fn plain(raw: &RawValue) -> String {
+    let trimmed = raw.get().trim().trim_matches('"');
+    senken_core::plain_decimal(trimmed)
+        .map_or_else(|| trimmed.to_owned(), std::borrow::Cow::into_owned)
+}
 
 #[derive(Debug, Deserialize)]
 struct Envelope {
@@ -96,6 +109,9 @@ pub(crate) struct BitgetBookSource {
     source_id: String,
     url: String,
     client: VenueClient,
+    /// Everything after the symbol — the futures endpoint needs a
+    /// `productType` the spot one has no concept of.
+    query: String,
 }
 
 impl BitgetBookSource {
@@ -115,21 +131,45 @@ pub(crate) fn book_source(source_id: impl Into<String>, client: VenueClient) -> 
         source_id: source_id.into(),
         url: ORDERBOOK_URL.to_owned(),
         client,
+        query: format!("limit={MAX_DEPTH}"),
+    }
+}
+
+/// Depth for one of Bitget's three futures product types.
+///
+/// A different endpoint (`merge-depth`) on the same host, taking a
+/// `productType` the spot one has no concept of, and answering with bare
+/// numbers instead of strings — confirmed live 2026-09-02 for all three.
+#[must_use]
+pub(crate) fn book_source_futures(
+    source_id: impl Into<String>,
+    product_type: &str,
+    client: VenueClient,
+) -> BitgetBookSource {
+    BitgetBookSource {
+        source_id: source_id.into(),
+        url: "https://api.bitget.com/api/v2/mix/market/merge-depth".to_owned(),
+        client,
+        query: format!("productType={product_type}&limit={MAX_DEPTH}"),
     }
 }
 
 /// Parses one side's raw levels, deriving that side's own scale from the
 /// batch and returning it separately so the caller can compare the two
 /// sides before trusting either ([`BookSnapshot::new`]'s own invariant).
-fn parse_side(raw: Vec<RawLevel>) -> Result<(Vec<BookLevel>, u8, u8), SourceError> {
-    let price_scale = common_scale(raw.iter().map(|level| level.0.as_str()));
-    let qty_scale = common_scale(raw.iter().map(|level| level.1.as_str()));
-    let levels = raw
-        .into_iter()
+fn parse_side(raw: &[RawLevel]) -> Result<(Vec<BookLevel>, u8, u8), SourceError> {
+    let cells: Vec<(String, String)> = raw
+        .iter()
+        .map(|(price, size)| (plain(price), plain(size)))
+        .collect();
+    let price_scale = common_scale(cells.iter().map(|(price, _)| price.as_str()));
+    let qty_scale = common_scale(cells.iter().map(|(_, size)| size.as_str()));
+    let levels = cells
+        .iter()
         .map(|(price, size)| {
             Ok(BookLevel {
-                price: scaled(&price, price_scale)?,
-                size: scaled(&size, qty_scale)?,
+                price: scaled(price, price_scale)?,
+                size: scaled(size, qty_scale)?,
             })
         })
         .collect::<Result<Vec<_>, SourceError>>()?;
@@ -153,7 +193,8 @@ impl BookSource for BitgetBookSource {
         depth: usize,
     ) -> Result<BookSnapshot, SourceError> {
         let depth = depth.clamp(1, MAX_DEPTH);
-        let url = format!("{}?symbol={}&limit={depth}", self.url, symbol.as_str());
+        let _ = depth;
+        let url = format!("{}?symbol={}&{}", self.url, symbol.as_str(), self.query);
         let body = self.client.get(&url, BOOK_FETCH_COST).await?;
         let envelope: Envelope = serde_json::from_slice(&body).map_err(SourceError::decode)?;
         if !envelope.code.is_empty() && envelope.code != OK {
@@ -172,8 +213,8 @@ impl BookSource for BitgetBookSource {
         // Both sides arrive best-first already (see module docs) — trusted
         // rather than re-sorted, the same as `senken-plugin-okx`'s book
         // source.
-        let (bids, bid_price_scale, bid_qty_scale) = parse_side(envelope.data.bids)?;
-        let (asks, ask_price_scale, ask_qty_scale) = parse_side(envelope.data.asks)?;
+        let (bids, bid_price_scale, bid_qty_scale) = parse_side(&envelope.data.bids)?;
+        let (asks, ask_price_scale, ask_qty_scale) = parse_side(&envelope.data.asks)?;
 
         BookSnapshot::new(
             ts,

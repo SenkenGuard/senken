@@ -61,6 +61,7 @@ use senken_marketdata::source::SourceError;
 use senken_plugin::BarSource;
 use senken_series::{Bar, BarSpec, BarUnit, Clock, Volume};
 use senken_venue::{VenueClient, common_scale};
+use serde_json::value::RawValue;
 
 use crate::api::Envelope;
 use crate::{OK, SPOT_ID};
@@ -78,20 +79,29 @@ const MAX_ROWS: usize = 1000;
 /// workspace.
 const CANDLES_FETCH_COST: u32 = 5;
 
-/// One row of `GET /api/v2/spot/market/history-candles`: eight
-/// positional strings — `[ts, open, high, low, close, baseVolume,
-/// quoteVolume, usdtVolume]`. The trailing `usdtVolume` duplicates
-/// `quoteVolume` on every USDT pair and is not decoded separately.
-type RawCandle = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-);
+/// One row: `[ts, open, high, low, close, baseVolume, quoteVolume]`,
+/// with a trailing `usdtVolume` on spot that duplicates `quoteVolume` on
+/// every USDT pair and is not decoded separately.
+///
+/// A `Vec` rather than a fixed tuple because the two markets send
+/// different lengths — spot eight, every futures product type seven
+/// (confirmed live 2026-09-02) — and a tuple of eight rejects the shorter
+/// row outright. Each cell is a [`RawValue`] because the two also differ
+/// in *type*: spot writes its numbers as strings and futures depth writes
+/// bare numbers, and the venue is free to change which without telling
+/// anyone.
+type RawCandle = Vec<Box<RawValue>>;
+
+/// Fields a row must have before it can be read: through `quoteVolume`.
+const REQUIRED_CELLS: usize = 7;
+
+/// One cell's digits, whether the venue wrote them as a JSON string or a
+/// bare number.
+fn plain(raw: &str) -> String {
+    let trimmed = raw.trim().trim_matches('"');
+    senken_core::plain_decimal(trimmed)
+        .map_or_else(|| trimmed.to_owned(), std::borrow::Cow::into_owned)
+}
 
 /// Every `(step, unit, granularity)` this source will ask Bitget for. See
 /// the module docs for which entry was measured against a live response
@@ -130,6 +140,10 @@ fn granularity_of(spec: BarSpec) -> Option<&'static str> {
 /// module docs).
 #[derive(Clone)]
 pub struct BitgetBarSource {
+    source_id: &'static str,
+    /// Everything the futures endpoint needs beyond the spot one — its
+    /// `productType`. Empty for spot.
+    extra_query: String,
     url: String,
     client: VenueClient,
     clock: Arc<dyn Clock>,
@@ -156,13 +170,14 @@ impl BitgetBarSource {
 
     fn history_candles_url(&self, symbol: &str, granularity: &str, range: TimeRange) -> String {
         format!(
-            "{}?symbol={symbol}&granularity={granularity}&limit={MAX_ROWS}&startTime={}&endTime={}",
+            "{}?symbol={symbol}&granularity={granularity}&limit={MAX_ROWS}&startTime={}&endTime={}{}",
             self.url,
             range.start().as_millis(),
             // `endTime` is inclusive on this venue; `range.end()` is
             // exclusive (`TimeRange`'s own half-open contract), so the
             // last representable millisecond strictly before it is sent.
             range.end().as_millis() - 1,
+            self.extra_query,
         )
     }
 }
@@ -171,7 +186,32 @@ impl BitgetBarSource {
 #[must_use]
 pub fn bar_source_spot(client: VenueClient, clock: Arc<dyn Clock>) -> BitgetBarSource {
     BitgetBarSource {
+        source_id: SPOT_ID,
+        extra_query: String::new(),
         url: HISTORY_CANDLES_URL.to_owned(),
+        client,
+        clock,
+        supported: supported_specs(),
+    }
+}
+
+/// A bar source for one of Bitget's three futures product types.
+///
+/// A different endpoint on the same host, taking a `productType`, and
+/// answering rows of **seven** cells where spot sends eight — spot's
+/// trailing `usdtVolume` has no counterpart here. Confirmed live
+/// 2026-09-02 for all three product types.
+#[must_use]
+pub fn bar_source_futures(
+    source_id: &'static str,
+    product_type: &str,
+    client: VenueClient,
+    clock: Arc<dyn Clock>,
+) -> BitgetBarSource {
+    BitgetBarSource {
+        source_id,
+        extra_query: format!("&productType={product_type}"),
+        url: "https://api.bitget.com/api/v2/mix/market/history-candles".to_owned(),
         client,
         clock,
         supported: supported_specs(),
@@ -181,7 +221,7 @@ pub fn bar_source_spot(client: VenueClient, clock: Arc<dyn Clock>) -> BitgetBarS
 #[async_trait::async_trait]
 impl BarSource for BitgetBarSource {
     fn source_id(&self) -> &str {
-        SPOT_ID
+        self.source_id
     }
 
     fn supported(&self) -> &[BarSpec] {
@@ -221,22 +261,33 @@ impl BarSource for BitgetBarSource {
                 envelope.code, envelope.msg
             )));
         }
-        let rows = envelope.data;
+        let rows: Vec<Vec<String>> = envelope
+            .data
+            .iter()
+            .filter(|row| row.len() >= REQUIRED_CELLS)
+            .map(|row| row.iter().map(|cell| plain(cell.get())).collect())
+            .collect();
 
         let price_scale = common_scale(rows.iter().flat_map(|row| {
             [
-                row.1.as_str(),
-                row.2.as_str(),
-                row.3.as_str(),
-                row.4.as_str(),
+                row[1].as_str(),
+                row[2].as_str(),
+                row[3].as_str(),
+                row[4].as_str(),
             ]
         }));
-        let qty_scale = common_scale(rows.iter().flat_map(|row| [row.5.as_str(), row.6.as_str()]));
+        let qty_scale = common_scale(
+            rows.iter()
+                .flat_map(|row| [row[5].as_str(), row[6].as_str()]),
+        );
 
         let now = self.clock.now();
         let mut bars = Vec::with_capacity(rows.len());
         let mut outside = 0usize;
-        for (ts, open, high, low, close, base_volume, quote_volume, _usdt_volume) in rows {
+        for row in rows {
+            let (ts, open, high, low, close, base_volume, quote_volume) = (
+                &row[0], &row[1], &row[2], &row[3], &row[4], &row[5], &row[6],
+            );
             let ts_ms: i64 = ts
                 .parse()
                 .map_err(|_| SourceError::decode(format!("{ts:?} is not a valid timestamp")))?;
@@ -259,12 +310,12 @@ impl BarSource for BitgetBarSource {
 
             bars.push(Bar {
                 ts_open,
-                open: scaled(&open, price_scale)?,
-                high: scaled(&high, price_scale)?,
-                low: scaled(&low, price_scale)?,
-                close: scaled(&close, price_scale)?,
-                volume: Volume::Real(scaled(&base_volume, qty_scale)?),
-                quote_volume: Some(scaled(&quote_volume, qty_scale)?),
+                open: scaled(open, price_scale)?,
+                high: scaled(high, price_scale)?,
+                low: scaled(low, price_scale)?,
+                close: scaled(close, price_scale)?,
+                volume: Volume::Real(scaled(base_volume, qty_scale)?),
+                quote_volume: Some(scaled(quote_volume, qty_scale)?),
                 trade_count: None,
                 taker_buy_volume: None,
             });

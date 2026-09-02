@@ -52,13 +52,25 @@ const KEEPALIVE: Duration = Duration::from_secs(20);
 
 /// Bitget's public spot `trade` channel.
 pub(crate) struct BitgetTradesProtocol {
+    inst_type: &'static str,
     source_id: Box<str>,
     symbols: Arc<dyn SymbolMap>,
 }
 
 impl BitgetTradesProtocol {
+    #[cfg(test)]
     pub(crate) fn new(source_id: impl Into<Box<str>>, symbols: Arc<dyn SymbolMap>) -> Self {
+        Self::for_market(source_id, "SPOT", symbols)
+    }
+
+    /// A protocol whose subscriptions name `inst_type`.
+    pub(crate) fn for_market(
+        source_id: impl Into<Box<str>>,
+        inst_type: &'static str,
+        symbols: Arc<dyn SymbolMap>,
+    ) -> Self {
         Self {
+            inst_type,
             source_id: source_id.into(),
             symbols,
         }
@@ -70,9 +82,10 @@ impl BitgetTradesProtocol {
         })
     }
 
-    fn frame(op: &str, symbol: &str) -> String {
+    fn frame(&self, op: &str, symbol: &str) -> String {
+        let inst_type = self.inst_type;
         format!(
-            r#"{{"op":"{op}","args":[{{"instType":"SPOT","channel":"trade","instId":"{symbol}"}}]}}"#
+            r#"{{"op":"{op}","args":[{{"instType":"{inst_type}","channel":"trade","instId":"{symbol}"}}]}}"#
         )
     }
 }
@@ -87,11 +100,11 @@ impl VenueProtocol for BitgetTradesProtocol {
     }
 
     fn subscribe_frame(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
-        Ok(Self::frame("subscribe", &self.native_symbol(instrument)?))
+        Ok(self.frame("subscribe", &self.native_symbol(instrument)?))
     }
 
     fn unsubscribe_frame(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
-        Ok(Self::frame("unsubscribe", &self.native_symbol(instrument)?))
+        Ok(self.frame("unsubscribe", &self.native_symbol(instrument)?))
     }
 
     fn parse_message(&self, text: &str) -> Vec<(InstrumentId, LiveUpdate)> {
@@ -159,12 +172,27 @@ struct Trade {
 /// has been seen in this project.
 pub(crate) struct BitgetFeedSource {
     source_ids: Vec<String>,
+    inst_type: &'static str,
 }
 
 impl BitgetFeedSource {
     pub(crate) fn new() -> Self {
         Self {
             source_ids: vec![crate::SPOT_ID.to_owned()],
+            inst_type: "SPOT",
+        }
+    }
+
+    /// A feed for one of Bitget's futures product types.
+    ///
+    /// The same socket and the same frames as spot — only the
+    /// subscription's `instType` differs, and each product type is its own
+    /// source, so each gets its own pool. Confirmed live 2026-09-02 for
+    /// all three.
+    pub(crate) fn for_market(source_id: &str, inst_type: &'static str) -> Self {
+        Self {
+            source_ids: vec![source_id.to_owned()],
+            inst_type,
         }
     }
 }
@@ -181,7 +209,11 @@ impl FeedSource for BitgetFeedSource {
     }
 
     fn protocol(&self, symbols: Arc<dyn SymbolMap>) -> Arc<dyn VenueProtocol> {
-        Arc::new(BitgetTradesProtocol::new(crate::SPOT_ID, symbols))
+        Arc::new(BitgetTradesProtocol::for_market(
+            self.source_ids[0].as_str(),
+            self.inst_type,
+            symbols,
+        ))
     }
 }
 
