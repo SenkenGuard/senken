@@ -24,7 +24,7 @@ use senken_core::decimal::checked_rescale;
 use senken_marketdata::Instrument;
 
 use crate::adapter::{AccountRef, ActionOutcome, TradeAdapter, TradeContext};
-use crate::capability::{AccountAccess, AdapterCapabilities, AdapterFeature};
+use crate::capability::{AccountAccess, AdapterCapabilities, AdapterFeature, PositionMode};
 use crate::error::TradeError;
 use crate::id::{OrderId, PositionId};
 use crate::order::{Order, OrderAmendment, OrderFilter, OrderKind, OrderRequest, OrderSide};
@@ -263,6 +263,18 @@ impl TradeEngine {
     ) -> Result<Order, TradeError> {
         let adapter = self.adapter(adapter_id)?;
         let access = self.require_trading_access(adapter, ctx, account).await?;
+
+        // Closing is a directional-position operation, and a spot account
+        // has no direction to close: selling what you hold is an ordinary
+        // sell order. Refused here rather than left to the adapter, so an
+        // account whose holdings are assets cannot be sent a "close" that
+        // would have to invent a side to close on.
+        if access.capabilities.position_mode == PositionMode::SpotHoldings {
+            return Err(TradeError::Unsupported {
+                adapter: adapter_id.to_string(),
+                capability: "closing a position on a spot account".to_string(),
+            });
+        }
 
         // Addressed by position rather than by instrument because two of
         // the systems this platform models hold more than one position on
@@ -604,7 +616,10 @@ mod tests {
                 capabilities: AdapterCapabilities::market_only()
                     .with_order_kinds(vec![OrderKindTag::Market, OrderKindTag::Limit])
                     .with_quantity_unit(QuantityUnit::Base)
-                    .with_position_mode(PositionMode::SpotHoldings),
+                    // Netting, because most of these tests exercise
+                    // directional positions. The spot case gets an adapter
+                    // that says so, in the test that is about it.
+                    .with_position_mode(PositionMode::Netting),
                 coverage: InstrumentCoverage::Universal,
                 access_override: None,
                 seen: std::sync::Mutex::new(None),
@@ -623,6 +638,16 @@ mod tests {
                 .unwrap()
                 .clone()
                 .expect("no order reached the adapter")
+        }
+
+        /// The same recorder, declaring that its holdings are assets
+        /// rather than direction.
+        fn spot() -> Self {
+            let mut recording = Self::new();
+            recording.capabilities = recording
+                .capabilities
+                .with_position_mode(PositionMode::SpotHoldings);
+            recording
         }
 
         fn set_positions(&self, positions: Vec<Position>) {
@@ -1346,7 +1371,9 @@ mod tests {
 
         let margined = Arc::new(Recording {
             access_override: Some(AccountAccess::trading(
-                AdapterCapabilities::market_only().with_margin(),
+                AdapterCapabilities::market_only()
+                    .with_margin()
+                    .with_position_mode(PositionMode::Netting),
             )),
             ..Recording::new()
         });
@@ -1501,6 +1528,26 @@ mod tests {
             amendment.limit_price,
             Some(Scaled::new(2, 6_842_013)),
             "the amended price must arrive on the tick, rounded down, exactly as a new order's does"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_a_position_on_a_spot_account_is_refused_without_asking_the_adapter() {
+        let adapter = Arc::new(Recording::spot());
+        adapter.set_positions(vec![open_position(Scaled::new(3, 250))]);
+        let engine = engine_with(Arc::clone(&adapter));
+
+        let error = close(&engine, &PositionId::new("okx-spot:BTCUSDT"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, TradeError::Unsupported { .. }),
+            "a spot account holds assets, not direction, so there is no side to close on: got {error:?}"
+        );
+        assert!(
+            adapter.seen.lock().unwrap().is_none(),
+            "and the refusal happens before the adapter is asked to place anything"
         );
     }
 }
