@@ -366,7 +366,7 @@ pub(crate) async fn get_settings(
     let secrets_set = settings.secret_status(&adapter.settings_schema());
     Ok(Json(TradeAccountSettingsDto {
         account: TradeAccountDto::from_summary(account, ctx.user.user_id()),
-        settings,
+        settings: crate::dto::settings_for_wire(&settings),
         secrets_set,
     }))
 }
@@ -419,7 +419,7 @@ pub(crate) async fn replace_settings(
     let secrets_set = settings.secret_status(&schema);
     Ok(Json(TradeAccountSettingsDto {
         account: TradeAccountDto::from_summary(account, ctx.user.user_id()),
-        settings,
+        settings: crate::dto::settings_for_wire(&settings),
         secrets_set,
     }))
 }

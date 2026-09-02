@@ -239,6 +239,67 @@ pub(crate) struct UpdateTradeAccountRequest {
     pub enabled: Option<bool>,
 }
 
+/// One stored setting on its way out.
+///
+/// Mirrors [`senken_trade::SettingValue`]'s untagged shape so the wire
+/// form is unchanged, with one correction: a decimal travels as
+/// [`ScaledDto`], whose digits are a string. Serialising the domain type
+/// directly — which this endpoint used to do — sent money as a JSON
+/// *number* while every other endpoint sent a string, so a value past
+/// 2^53 would have been rounded by the browser on the way in. See
+/// [`WireInt`] for why that is the one thing this API may never do.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub(crate) enum SettingValueDto {
+    /// A credential. Carries nothing at all, so it serialises as `null`
+    /// and there is no field a future edit could accidentally fill with
+    /// the real value.
+    Secret,
+    /// An on/off switch.
+    Toggle(bool),
+    /// A whole number, small by construction (a count, not money).
+    Number(i64),
+    /// A fixed-point decimal — digits as a string.
+    Decimal(ScaledDto),
+    /// Text, or the value of a chosen option.
+    Text(String),
+}
+
+impl From<&senken_trade::SettingValue> for SettingValueDto {
+    fn from(value: &senken_trade::SettingValue) -> Self {
+        use senken_trade::SettingValue as V;
+        match value {
+            V::Secret(_) => Self::Secret,
+            V::Toggle(flag) => Self::Toggle(*flag),
+            V::Number(number) => Self::Number(*number),
+            V::Decimal(scaled) => Self::Decimal((*scaled).into()),
+            V::Text(text) => Self::Text(text.clone()),
+            // `SettingValue` is `#[non_exhaustive]`: a variant added
+            // upstream reaches here as text rather than silently vanishing
+            // from a settings form.
+            other => Self::Text(format!("{other:?}")),
+        }
+    }
+}
+
+/// Every stored value, converted for the wire.
+///
+/// `keys`/`get` rather than an `IntoIterator`, because
+/// [`senken_trade::SettingsValues`] deliberately exposes no direct access
+/// to its map.
+pub(crate) fn settings_for_wire(
+    values: &senken_trade::SettingsValues,
+) -> std::collections::BTreeMap<String, SettingValueDto> {
+    values
+        .keys()
+        .filter_map(|key| {
+            values
+                .get(key)
+                .map(|value| (key.to_owned(), SettingValueDto::from(value)))
+        })
+        .collect()
+}
+
 /// `GET`/`PUT /api/trade/accounts/{account_id}/settings` response body.
 ///
 /// Secret fields come back as `null` — that is
@@ -250,9 +311,9 @@ pub(crate) struct UpdateTradeAccountRequest {
 pub(crate) struct TradeAccountSettingsDto {
     /// The account.
     pub account: TradeAccountDto,
-    /// The stored values, credentials redacted to `null`.
-    #[schema(value_type = Object)]
-    pub settings: senken_trade::SettingsValues,
+    /// The stored values, credentials redacted to `null`, every decimal
+    /// carrying its digits as a string.
+    pub settings: std::collections::BTreeMap<String, SettingValueDto>,
     /// Which secret fields hold a credential.
     #[schema(value_type = Object)]
     pub secrets_set: std::collections::BTreeMap<String, bool>,
@@ -577,7 +638,7 @@ pub(crate) struct ActionOutcomeDto {
 
 #[cfg(test)]
 mod tests {
-    use super::ScaledDto;
+    use super::{ScaledDto, settings_for_wire};
     use senken_core::decimal::Scaled;
 
     #[test]
@@ -601,5 +662,85 @@ mod tests {
     fn a_plain_json_number_is_still_accepted_on_the_way_in() {
         let parsed: ScaledDto = serde_json::from_str(r#"{"scale":2,"value":150}"#).unwrap();
         assert_eq!(Scaled::from(parsed), Scaled::new(2, 150));
+    }
+
+    /// A settings decimal is money, and money leaves this API as digits in
+    /// a string. It used to leave as a JSON number, because the response
+    /// serialised the domain type directly — which put every stored
+    /// balance through the browser's `double` on the way in.
+    #[test]
+    fn a_settings_decimal_leaves_as_a_string_like_every_other_money_field() {
+        let mut values = senken_trade::SettingsValues::new();
+        values.set(
+            "starting_balance",
+            senken_trade::SettingValue::Decimal(Scaled::new(2, 1_234_567_890)),
+        );
+
+        let wire = serde_json::to_value(settings_for_wire(&values)).unwrap();
+
+        assert_eq!(
+            wire["starting_balance"]["value"],
+            serde_json::json!("1234567890")
+        );
+        assert!(
+            wire["starting_balance"]["value"].is_string(),
+            "a JSON number here is the defect this test exists for: {wire}"
+        );
+    }
+
+    /// The reason the string matters, stated as an amount rather than as a
+    /// principle: 2^53 + 1 is the first integer a `double` cannot tell
+    /// from its neighbour, and a satoshi-scale balance passes it easily.
+    #[test]
+    fn a_settings_decimal_past_the_double_boundary_keeps_its_last_digit() {
+        const PAST_EXACT_DOUBLE: i64 = 9_007_199_254_740_993; // 2^53 + 1
+
+        let mut values = senken_trade::SettingsValues::new();
+        values.set(
+            "starting_balance",
+            senken_trade::SettingValue::Decimal(Scaled::new(8, PAST_EXACT_DOUBLE)),
+        );
+
+        let wire = serde_json::to_value(settings_for_wire(&values)).unwrap();
+
+        assert_eq!(
+            wire["starting_balance"]["value"],
+            serde_json::json!("9007199254740993")
+        );
+        // The same digits through a double, which is what a JSON number
+        // would have become: the last one changes.
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            reason = "demonstrating the loss this test exists to prevent"
+        )]
+        let through_a_double = PAST_EXACT_DOUBLE as f64 as i64;
+        assert_ne!(
+            through_a_double, PAST_EXACT_DOUBLE,
+            "if this ever passes, the boundary moved and this test needs a bigger number"
+        );
+    }
+
+    /// A secret has no field to leak from: the wire variant carries no
+    /// payload at all, so `null` is not a policy this layer applies, it is
+    /// the only thing the type can produce.
+    #[test]
+    fn a_settings_secret_leaves_as_null() {
+        let mut values = senken_trade::SettingsValues::new();
+        values.set(
+            "api_key",
+            senken_trade::SettingValue::Secret(senken_trade::SecretString::new(
+                "super-secret".to_owned(),
+            )),
+        );
+
+        let wire = serde_json::to_value(settings_for_wire(&values)).unwrap();
+
+        assert_eq!(wire["api_key"], serde_json::Value::Null);
+        assert!(
+            !serde_json::to_string(&wire)
+                .unwrap()
+                .contains("super-secret")
+        );
     }
 }
