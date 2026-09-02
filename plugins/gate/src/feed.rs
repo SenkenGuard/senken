@@ -272,3 +272,251 @@ mod tests {
         assert!(protocol().parse_message("{}").is_empty());
     }
 }
+
+/// Gate's contract-market `futures.trades` channel.
+///
+/// # A different socket and a different shape from spot
+///
+/// Gate splits its contract streams by settlement currency, and each is a
+/// separate host and path — so unlike OKX, one pool cannot serve them all.
+/// Confirmed live 2026-09-02, all three accepting the same subscribe and
+/// answering the same shape:
+///
+/// ```text
+/// wss://fx-ws.gateio.ws/v4/ws/usdt           BTC_USDT
+/// wss://fx-ws.gateio.ws/v4/ws/btc            BTC_USD
+/// wss://fx-ws.gateio.ws/v4/ws/delivery/usdt  BTC_USDT_20260911
+/// ```
+///
+/// ```json
+/// {"time":1788347173,"time_ms":1788347173767,"channel":"futures.trades","event":"update","result":[{"id":825348721,"size":-2,"create_time":1788347173,"create_time_ms":1788347173767,"price":"76520","contract":"BTC_USDT"}]}
+/// ```
+///
+/// Three differences from the spot channel this module opens with:
+/// - `result` is an **array**; spot's is a single object.
+/// - the instrument is `contract`, not `currency_pair`.
+/// - `create_time_ms` is a bare integer, where spot writes a string with
+///   six fractional digits.
+///
+/// # Why these ticks carry no size
+///
+/// `size` is a signed **contract count** — `-2` is a sell of two
+/// contracts, and Gate's `BTC_USDT` perpetual is 0.0001 BTC each. The base
+/// amount would be `size x quanto_multiplier`, a figure published on a
+/// different endpoint; rather than assume one, the tick reports
+/// [`Volume::Absent`](senken_series::Volume::Absent), matching what this
+/// plugin's contract bars do for exactly the same reason.
+pub(crate) struct GateContractProtocol {
+    source_id: Box<str>,
+    url: String,
+    symbols: Arc<dyn SymbolMap>,
+}
+
+impl GateContractProtocol {
+    pub(crate) fn new(
+        source_id: impl Into<Box<str>>,
+        url: impl Into<String>,
+        symbols: Arc<dyn SymbolMap>,
+    ) -> Self {
+        Self {
+            source_id: source_id.into(),
+            url: url.into(),
+            symbols,
+        }
+    }
+
+    fn native_symbol(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
+        self.symbols.source_symbol(instrument).ok_or_else(|| {
+            ConnectionError::new(format!("no Gate native symbol known for {instrument}"))
+        })
+    }
+
+    fn frame(event: &str, symbol: &str) -> String {
+        format!(r#"{{"channel":"futures.trades","event":"{event}","payload":["{symbol}"]}}"#)
+    }
+}
+
+impl VenueProtocol for GateContractProtocol {
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    fn venue(&self) -> &'static str {
+        "gate"
+    }
+
+    fn subscribe_frame(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
+        Ok(Self::frame("subscribe", &self.native_symbol(instrument)?))
+    }
+
+    fn unsubscribe_frame(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
+        Ok(Self::frame("unsubscribe", &self.native_symbol(instrument)?))
+    }
+
+    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, LiveUpdate)> {
+        let Ok(frame) = serde_json::from_str::<ContractFrame>(text) else {
+            return Vec::new();
+        };
+        if frame.channel != "futures.trades" || frame.event != "update" {
+            return Vec::new();
+        }
+        frame
+            .result
+            .iter()
+            .filter_map(|row| {
+                let instrument = InstrumentId::new(
+                    &self.source_id,
+                    &normalise_symbol(&row.contract, &[SEPARATOR]),
+                )
+                .ok()?;
+                let ts = UnixNanos::from_millis(row.create_time_ms)?;
+                let (price, price_scale) = senken_plugin::live::scaled(&row.price)?;
+                Some((
+                    instrument,
+                    LiveUpdate::Price(senken_subscription::PriceUpdate {
+                        ts,
+                        price,
+                        price_scale,
+                        // A contract count, not a base amount — see the
+                        // type's own docs.
+                        qty: senken_series::Volume::Absent,
+                        qty_scale: 0,
+                    }),
+                ))
+            })
+            .collect()
+    }
+}
+
+/// One inbound contract frame. The acknowledgement carries no `result`
+/// array, so it decodes to an empty one.
+#[derive(Debug, Deserialize)]
+struct ContractFrame {
+    #[serde(default)]
+    channel: String,
+    #[serde(default)]
+    event: String,
+    #[serde(default)]
+    result: Vec<ContractTrade>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContractTrade {
+    contract: String,
+    price: String,
+    /// Epoch milliseconds, as a bare integer — spot writes a string.
+    create_time_ms: i64,
+}
+
+/// A live feed for one of Gate's contract markets.
+pub(crate) struct GateContractFeedSource {
+    source_ids: Vec<String>,
+    url: String,
+}
+
+impl GateContractFeedSource {
+    pub(crate) fn new(source_id: &str, url: impl Into<String>) -> Self {
+        Self {
+            source_ids: vec![source_id.to_owned()],
+            url: url.into(),
+        }
+    }
+}
+
+impl FeedSource for GateContractFeedSource {
+    fn source_ids(&self) -> &[String] {
+        &self.source_ids
+    }
+
+    fn serves_quotes(&self) -> bool {
+        false
+    }
+
+    fn protocol(&self, symbols: Arc<dyn SymbolMap>) -> Arc<dyn VenueProtocol> {
+        Arc::new(GateContractProtocol::new(
+            self.source_ids[0].as_str(),
+            self.url.clone(),
+            symbols,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::GateContractProtocol;
+    use senken_marketdata::InstrumentId;
+    use senken_subscription::{LiveUpdate, SymbolMap, VenueProtocol};
+    use std::sync::Arc;
+
+    struct UnderscoreMap;
+    impl SymbolMap for UnderscoreMap {
+        fn source_symbol(&self, instrument: &InstrumentId) -> Option<String> {
+            instrument
+                .symbol()
+                .strip_suffix("USDT")
+                .map(|base| format!("{base}_USDT"))
+        }
+    }
+
+    fn protocol() -> GateContractProtocol {
+        GateContractProtocol::new(
+            crate::USDT_PERP_ID,
+            "wss://fx-ws.gateio.ws/v4/ws/usdt",
+            Arc::new(UnderscoreMap),
+        )
+    }
+
+    #[test]
+    fn the_confirmed_url_and_channel_are_used() {
+        assert_eq!(protocol().url(), "wss://fx-ws.gateio.ws/v4/ws/usdt");
+        let frame: serde_json::Value = serde_json::from_str(
+            &protocol()
+                .subscribe_frame(&InstrumentId::new(crate::USDT_PERP_ID, "BTCUSDT").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(frame["channel"], "futures.trades");
+        assert_eq!(frame["payload"][0], "BTC_USDT");
+    }
+
+    /// Byte-for-byte a frame from this type's live capture. Spot's decoder
+    /// cannot read it: `result` is an array here, the instrument is under
+    /// `contract`, and `create_time_ms` is an integer rather than a
+    /// string.
+    #[test]
+    fn the_captured_contract_frame_decodes_to_a_price() {
+        let frame = r#"{"time":1788347173,"time_ms":1788347173767,"channel":"futures.trades","event":"update","result":[{"id":825348721,"size":-2,"create_time":1788347173,"create_time_ms":1788347173767,"price":"76520","contract":"BTC_USDT"}]}"#;
+
+        let updates = protocol().parse_message(frame);
+
+        assert_eq!(updates.len(), 1);
+        let (id, LiveUpdate::Price(update)) = &updates[0] else {
+            panic!("a futures.trades update must decode to a price update");
+        };
+        assert_eq!(
+            id,
+            &InstrumentId::new(crate::USDT_PERP_ID, "BTCUSDT").unwrap()
+        );
+        assert_eq!(update.price, 76_520);
+        assert_eq!(update.ts.as_millis(), 1_788_347_173_767);
+    }
+
+    /// `size: -2` is a sell of two contracts, not a negative base
+    /// quantity, and two contracts is 0.0002 BTC — so no size is claimed.
+    #[test]
+    fn a_signed_contract_count_is_never_published_as_a_size() {
+        let frame = r#"{"channel":"futures.trades","event":"update","result":[{"id":1,"size":-2,"create_time_ms":1788347173767,"price":"76520","contract":"BTC_USDT"}]}"#;
+        let (_, LiveUpdate::Price(update)) = protocol().parse_message(frame)[0] else {
+            panic!("expected a price update");
+        };
+        assert_eq!(update.qty, senken_series::Volume::Absent);
+    }
+
+    #[test]
+    fn an_acknowledgement_and_garbage_yield_nothing() {
+        let ack = r#"{"time":1788347000,"channel":"futures.trades","event":"subscribe","payload":["BTC_USDT"],"result":{"status":"success"}}"#;
+        assert!(protocol().parse_message(ack).is_empty());
+        assert!(protocol().parse_message("not json").is_empty());
+        assert!(protocol().parse_message("{}").is_empty());
+    }
+}

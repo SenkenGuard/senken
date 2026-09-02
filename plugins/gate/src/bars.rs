@@ -71,7 +71,7 @@ const SPOT_CANDLES_URL: &str = "https://api.gateio.ws/api/v4/spot/candlesticks";
 
 /// The tested cap: 1000 rows came back for `limit=1000`, and `limit=1001`
 /// was refused with HTTP 400 rather than silently truncated.
-const MAX_ROWS: usize = 1000;
+pub(crate) const MAX_ROWS: usize = 1000;
 
 /// The weight charged against this source's [`senken_venue::LimitGroup`]
 /// per call. Gate's public endpoints send no rate-limit headers to
@@ -79,7 +79,7 @@ const MAX_ROWS: usize = 1000;
 /// budget, not a venue-documented number — the same value every other bar
 /// source in this workspace uses, so a difference between venues is never
 /// mistaken for a claim about their relative real cost.
-const CANDLES_FETCH_COST: u32 = 5;
+pub(crate) const CANDLES_FETCH_COST: u32 = 5;
 
 /// One row of `GET /api/v4/spot/candlesticks`: eight positional strings,
 /// in the order this module's docs spell out — **not** OHLC order.
@@ -129,7 +129,7 @@ const INTERVALS: &[(u32, BarUnit, &str)] = &[
 
 /// The specs this source can fetch — every entry of [`INTERVALS`], and
 /// nothing else.
-fn supported_specs() -> Vec<BarSpec> {
+pub(crate) fn supported_specs() -> Vec<BarSpec> {
     INTERVALS
         .iter()
         .map(|&(step, unit, _)| BarSpec::new(step, unit))
@@ -141,7 +141,7 @@ fn supported_specs() -> Vec<BarSpec> {
 ///
 /// A lookup, never a computation — see [`INTERVALS`] for why the
 /// difference matters on this venue specifically.
-fn interval_of(spec: BarSpec) -> Option<&'static str> {
+pub(crate) fn interval_of(spec: BarSpec) -> Option<&'static str> {
     INTERVALS
         .iter()
         .find(|&&(step, unit, _)| step == spec.step.get() && unit == spec.unit)

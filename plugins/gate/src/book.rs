@@ -95,14 +95,18 @@ const BOOK_FETCH_COST: u32 = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Market {
     Spot,
-    UsdtPerp,
+    /// Every contract market: the three of them differ only in the path
+    /// they are fetched from, not in the shape they answer with —
+    /// confirmed live 2026-09-02 against `futures/usdt`, `futures/btc`
+    /// and `delivery/usdt`, all three returning `{s, p}` levels.
+    Contract,
 }
 
 impl Market {
     const fn symbol_param(self) -> &'static str {
         match self {
             Self::Spot => "currency_pair",
-            Self::UsdtPerp => "contract",
+            Self::Contract => "contract",
         }
     }
 }
@@ -167,14 +171,21 @@ pub(crate) fn book_source_spot(client: VenueClient) -> GateBookSource {
     }
 }
 
-/// Builds the USDT perpetual book source, registered under
-/// [`crate::USDT_PERP_ID`].
+/// Builds a contract-market book source.
+///
+/// Gate splits its contract markets by settlement currency and by whether
+/// they expire, and each is a different path — but all three answer with
+/// the same `{s, p}` levels, so one implementation serves them.
 #[must_use]
-pub(crate) fn book_source_usdt_perp(client: VenueClient) -> GateBookSource {
+pub(crate) fn book_source_contract(
+    source_id: &'static str,
+    path: &str,
+    client: VenueClient,
+) -> GateBookSource {
     GateBookSource {
-        source_id: crate::USDT_PERP_ID,
-        market: Market::UsdtPerp,
-        url: format!("{BASE_URL}/futures/usdt/order_book"),
+        source_id,
+        market: Market::Contract,
+        url: format!("{BASE_URL}/{path}/order_book"),
         client,
     }
 }
@@ -295,7 +306,7 @@ impl BookSource for GateBookSource {
                 let asks = spot_side(book.asks, price_scale, qty_scale)?;
                 (ts, bids, asks, price_scale, qty_scale)
             }
-            Market::UsdtPerp => {
+            Market::Contract => {
                 let book: FuturesBook =
                     serde_json::from_slice(&body).map_err(SourceError::decode)?;
                 let ts = futures_timestamp(book.current.get()).ok_or_else(|| {
@@ -332,7 +343,7 @@ impl BookSource for GateBookSource {
 
 #[cfg(test)]
 mod tests {
-    use super::{book_source_spot, book_source_usdt_perp};
+    use super::{book_source_contract, book_source_spot};
     use senken_marketdata::SourceSymbol;
     use senken_marketdata::book::BookSource;
     use senken_venue::{LimitGroup, VenueClient};
@@ -384,7 +395,8 @@ mod tests {
     #[tokio::test]
     async fn futures_levels_carry_a_whole_contract_count_not_a_fraction() {
         let server = serving(PERP_BOOK).await;
-        let source = book_source_usdt_perp(test_client()).with_url(server.uri());
+        let source = book_source_contract(crate::USDT_PERP_ID, "futures/usdt", test_client())
+            .with_url(server.uri());
 
         let snapshot = source.book_snapshot(&btc_usdt(), 5).await.unwrap();
 
@@ -399,7 +411,8 @@ mod tests {
     async fn futures_current_is_fractional_seconds_not_milliseconds() {
         // Reading 1788332492.975 as milliseconds would land in 1970.
         let server = serving(PERP_BOOK).await;
-        let source = book_source_usdt_perp(test_client()).with_url(server.uri());
+        let source = book_source_contract(crate::USDT_PERP_ID, "futures/usdt", test_client())
+            .with_url(server.uri());
 
         let snapshot = source.book_snapshot(&btc_usdt(), 5).await.unwrap();
 
