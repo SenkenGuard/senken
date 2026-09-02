@@ -22,7 +22,11 @@ mod bars;
 mod book;
 mod feed;
 
-pub use bars::{HtxSpotBarSource, bar_source_spot};
+pub use bars::{HtxBarSource, bar_source_derivative, bar_source_spot};
+
+/// The host every HTX derivative market is served from — spot alone
+/// lives on `api.huobi.pro`.
+const DERIVATIVE_BASE: &str = "https://api.hbdm.com";
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "htx-spot";
@@ -283,7 +287,49 @@ impl Plugin for HtxPlugin {
         )));
         // Spot only: the three derivative markets' depth endpoints were
         // not recorded live this session (see `book`'s own module docs).
-        context.register_book_source(Arc::new(crate::book::book_source_spot(client)));
+        context.register_book_source(Arc::new(crate::book::book_source_spot(client.clone())));
+
+        // The three derivative markets each have their own host path and
+        // their own name for the symbol parameter, but answer the same
+        // row and level shapes as spot — confirmed live by fetching all
+        // four.
+        for (source_id, path, symbol_param) in [
+            (LINEAR_ID, "linear-swap-ex", "contract_code"),
+            (INVERSE_SWAP_ID, "swap-ex", "contract_code"),
+            (INVERSE_FUTURES_ID, "", "symbol"),
+        ] {
+            let prefix = if path.is_empty() {
+                DERIVATIVE_BASE.to_owned()
+            } else {
+                format!("{DERIVATIVE_BASE}/{path}")
+            };
+            context.register_bar_source(Arc::new(crate::bars::bar_source_derivative(
+                source_id,
+                format!("{prefix}/market/history/kline"),
+                symbol_param,
+                client.clone(),
+                Arc::new(senken_plugin::SystemClock),
+            )));
+            context.register_book_source(Arc::new(crate::book::book_source_derivative(
+                source_id,
+                format!("{prefix}/market/depth"),
+                symbol_param,
+                client.clone(),
+            )));
+        }
+
+        // Four markets, four sockets: only spot lives on `api.huobi.pro`,
+        // and each derivative host carries only its own market.
+        for (source_id, ws) in [
+            (LINEAR_ID, "wss://api.hbdm.com/linear-swap-ws"),
+            (INVERSE_SWAP_ID, "wss://api.hbdm.com/swap-ws"),
+            (INVERSE_FUTURES_ID, "wss://api.hbdm.com/ws"),
+        ] {
+            context.register_feed_source(Arc::new(crate::feed::HtxFeedSource::for_market(
+                source_id, ws,
+            )));
+        }
+        let _ = &client;
         context.register_feed_source(Arc::new(crate::feed::HtxFeedSource::new()));
         Ok(())
     }

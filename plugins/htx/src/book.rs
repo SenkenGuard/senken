@@ -123,6 +123,8 @@ struct Tick {
 /// request per call, never a maintained local book.
 #[derive(Debug, Clone)]
 pub(crate) struct HtxBookSource {
+    source_id: &'static str,
+    symbol_param: &'static str,
     url: String,
     client: VenueClient,
 }
@@ -142,7 +144,30 @@ impl HtxBookSource {
 #[must_use]
 pub(crate) fn book_source_spot(client: VenueClient) -> HtxBookSource {
     HtxBookSource {
+        source_id: crate::SPOT_ID,
+        symbol_param: "symbol",
         url: DEPTH_URL.to_owned(),
+        client,
+    }
+}
+
+/// Builds a depth source for one of HTX's derivative markets.
+///
+/// Each derivative lives on its own host path and names its symbol
+/// differently — the swaps take `contract_code`, the dated futures take
+/// `symbol` — but all three answer the same `tick.bids`/`tick.asks` shape
+/// as spot, confirmed live 2026-09-02 by fetching all four.
+#[must_use]
+pub(crate) fn book_source_derivative(
+    source_id: &'static str,
+    url: impl Into<String>,
+    symbol_param: &'static str,
+    client: VenueClient,
+) -> HtxBookSource {
+    HtxBookSource {
+        source_id,
+        symbol_param,
+        url: url.into(),
         client,
     }
 }
@@ -205,7 +230,7 @@ fn scaled(raw: &str, scale: u8) -> Result<i64, SourceError> {
 #[async_trait]
 impl BookSource for HtxBookSource {
     fn source_id(&self) -> &str {
-        crate::SPOT_ID
+        self.source_id
     }
 
     async fn book_snapshot(
@@ -215,8 +240,9 @@ impl BookSource for HtxBookSource {
     ) -> Result<BookSnapshot, SourceError> {
         let depth = depth.clamp(1, MAX_DEPTH);
         let url = format!(
-            "{}?symbol={}&depth={depth}&type=step0",
+            "{}?{}={}&depth={depth}&type=step0",
             self.url,
+            self.symbol_param,
             symbol.as_str()
         );
         let body = self.client.get(&url, BOOK_FETCH_COST).await?;

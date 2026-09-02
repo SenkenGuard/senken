@@ -47,13 +47,37 @@ pub(crate) const HTX_SPOT_WS_URL: &str = "wss://api.huobi.pro/ws";
 
 /// HTX's public spot trade channel.
 pub(crate) struct HtxTradesProtocol {
+    /// Which host this market streams from — the four are separate
+    /// sockets, and only spot lives on `api.huobi.pro`.
+    url: String,
+    /// Whether this market's symbols are lower case. Spot's are
+    /// (`btcusdt`); every derivative's are upper case with a separator
+    /// (`BTC-USDT`, `BTC260904`), so the channel must not be case-folded
+    /// for them.
+    lowercase_symbols: bool,
     source_id: Box<str>,
     symbols: Arc<dyn SymbolMap>,
 }
 
 impl HtxTradesProtocol {
+    /// A protocol for HTX's spot market.
+    #[cfg(test)]
     pub(crate) fn new(source_id: impl Into<Box<str>>, symbols: Arc<dyn SymbolMap>) -> Self {
+        Self::for_market(source_id, HTX_SPOT_WS_URL, true, symbols)
+    }
+
+    /// A protocol for one of HTX's derivative markets, each on its own
+    /// host — confirmed live 2026-09-02, all three answering the same
+    /// gzip-compressed `trade.detail` frames as spot.
+    pub(crate) fn for_market(
+        source_id: impl Into<Box<str>>,
+        url: impl Into<String>,
+        lowercase_symbols: bool,
+        symbols: Arc<dyn SymbolMap>,
+    ) -> Self {
         Self {
+            url: url.into(),
+            lowercase_symbols,
             source_id: source_id.into(),
             symbols,
         }
@@ -63,13 +87,18 @@ impl HtxTradesProtocol {
         let symbol = self.symbols.source_symbol(instrument).ok_or_else(|| {
             ConnectionError::new(format!("no HTX native symbol known for {instrument}"))
         })?;
+        let symbol = if self.lowercase_symbols {
+            symbol.to_lowercase()
+        } else {
+            symbol
+        };
         Ok(format!("market.{symbol}.trade.detail"))
     }
 }
 
 impl VenueProtocol for HtxTradesProtocol {
     fn url(&self) -> &str {
-        HTX_SPOT_WS_URL
+        &self.url
     }
 
     fn venue(&self) -> &'static str {
@@ -174,12 +203,25 @@ struct Ping {
 /// markets each stream from a different host, none captured here.
 pub(crate) struct HtxFeedSource {
     source_ids: Vec<String>,
+    url: String,
+    lowercase_symbols: bool,
 }
 
 impl HtxFeedSource {
     pub(crate) fn new() -> Self {
         Self {
             source_ids: vec![crate::SPOT_ID.to_owned()],
+            url: HTX_SPOT_WS_URL.to_owned(),
+            lowercase_symbols: true,
+        }
+    }
+
+    /// A feed for one of HTX's derivative markets.
+    pub(crate) fn for_market(source_id: &str, url: impl Into<String>) -> Self {
+        Self {
+            source_ids: vec![source_id.to_owned()],
+            url: url.into(),
+            lowercase_symbols: false,
         }
     }
 }
@@ -194,7 +236,12 @@ impl FeedSource for HtxFeedSource {
     }
 
     fn protocol(&self, symbols: Arc<dyn SymbolMap>) -> Arc<dyn VenueProtocol> {
-        Arc::new(HtxTradesProtocol::new(crate::SPOT_ID, symbols))
+        Arc::new(HtxTradesProtocol::for_market(
+            self.source_ids[0].as_str(),
+            self.url.clone(),
+            self.lowercase_symbols,
+            symbols,
+        ))
     }
 }
 
@@ -311,5 +358,61 @@ mod tests {
     fn garbage_input_yields_no_updates_rather_than_a_panic() {
         assert!(protocol().parse_message("not json").is_empty());
         assert!(protocol().parse_message("{}").is_empty());
+    }
+
+    /// A derivative market streams from its own host and its symbols are
+    /// upper case with a separator — case-folding them, as spot needs,
+    /// would name a channel the venue does not have.
+    #[test]
+    fn a_derivative_market_keeps_its_symbol_case_and_its_own_host() {
+        struct Identity;
+        impl SymbolMap for Identity {
+            fn source_symbol(&self, instrument: &InstrumentId) -> Option<String> {
+                Some(instrument.symbol().to_owned())
+            }
+        }
+        let protocol = HtxTradesProtocol::for_market(
+            crate::LINEAR_ID,
+            "wss://api.hbdm.com/linear-swap-ws",
+            false,
+            Arc::new(Identity),
+        );
+
+        assert_eq!(protocol.url(), "wss://api.hbdm.com/linear-swap-ws");
+        let frame: serde_json::Value = serde_json::from_str(
+            &protocol
+                .subscribe_frame(&InstrumentId::new(crate::LINEAR_ID, "BTCUSDT").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(frame["sub"], "market.BTCUSDT.trade.detail");
+    }
+
+    /// Byte-for-byte a frame from the linear swap socket, captured live
+    /// 2026-09-02 — the same shape as spot's, from a different host.
+    #[test]
+    fn a_linear_swap_frame_decodes_to_a_price() {
+        struct Identity;
+        impl SymbolMap for Identity {
+            fn source_symbol(&self, instrument: &InstrumentId) -> Option<String> {
+                Some(instrument.symbol().to_owned())
+            }
+        }
+        let protocol = HtxTradesProtocol::for_market(
+            crate::LINEAR_ID,
+            "wss://api.hbdm.com/linear-swap-ws",
+            false,
+            Arc::new(Identity),
+        );
+        let frame = r#"{"ch":"market.BTC-USDT.trade.detail","ts":1788345407897,"tick":{"id":100127664307807,"ts":1788345407895,"data":[{"id":1001276643078070000,"ts":1788345407895,"tradeId":100127664307807,"amount":1,"quantity":0.0001,"trade_turnover":7.65,"price":76540,"direction":"buy"}]}}"#;
+
+        let updates = protocol.parse_message(frame);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].0,
+            InstrumentId::new(crate::LINEAR_ID, "BTCUSDT").unwrap(),
+            "the separator is stripped exactly as this plugin's catalog strips it"
+        );
     }
 }

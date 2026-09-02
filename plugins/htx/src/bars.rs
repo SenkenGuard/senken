@@ -112,23 +112,25 @@ struct RawCandle {
 /// [`Clock`] (this endpoint sends no confirmation flag — see the module
 /// docs).
 #[derive(Clone)]
-pub struct HtxSpotBarSource {
+pub struct HtxBarSource {
+    source_id: &'static str,
+    symbol_param: &'static str,
     url: String,
     client: VenueClient,
     clock: Arc<dyn Clock>,
     supported: Vec<BarSpec>,
 }
 
-impl std::fmt::Debug for HtxSpotBarSource {
+impl std::fmt::Debug for HtxBarSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HtxSpotBarSource")
+        f.debug_struct("HtxBarSource")
             .field("url", &self.url)
             .field("supported", &self.supported)
             .finish_non_exhaustive()
     }
 }
 
-impl HtxSpotBarSource {
+impl HtxBarSource {
     /// Points this source at a different URL — a local stand-in in tests.
     #[must_use]
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
@@ -139,17 +141,57 @@ impl HtxSpotBarSource {
     /// No `from`/`to` at all — see the module docs on point 5.
     fn candles_url(&self, symbol: &str, period: &str) -> String {
         format!(
-            "{}?symbol={symbol}&period={period}&size={MAX_ROWS}",
-            self.url
+            "{}?{}={symbol}&period={period}&size={MAX_ROWS}",
+            self.url, self.symbol_param,
         )
     }
 }
 
 /// The HTX spot bar source, registered under [`crate::SPOT_ID`].
 #[must_use]
-pub fn bar_source_spot(client: VenueClient, clock: Arc<dyn Clock>) -> HtxSpotBarSource {
-    HtxSpotBarSource {
+pub fn bar_source_spot(client: VenueClient, clock: Arc<dyn Clock>) -> HtxBarSource {
+    HtxBarSource {
+        source_id: crate::SPOT_ID,
+        symbol_param: "symbol",
         url: SPOT_KLINE_URL.to_owned(),
+        client,
+        clock,
+        supported: supported_specs(),
+    }
+}
+
+/// A bar source for one of HTX's derivative markets.
+///
+/// Each lives on its own host path and names its symbol differently — the
+/// swap markets take `contract_code`, the dated futures take `symbol` —
+/// but all three answer the **same row shape as spot**, confirmed live
+/// 2026-09-02 by fetching all four:
+///
+/// ```text
+/// linear-swap-ex/market/history/kline  contract_code=BTC-USDT
+/// swap-ex/market/history/kline         contract_code=BTC-USD
+/// market/history/kline                 symbol=BTC260904
+/// ```
+///
+/// # `vol` means something different here
+///
+/// On spot, `vol` is the quote-asset turnover. On every derivative market
+/// it is a **contract count**, and `amount` is the base asset — so the
+/// quote figure this source publishes on spot has no counterpart here and
+/// is left absent rather than filled with a contract count that would
+/// read as money.
+#[must_use]
+pub fn bar_source_derivative(
+    source_id: &'static str,
+    url: impl Into<String>,
+    symbol_param: &'static str,
+    client: VenueClient,
+    clock: Arc<dyn Clock>,
+) -> HtxBarSource {
+    HtxBarSource {
+        source_id,
+        symbol_param,
+        url: url.into(),
         client,
         clock,
         supported: supported_specs(),
@@ -166,9 +208,9 @@ fn normalize(raw: &str) -> Result<String, SourceError> {
 }
 
 #[async_trait]
-impl BarSource for HtxSpotBarSource {
+impl BarSource for HtxBarSource {
     fn source_id(&self) -> &str {
-        crate::SPOT_ID
+        self.source_id
     }
 
     fn supported(&self) -> &[BarSpec] {
@@ -263,7 +305,14 @@ impl BarSource for HtxSpotBarSource {
                 low: scaled(&low, price_scale)?,
                 close: scaled(&close, price_scale)?,
                 volume: Volume::Real(scaled(&amount, qty_scale)?),
-                quote_volume: Some(scaled(&vol, quote_scale)?),
+                // Spot's `vol` is a quote turnover; every derivative
+                // market's is a contract count, which is not money and
+                // must not be published as one.
+                quote_volume: if self.source_id == crate::SPOT_ID {
+                    Some(scaled(&vol, quote_scale)?)
+                } else {
+                    None
+                },
                 trade_count: Some(count),
                 taker_buy_volume: None,
             });
