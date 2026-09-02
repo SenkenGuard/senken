@@ -4566,6 +4566,7 @@ dependencies = [
  "senken-marketdata",
  "senken-plugin",
  "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",

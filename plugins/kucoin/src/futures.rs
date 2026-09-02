@@ -340,11 +340,8 @@ impl BookSource for KucoinFuturesBookSource {
                 price: at(price, price_scale)?,
                 size: at(size, qty_scale)?,
             };
-            if *is_bid {
-                bids.push(level)
-            } else {
-                asks.push(level)
-            }
+            let side = if *is_bid { &mut bids } else { &mut asks };
+            side.push(level);
         }
         bids.truncate(depth);
         asks.truncate(depth);
