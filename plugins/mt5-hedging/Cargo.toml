@@ -16,10 +16,16 @@ homepage.workspace = true
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
+senken-plugin = { workspace = true }
 senken-sim-core = { workspace = true }
+senken-storage = { workspace = true }
 senken-trade = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+senken-trade = { workspace = true, features = ["engine"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

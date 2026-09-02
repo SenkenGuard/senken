@@ -47,6 +47,7 @@ senken-plugin-poloniex = { workspace = true }
 senken-plugin-whitebit = { workspace = true }
 # Not a venue: the built-in paper broker, which registers a trade adapter
 # rather than a market data source and reaches no network.
+senken-plugin-mt5-hedging = { workspace = true }
 senken-plugin-simulator = { workspace = true }
 senken-runtime = { workspace = true }
 # The simulator keeps its books through `Storage`, and this is where the

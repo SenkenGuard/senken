@@ -31,6 +31,7 @@ use senken_plugin_htx::HtxPlugin;
 use senken_plugin_kraken::KrakenPlugin;
 use senken_plugin_kucoin::KucoinPlugin;
 use senken_plugin_mexc::MexcPlugin;
+use senken_plugin_mt5_hedging::adapter::Mt5HedgingPlugin;
 use senken_plugin_okx::OkxPlugin;
 use senken_plugin_phemex::PhemexPlugin;
 use senken_plugin_poloniex::PoloniexPlugin;
@@ -158,6 +159,11 @@ fn build_runtime(
         // plugin below it is constructed with the data directory rather
         // than as a unit struct.
         .plugin(SimulatorPlugin::new(senken_storage::Storage::new(data_dir)))
+        // Same reason: a simulated MT5 hedging account keeps its tickets
+        // on disk.
+        .plugin(Mt5HedgingPlugin::new(senken_storage::Storage::new(
+            data_dir,
+        )))
         .plugin(BinancePlugin)
         .plugin(UpbitPlugin)
         .plugin(PhemexPlugin)

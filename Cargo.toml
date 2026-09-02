@@ -54,6 +54,7 @@ senken-plugin-upbit = { path = "plugins/upbit", version = "0.0.5" }
 senken-plugin-binance = { path = "plugins/binance", version = "0.0.5" }
 # The built-in paper broker. Not a venue plugin: it registers a
 # `TradeAdapter`, not a market data source, and reaches no network.
+senken-plugin-mt5-hedging = { path = "plugins/mt5-hedging", version = "0.0.5" }
 senken-plugin-simulator = { path = "plugins/simulator", version = "0.0.5" }
 senken-plugin-bitget = { path = "plugins/bitget", version = "0.0.5" }
 senken-plugin-bitmex = { path = "plugins/bitmex", version = "0.0.5" }

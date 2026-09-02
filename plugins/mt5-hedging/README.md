@@ -52,8 +52,14 @@ and market profit, partial close that leaves the ticket's number, open
 price and accrued swap intact, and `close_by` for settling a locked pair
 in one operation.
 
-Not yet implemented: the order lifecycle (order types, deviation, stops
-level, the order/deal/position history) and the `TradeAdapter`
-implementation that joins all of this into a registrable adapter. Until
-those land this crate is a set of correct calculations, not an account
-anyone can trade — and this file will keep saying so.
+The `TradeAdapter` is implemented and registered, so the account is real:
+it opens, takes market orders on both sides of one symbol, holds a ticket
+per deal, accrues swap on rollover, triggers attached stops, applies the
+stop out before every read, refuses to open while margin called, and
+reports margin level and free margin the way a terminal does. An investor
+login reads it and places nothing.
+
+Not yet implemented: pending order types (limit, stop, stop-limit are
+declared and fill at market for now), requotes, the stops level and freeze
+level, the order/deal/position three-tier history, and the UI that shows
+all of this. Until those land this file will keep saying so.

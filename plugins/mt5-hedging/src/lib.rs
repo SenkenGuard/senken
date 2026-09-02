@@ -29,6 +29,8 @@
 
 /// One account: its cash, its tickets, and its two risk events.
 pub mod account;
+/// The `TradeAdapter` that joins the rules into a usable account.
+pub mod adapter;
 /// Closing a ticket: in part, in full, or against an opposite one.
 pub mod close;
 /// Commission, kept separate from swap and from market profit.
