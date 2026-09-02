@@ -1,10 +1,7 @@
 <script lang="ts">
-	// Dashboard route: real, server-backed workspaces and widget grid — the
-	// `packages/web/src/lib/mock/dashboard.ts` shapes (`WidgetInstance`,
-	// `Workspace`, `CatalogEntry`) raised to the server rather than kept as
-	// UI-only fixtures. `routes/+page.svelte` (the pre-existing local-only
-	// demo dashboard) is left exactly as it is — this is a new route, not a
-	// replacement of that one.
+	// Dashboard route: real, server-backed workspaces and widget grid.
+	// `routes/+page.ts` redirects `/` here — this is the only dashboard the
+	// app renders now, not a second one alongside a local-only demo.
 	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import {

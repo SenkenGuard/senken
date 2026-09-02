@@ -57,6 +57,8 @@ import type {
 	RegistryPage,
 	IndicatorEntryDto,
 	PublishIndicatorRequest,
+	SetHandleRequest,
+	HandleResponse,
 	StorageReportDto,
 	DeleteStorageRequest,
 	DeleteStorageResponse,
@@ -163,12 +165,19 @@ class ApiClient {
 				const body = await safeJson(response);
 				throw new UnauthorizedError(errorBodyMessage(body) ?? undefined);
 			}
-			case 'forbidden':
+			case 'forbidden': {
 				// B16 point 3: 403 is authenticated-but-not-permitted, never
 				// a logout. It becomes a typed error a caller can turn into
 				// a message; it must never touch the credential or
-				// connection state.
-				throw new ForbiddenError();
+				// connection state. The server's own reason (e.g. "choose a
+				// registry handle before publishing") is read the same way
+				// the 401 branch above reads its own — a generic "you do not
+				// have permission" here is exactly the class of bug this
+				// project already fixed once for a rejected login showing
+				// "Session expired".
+				const body = await safeJson(response);
+				throw new ForbiddenError(errorBodyMessage(body) ?? undefined);
+			}
 			case 'http-error': {
 				const body = await safeJson(response);
 				throw new HttpError(`Request to ${path} failed with ${response.status}.`, response.status, body);
@@ -759,6 +768,21 @@ class ApiClient {
 		);
 	}
 
+	/** `GET /api/registry/handle`: the caller's own claimed registry handle,
+	 * or `null` if they have not chosen one yet — `publishIndicator` 403s
+	 * with "choose a registry handle before publishing" until they have. */
+	async getRegistryHandle(): Promise<HandleResponse> {
+		return this.request<HandleResponse>('/api/registry/handle');
+	}
+
+	/** `PUT /api/registry/handle`: claims, or replaces, the caller's own
+	 * registry handle — the human-readable address other users type instead
+	 * of the caller's raw account id. */
+	async setRegistryHandle(handle: string): Promise<void> {
+		const body: SetHandleRequest = { handle };
+		await this.request<void>('/api/registry/handle', { method: 'PUT', body: JSON.stringify(body) });
+	}
+
 	/**
 	 * `POST /api/registry/indicators/{namespace}/{name}/install`: fetches
 	 * the published source and compiles it right here on this host, the
@@ -793,8 +817,12 @@ class ApiClient {
 				const body = await safeJson(response);
 				throw new UnauthorizedError(errorBodyMessage(body) ?? undefined);
 			}
-			case 'forbidden':
-				throw new ForbiddenError();
+			case 'forbidden': {
+				// Same reasoning as `request`'s own 403 branch above: read
+				// the server's own message rather than a generic default.
+				const body = await safeJson(response);
+				throw new ForbiddenError(errorBodyMessage(body) ?? undefined);
+			}
 			case 'http-error': {
 				const body = await safeJson(response);
 				throw new HttpError(`Request to ${path} failed with ${response.status}.`, response.status, body);

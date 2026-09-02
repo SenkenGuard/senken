@@ -34,18 +34,80 @@
 //! [`WidgetPackageStore::list`].
 
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::io::{Cursor, Write as _};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use senken_storage::{Snapshot, Storage, StorageError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zip::write::SimpleFileOptions;
 
 use super::manifest::{self, ManifestError, ValidatedWidgetContribution};
 
 /// The schema version [`PackageStateFile`] is written under.
 const STATE_SCHEMA_VERSION: u32 = 1;
+
+/// The package id reserved for the widget UI package this server installs
+/// on every fresh start, so the dashboard's "add widget" picker and the
+/// widget-plugin manager show a real, working plugin from the first run —
+/// not an empty list nobody has uploaded anything to yet. It is exactly
+/// `examples/widget-plugins/example-clock` (compiled in rather than
+/// requiring an upload), the same package `examples/widget-plugins/README.md`
+/// tells a plugin author to build one like. `example-quotes`, the other
+/// example there, is deliberately left uninstalled: its zip stays sitting
+/// next to it precisely so there is still something to try the upload flow
+/// with on a fresh install. [`WidgetPackageStore::uninstall`] refuses this
+/// id (an admin disables it instead, the same remedy a built-in indicator
+/// plugin gets in `senken_runtime::plugin_host::PluginOrigin`); everything
+/// else — enable, disable, refresh — goes through the exact same path an
+/// uploaded package does.
+pub const BUILTIN_PACKAGE_ID: &str = "example-clock";
+
+/// This build's own compiled-in `manifest.json` for [`BUILTIN_PACKAGE_ID`]
+/// — the checked-in `examples/widget-plugins/example-clock/manifest.json`,
+/// not a copy, so the built-in can never drift from the example it is.
+const BUILTIN_MANIFEST: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/widget-plugins/example-clock/manifest.json"
+));
+/// This build's own compiled-in `web/index.html` for [`BUILTIN_PACKAGE_ID`]
+/// — see [`BUILTIN_MANIFEST`].
+const BUILTIN_INDEX_HTML: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/widget-plugins/example-clock/web/index.html"
+));
+
+/// Packs [`BUILTIN_MANIFEST`] and [`BUILTIN_INDEX_HTML`] into the same
+/// zip-archive shape [`WidgetPackageStore::install`] expects from an
+/// upload, so the built-in package goes through the exact same validated,
+/// atomic install path as one a plugin author zipped up by hand — no
+/// second way for a package to land on disk.
+fn builtin_package_archive() -> Vec<u8> {
+    let mut buffer = Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buffer);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        // Both writes are to an in-memory `Cursor` over bytes this binary
+        // itself compiled in — a failure here would mean a broken build,
+        // not a caller mistake, so `expect` names exactly that.
+        writer
+            .start_file("manifest.json", options)
+            .expect("in-memory zip write");
+        writer
+            .write_all(BUILTIN_MANIFEST.as_bytes())
+            .expect("in-memory zip write");
+        writer
+            .start_file("web/index.html", options)
+            .expect("in-memory zip write");
+        writer
+            .write_all(BUILTIN_INDEX_HTML.as_bytes())
+            .expect("in-memory zip write");
+        writer.finish().expect("in-memory zip write");
+    }
+    buffer.into_inner()
+}
 
 /// An uploaded archive with more entries than this is rejected outright,
 /// before a single byte is extracted — a cheap bound against a
@@ -85,6 +147,11 @@ pub enum WidgetPackageError {
     /// No package with this id is installed.
     #[error("no widget plugin package with id {0:?} is installed")]
     NotFound(String),
+    /// A caller tried to [`WidgetPackageStore::uninstall`] the package
+    /// reserved for [`BUILTIN_PACKAGE_ID`]. Disabling it is still allowed —
+    /// only removing its files outright is not.
+    #[error("the built-in {0:?} package cannot be uninstalled; disable it instead")]
+    CannotUninstallBuiltIn(String),
     /// A requested asset path is absolute or attempts to escape the
     /// package's own `web/` directory.
     #[error("asset path {0:?} is not a valid relative path")]
@@ -141,6 +208,12 @@ pub struct InstalledPackage {
     /// since a disabled or failed package contributes nothing to the
     /// effective catalog.
     pub widgets: Vec<ValidatedWidgetContribution>,
+    /// `true` for [`BUILTIN_PACKAGE_ID`] — ships with this server rather
+    /// than having been uploaded or dropped into the data directory by
+    /// hand. Derived from the id alone (no separate on-disk marker to ever
+    /// drift from it); an admin may still disable a built-in, just never
+    /// uninstall one — see [`WidgetPackageStore::uninstall`].
+    pub is_builtin: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -243,6 +316,7 @@ impl WidgetPackageStore {
     /// [`list`](Self::list) already read.
     fn load_one(path: &Path, dir_name: String, state: &PackageStateFile) -> InstalledPackage {
         let enabled = state.enabled.get(&dir_name).copied().unwrap_or(true);
+        let is_builtin = dir_name == BUILTIN_PACKAGE_ID;
         let manifest_bytes = match std::fs::read(path.join("manifest.json")) {
             Ok(bytes) => bytes,
             Err(source) => {
@@ -255,6 +329,7 @@ impl WidgetPackageStore {
                     status: PackageStatus::Failed(format!("manifest.json unreadable: {source}")),
                     digest: String::new(),
                     widgets: Vec::new(),
+                    is_builtin,
                 };
             }
         };
@@ -276,6 +351,7 @@ impl WidgetPackageStore {
                     status,
                     digest,
                     widgets,
+                    is_builtin,
                 }
             }
             Ok(parsed) => InstalledPackage {
@@ -290,6 +366,7 @@ impl WidgetPackageStore {
                 )),
                 digest,
                 widgets: Vec::new(),
+                is_builtin,
             },
             Err(source) => InstalledPackage {
                 id: dir_name.clone(),
@@ -300,6 +377,7 @@ impl WidgetPackageStore {
                 status: PackageStatus::Failed(source.to_string()),
                 digest,
                 widgets: Vec::new(),
+                is_builtin,
             },
         }
     }
@@ -401,6 +479,9 @@ impl WidgetPackageStore {
     /// installed; otherwise as [`WidgetPackageError::Io`]/
     /// [`WidgetPackageError::Storage`].
     pub fn uninstall(&self, id: &str) -> Result<(), WidgetPackageError> {
+        if id == BUILTIN_PACKAGE_ID {
+            return Err(WidgetPackageError::CannotUninstallBuiltIn(id.to_owned()));
+        }
         let dir = self.packages_dir().join(id);
         if !dir.is_dir() {
             return Err(WidgetPackageError::NotFound(id.to_owned()));
@@ -409,6 +490,30 @@ impl WidgetPackageStore {
         let mut state = self.read_state()?;
         state.enabled.remove(id);
         self.write_state(&state)
+    }
+
+    /// Installs the built-in [`BUILTIN_PACKAGE_ID`] package if it is not
+    /// already present on disk — called once by the runtime at startup,
+    /// never by [`open`](Self::open) itself, so a caller opening a store
+    /// purely to test or inspect it (as every test in this module does)
+    /// never gets a package it did not ask for.
+    ///
+    /// Goes through [`install`](Self::install) exactly like an upload
+    /// would, so the built-in gets the same validated, atomic path rather
+    /// than a second one that could drift from it. Already being present
+    /// (from an earlier run) is a no-op, not a reinstall — an admin's own
+    /// disable, or a future version's changed defaults saved into config,
+    /// is never silently clobbered by this running again on every start.
+    ///
+    /// # Errors
+    /// As [`install`](Self::install) — a failure here means this binary
+    /// shipped a broken built-in, not a caller mistake.
+    pub fn ensure_builtin_installed(&self) -> Result<(), WidgetPackageError> {
+        if self.packages_dir().join(BUILTIN_PACKAGE_ID).is_dir() {
+            return Ok(());
+        }
+        self.install(&builtin_package_archive())?;
+        Ok(())
     }
 
     /// Resolves `rel_path` (relative to package `id`'s own `web/`
@@ -778,6 +883,82 @@ mod tests {
         );
         let err = store.set_enabled("acme-widgets", true).unwrap_err();
         assert!(matches!(err, WidgetPackageError::NotFound(_)));
+    }
+
+    #[test]
+    fn ensure_builtin_installed_registers_a_widget_on_a_fresh_store() {
+        let (_dir, store) = temp_store();
+        assert!(
+            store.list().unwrap().is_empty(),
+            "a fresh store must start with nothing installed"
+        );
+
+        store.ensure_builtin_installed().unwrap();
+
+        let packages = store.list().unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].id, super::BUILTIN_PACKAGE_ID);
+        assert!(packages[0].is_builtin);
+        assert_eq!(packages[0].status, PackageStatus::Active);
+        assert!(
+            !packages[0].widgets.is_empty(),
+            "the built-in package must contribute at least one widget"
+        );
+
+        let catalog = store.effective_widget_catalog().unwrap();
+        assert!(
+            catalog
+                .iter()
+                .any(|w| w.widget_type_id.starts_with(super::BUILTIN_PACKAGE_ID)),
+            "the built-in's widget must reach the effective catalog same as any other package's"
+        );
+    }
+
+    #[test]
+    fn ensure_builtin_installed_is_a_no_op_once_already_present() {
+        let (_dir, store) = temp_store();
+        store.ensure_builtin_installed().unwrap();
+        store.set_enabled(super::BUILTIN_PACKAGE_ID, false).unwrap();
+
+        // Mutate first, then prove calling this again does not clobber the
+        // admin's own choice — a second install would silently re-enable
+        // whatever this call flipped off.
+        store.ensure_builtin_installed().unwrap();
+
+        let packages = store.list().unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(
+            packages[0].status,
+            PackageStatus::Disabled,
+            "calling ensure_builtin_installed again must not re-enable a package an admin disabled"
+        );
+    }
+
+    #[test]
+    fn the_builtin_package_can_be_disabled_but_never_uninstalled() {
+        let (_dir, store) = temp_store();
+        store.ensure_builtin_installed().unwrap();
+
+        // Mutate first: prove disabling actually works before proving
+        // uninstall is refused, so a bug that broke both would not read as
+        // "uninstall correctly refused".
+        store.set_enabled(super::BUILTIN_PACKAGE_ID, false).unwrap();
+        assert_eq!(
+            store.list().unwrap()[0].status,
+            PackageStatus::Disabled,
+            "a built-in must still be disable-able"
+        );
+        store.set_enabled(super::BUILTIN_PACKAGE_ID, true).unwrap();
+
+        let err = store.uninstall(super::BUILTIN_PACKAGE_ID).unwrap_err();
+        assert!(
+            matches!(err, WidgetPackageError::CannotUninstallBuiltIn(id) if id == super::BUILTIN_PACKAGE_ID)
+        );
+        assert_eq!(
+            store.list().unwrap().len(),
+            1,
+            "a refused uninstall must leave the package exactly as it was"
+        );
     }
 
     #[test]

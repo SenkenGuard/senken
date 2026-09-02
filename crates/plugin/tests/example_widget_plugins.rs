@@ -19,9 +19,13 @@ use zip::write::SimpleFileOptions;
 /// manifest directory so the test works regardless of the caller's current
 /// directory.
 fn example_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/widget-plugins")
-        .join(name)
+    examples_root().join(name)
+}
+
+/// `examples/widget-plugins/`, resolved from this crate's own manifest
+/// directory.
+fn examples_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/widget-plugins")
 }
 
 /// Zips exactly `manifest.json` and `web/index.html` out of `dir` — the
@@ -105,6 +109,41 @@ fn the_example_quotes_plugin_installs_and_declares_itself_mock() {
          the host's mockup label comes from this field, never from the \
          widget's own rendered output"
     );
+}
+
+/// `examples/widget-plugins/README.md` also ships a pre-built `<name>.zip`
+/// next to each example, so trying the upload flow needs no `zip` command
+/// at all. This proves that checked-in archive installs for real, through
+/// the same [`WidgetPackageStore`] the upload handler uses — if an editor
+/// changes `manifest.json` or `web/index.html` without rebuilding the zip,
+/// this is where that drift shows up, rather than a user's first upload
+/// silently installing stale content.
+fn assert_prebuilt_zip_installs(name: &str, expected_widget_type_id: &str) {
+    let dir = TempDir::new().unwrap();
+    let store = WidgetPackageStore::open(dir.path()).unwrap();
+
+    let archive_path = examples_root().join(format!("{name}.zip"));
+    let archive = std::fs::read(&archive_path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", archive_path.display()));
+
+    let id = store
+        .install(&archive)
+        .expect("the checked-in prebuilt zip must pass real manifest validation");
+    assert_eq!(id, name);
+
+    let catalog = store.effective_widget_catalog().unwrap();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0].widget_type_id, expected_widget_type_id);
+}
+
+#[test]
+fn the_prebuilt_example_clock_zip_matches_its_source_and_installs() {
+    assert_prebuilt_zip_installs("example-clock", "example-clock/clock");
+}
+
+#[test]
+fn the_prebuilt_example_quotes_zip_matches_its_source_and_installs() {
+    assert_prebuilt_zip_installs("example-quotes", "example-quotes/daily-quote");
 }
 
 #[test]

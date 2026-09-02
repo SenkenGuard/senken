@@ -28,19 +28,26 @@ import type { Component } from 'svelte';
 import type { DashboardWidgetDto, WidgetPluginDefinition } from './api';
 import PluginWidgetFrame from './plugin-widget-frame.svelte';
 import EquityCard from '$lib/components/terminal/equity-card.svelte';
-import FlowPanel from '$lib/components/terminal/flow-panel.svelte';
-import HeatPanel from '$lib/components/terminal/heat-panel.svelte';
-import NewsFeed from '$lib/components/terminal/news-feed.svelte';
 import PositionsPanel from '$lib/components/terminal/positions-panel.svelte';
 import RiskPanel from '$lib/components/terminal/risk-panel.svelte';
-import SignalFeed from '$lib/components/terminal/signal-feed.svelte';
-import WatchlistPanel from '$lib/components/terminal/watchlist-panel.svelte';
-import { FEED, FLOW_BARS, HEAT_CELLS, SIGNALS, WATCHLIST } from '$lib/mock/dashboard';
-// Equity, positions and risk stopped being fixtures: they are derived from
-// the accounts and portfolios the trade engine actually holds, through the
-// same three functions the trade dashboard itself renders from. A widget
-// showing invented numbers beside one showing real ones is worse than no
-// widget at all.
+import PositionSizeCard from './position-size-card.svelte';
+// Equity, positions and risk are not fixtures: they are derived from the
+// accounts and portfolios the trade engine actually holds, through the same
+// three functions the trade dashboard itself renders from. The catalog used
+// to ship five more built-ins (watchlist, volatility heatmap, signal desk,
+// buy/sell flow, news tape) that rendered invented numbers next to these —
+// removed rather than merely labelled mock, since a widget that looks real
+// beside one that reads real prices is worse than no widget at all.
+//
+// The position-size calculator beside them needs no market or account data
+// either, but for the opposite reason those five were removed: nothing
+// about its answer is invented, so it is not a mockup and does not belong
+// behind a plugin's sandboxed iframe just to avoid reading `tradeStore` —
+// it is a built-in exactly like the three above, only one that computes
+// its answer from what the user types instead of from an adapter. A
+// third-party plugin author still gets the equivalent shape as an example
+// to build from — see the built-in widget-plugin package this server
+// installs on every fresh start.
 import { tradeStore } from '$lib/state/trade.svelte';
 import { dashboardEquity, dashboardPositions, dashboardRisk } from '$lib/trade/view';
 
@@ -73,10 +80,6 @@ const BUILTIN_RENDERERS: Record<string, ClientWidgetRenderer> = {
 		component: EquityCard as Component<any>,
 		props: () => ({ data: dashboardEquity(tradeStore.ownAccounts, tradeStore.portfolios) })
 	},
-	'senken/watchlist': {
-		component: WatchlistPanel as Component<any>,
-		props: () => ({ rows: WATCHLIST })
-	},
 	'senken/positions': {
 		component: PositionsPanel as Component<any>,
 		props: () => ({ table: dashboardPositions(tradeStore.ownAccounts, tradeStore.portfolios) })
@@ -84,12 +87,14 @@ const BUILTIN_RENDERERS: Record<string, ClientWidgetRenderer> = {
 	'senken/risk': {
 		component: RiskPanel as Component<any>,
 		props: () => ({ data: dashboardRisk(tradeStore.ownAccounts, tradeStore.portfolios) })
-	},
-	'senken/heatmap': { component: HeatPanel as Component<any>, props: () => ({ cells: HEAT_CELLS }) },
-	'senken/signals': { component: SignalFeed as Component<any>, props: () => ({ signals: SIGNALS }) },
-	'senken/flow': { component: FlowPanel as Component<any>, props: () => ({ bars: FLOW_BARS }) },
-	'senken/feed': { component: NewsFeed as Component<any>, props: () => ({ items: FEED }) }
+	}
 };
+
+/** `senken/position-size`'s own `widget_type_id` — handled outside
+ * [`BUILTIN_RENDERERS`] because, unlike the three in that map, it needs
+ * *this placed instance's* own `config` and `onConfigChange`, not shared
+ * trade-engine state every instance reads alike. */
+const POSITION_SIZE_WIDGET_TYPE_ID = 'senken/position-size';
 
 /** Every widget a currently active widget plugin package contributes,
  * keyed by `widget_type_id` — populated by `registerPluginWidgets` once
@@ -119,15 +124,22 @@ export function registerPluginWidgets(definitions: WidgetPluginDefinition[]): vo
  * treats `undefined` as "render a placeholder in this widget's cell,
  * unchanged size, config untouched", never as an error.
  *
- * A built-in widget's props are the same fixed fixture data every call
- * gets (none of today's built-ins read per-instance config yet); a plugin
- * widget's props are built fresh per call from `widget`'s own id and
- * config, since — unlike a built-in — every dynamic widget instance can
- * hold different config the iframe reads back through `config.get`. */
+ * Most built-ins' props are the same shared fixture-free trade-engine
+ * state every call reads alike; `senken/position-size` and every plugin
+ * widget instead build their props fresh per call from `widget`'s own id
+ * and config, since each placed instance of one of those can hold
+ * different config the widget itself reads back and patches. */
 export function rendererFor(
 	widget: DashboardWidgetDto,
 	onConfigChange?: (config: string) => void
 ): ClientWidgetRenderer | undefined {
+	if (widget.widget_type_id === POSITION_SIZE_WIDGET_TYPE_ID) {
+		return {
+			component: PositionSizeCard as Component<any>,
+			props: () => ({ config: widget.config, onConfigChange })
+		};
+	}
+
 	const builtin = BUILTIN_RENDERERS[widget.widget_type_id];
 	if (builtin) return builtin;
 

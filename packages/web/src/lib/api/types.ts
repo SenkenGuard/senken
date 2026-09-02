@@ -168,6 +168,8 @@ export type IndicatorSummaryDto = Schemas['IndicatorSummaryDto'];
 export type RegistryPage = Schemas['RegistryPage'];
 export type IndicatorEntryDto = Schemas['IndicatorEntryDto'];
 export type PublishIndicatorRequest = Schemas['PublishIndicatorRequest'];
+export type SetHandleRequest = Schemas['SetHandleRequest'];
+export type HandleResponse = Schemas['HandleResponse'];
 
 // Storage (`GET /api/storage`, `POST /api/storage/delete`) — what this
 // server is holding on disk, and reclaiming it. Only market data gets a

@@ -244,7 +244,7 @@ different kind of plugin entirely).
 | `GET` | `/api/widget-plugins` | every installed package, enabled or not |
 | `POST` | `/api/widget-plugins` | installs a package from the raw bytes of a zip archive (`Content-Type: application/zip`) |
 | `POST` | `/api/widget-plugins/{id}/enabled` | flips whether this package's widgets are in the effective catalog, without touching its files or any placed instance's stored config |
-| `DELETE` | `/api/widget-plugins/{id}` | removes a package's files entirely |
+| `DELETE` | `/api/widget-plugins/{id}` | removes a package's files entirely — refuses with `400` for the built-in package this server installs on every fresh start (`senken_plugin::widget_package::BUILTIN_PACKAGE_ID`); disable it instead |
 | `POST` | `/api/widget-plugins/refresh` | an explicit rescan of the data directory — refresh is always explicit, never a filesystem watcher, since a watcher can fire mid-copy and read a half-written file |
 | `GET` | `/widget-plugin-assets/{id}/{*path}` | **public**, and deliberately outside `/api` (meant to eventually move to a genuinely separate origin) — streams one static file out of a package's own `web/` directory into the sandboxed iframe. Answers with plain HTTP status codes, not the crate's usual `{error}` JSON envelope: a missing asset 404s the way any static file server does |
 
@@ -253,6 +253,14 @@ is picked up the moment anything calls `list`/`refresh` — this store
 re-reads its directory from disk on every call rather than caching an
 in-memory catalog, so there is nothing to explicitly "scan" the way dynamic
 indicators are (see the next section).
+
+`senken_runtime::RuntimeBuilder::build` calls
+`WidgetPackageStore::ensure_builtin_installed` once at startup, so a fresh
+install's `GET /api/widget-plugins` is never simply empty. It is a real,
+working package — `examples/widget-plugins/example-clock`, compiled straight
+into this binary — not a second, invisible install path: it goes through
+`install` the same as an upload would, an admin can disable it like any
+other package, and a restart never installs a second copy.
 
 ## Dynamic indicators from the data directory
 

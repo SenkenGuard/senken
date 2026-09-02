@@ -35,6 +35,7 @@
 	import SendIcon from '@lucide/svelte/icons/send';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import PackageSearchIcon from '@lucide/svelte/icons/package-search';
+	import AtSignIcon from '@lucide/svelte/icons/at-sign';
 
 	/** A starting point for "publish new", not a design decision this
 	 * screen is inventing — the exact source `registry_handlers.rs`'s own
@@ -63,6 +64,58 @@
 	let publishing = $state(false);
 	let publishError = $state<string | null>(null);
 
+	/** The caller's own claimed registry handle (`alice` in
+	 * `alice/supertrend`), or `null` before they have chosen one —
+	 * `PUT /api/registry/handle`. `publishIndicator` refuses with "choose a
+	 * registry handle before publishing" until this is set, so the publish
+	 * form below offers claiming one right at the point that otherwise
+	 * dead-ends. */
+	let handle = $state<string | null>(null);
+	let handleLoading = $state(true);
+	let claimValue = $state('');
+	let claiming = $state(false);
+	let claimError = $state<string | null>(null);
+
+	async function loadHandle(): Promise<void> {
+		handleLoading = true;
+		try {
+			const response = await apiClient.getRegistryHandle();
+			handle = response.handle ?? null;
+		} catch {
+			// Read-only status check — a failure here does not block
+			// publishing itself; the publish attempt's own error (now the
+			// server's real one, not a generic 403) is the one that matters.
+			handle = null;
+		} finally {
+			handleLoading = false;
+		}
+	}
+
+	async function claimHandle(): Promise<void> {
+		const wanted = claimValue.trim();
+		if (!wanted) {
+			claimError = 'Choose a handle first.';
+			return;
+		}
+		claiming = true;
+		claimError = null;
+		try {
+			await apiClient.setRegistryHandle(wanted);
+			handle = wanted;
+			claimValue = '';
+			toast.success(`Claimed the handle ${wanted}.`);
+		} catch (cause) {
+			claimError = getErrorMessage(cause, `Could not claim ${wanted}.`);
+		} finally {
+			claiming = false;
+		}
+	}
+
+	function onClaimSubmit(event: SubmitEvent): void {
+		event.preventDefault();
+		void claimHandle();
+	}
+
 	function rowKey(namespace: string, name: string): string {
 		return `${namespace}/${name}`;
 	}
@@ -79,7 +132,10 @@
 		}
 	}
 
-	onMount(() => void runSearch());
+	onMount(() => {
+		void runSearch();
+		void loadHandle();
+	});
 
 	function selectTab(next: Tab): void {
 		if (tab === next) return;
@@ -189,10 +245,17 @@
 				Every published indicator is source, not a binary — read it, fork it, or install it as-is.
 			</p>
 		</div>
-		<Button size="sm" onclick={startPublish}>
-			<PlusIcon class="size-3.5" />
-			Publish new
-		</Button>
+		<div class="flex flex-none items-center gap-3">
+			{#if !handleLoading && handle}
+				<span class="font-mono text-[11px] text-dim2" data-testid="registry-handle-status">
+					Publishing as <span class="text-foreground">{handle}</span>
+				</span>
+			{/if}
+			<Button size="sm" onclick={startPublish}>
+				<PlusIcon class="size-3.5" />
+				Publish new
+			</Button>
+		</div>
 	</div>
 
 	<div class="flex min-h-0 flex-1">
@@ -294,6 +357,33 @@
 						<p class="border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[12px] text-destructive">
 							{publishError}
 						</p>
+					{/if}
+					{#if !handleLoading && !handle}
+						<div class="flex flex-col gap-2 border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[12px] text-amber-300">
+							<p>
+								You need a registry handle before you can publish — it's the name your indicators
+								appear under ({claimValue || 'yourhandle'}/{publishName || 'indicator-name'}).
+							</p>
+							<form class="flex items-center gap-1.5" onsubmit={onClaimSubmit}>
+								<AtSignIcon class="size-3.5 flex-none" />
+								<Input
+									bind:value={claimValue}
+									placeholder="your-handle"
+									disabled={claiming}
+									class="h-7 flex-1 border-amber-500/40 bg-transparent text-[12px] text-foreground"
+								/>
+								<Button size="sm" type="submit" disabled={claiming}>
+									{#if claiming}
+										<Spinner class="size-3.5" />
+									{:else}
+										Claim
+									{/if}
+								</Button>
+							</form>
+							{#if claimError}
+								<p class="text-destructive">{claimError}</p>
+							{/if}
+						</div>
 					{/if}
 					<div class="flex items-center gap-2">
 						<Button onclick={submitPublish} disabled={publishing}>

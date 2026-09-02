@@ -257,6 +257,11 @@ pub(crate) struct WidgetPluginPackageDto {
     /// [`WidgetPluginStatusDto::Failed`], since neither contributes
     /// anything to the effective catalog).
     pub widget_count: usize,
+    /// `true` for the package this server installs on every fresh start.
+    /// It can still be disabled like any other package; it cannot be
+    /// uninstalled — `DELETE /api/widget-plugins/{id}` refuses it (see
+    /// `senken_plugin::widget_package::WidgetPackageError::CannotUninstallBuiltIn`).
+    pub is_builtin: bool,
 }
 
 impl From<InstalledPackage> for WidgetPluginPackageDto {
@@ -270,6 +275,7 @@ impl From<InstalledPackage> for WidgetPluginPackageDto {
             widget_count: package.widgets.len(),
             status: package.status.into(),
             digest: package.digest,
+            is_builtin: package.is_builtin,
         }
     }
 }
@@ -953,6 +959,58 @@ mod tests {
             reqwest::StatusCode::OK,
             "a traversal attempt must never be served"
         );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn the_builtin_package_can_be_disabled_over_http_but_never_deleted() {
+        let (_dir, store) = temp_store();
+        store.ensure_builtin_installed().unwrap();
+        let (_identity_dir, identity) = temp_identity();
+        let admin = admin_auth_context(&identity);
+        let (addr, handle) = spawn(test_router(Arc::clone(&store), admin)).await;
+        let client = reqwest::Client::new();
+
+        let listed = client
+            .get(format!("http://{addr}/api/widget-plugins"))
+            .send()
+            .await
+            .unwrap();
+        let body = body_json(listed).await;
+        let packages = body["packages"].as_array().unwrap();
+        let builtin = packages
+            .iter()
+            .find(|p| p["id"] == senken_plugin::widget_package::BUILTIN_PACKAGE_ID)
+            .expect("the built-in package must be listed");
+        assert_eq!(builtin["is_builtin"], true);
+
+        // Mutate first: disabling it must still work before proving delete
+        // is refused.
+        let disable = client
+            .post(format!(
+                "http://{addr}/api/widget-plugins/{}/enabled",
+                senken_plugin::widget_package::BUILTIN_PACKAGE_ID
+            ))
+            .header("content-type", "application/json")
+            .body(json_body(&serde_json::json!({ "enabled": false })))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(disable.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let delete = client
+            .delete(format!(
+                "http://{addr}/api/widget-plugins/{}",
+                senken_plugin::widget_package::BUILTIN_PACKAGE_ID
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body = body_json(delete).await;
+        let message = body["error"].as_str().unwrap();
+        assert!(message.contains("cannot be uninstalled"), "got {message:?}");
 
         handle.abort();
     }

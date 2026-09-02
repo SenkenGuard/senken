@@ -8,10 +8,13 @@
 //! - the widget-plugin package store is opened (its `packages/` directory
 //!   created) so a package dropped by hand under
 //!   `<data_dir>/widget-plugins/packages/` is picked up the moment anything
-//!   calls `list`/`refresh` on `Runtime::widget_plugins()`.
+//!   calls `list`/`refresh` on `Runtime::widget_plugins()`, and its
+//!   built-in package is installed the same way — active, contributing at
+//!   least one widget, and never simply absent on a fresh install.
 
 mod support;
 
+use senken_plugin::widget_package::BUILTIN_PACKAGE_ID;
 use senken_runtime::Runtime;
 use senken_runtime::plugin_host::{DynamicIndicatorState, PluginOrigin};
 
@@ -79,7 +82,46 @@ fn the_widget_plugin_store_is_opened_at_startup_with_its_directory_ready() {
         dir.path().join("widget-plugins").join("packages").is_dir(),
         "the package directory must already exist so a manual drop-in has somewhere to land"
     );
-    assert!(runtime.widget_plugins().list().unwrap().is_empty());
 
     runtime.shutdown().unwrap();
+}
+
+/// A fresh server has uploaded nothing to either plugin surface, but the
+/// dashboard's widget catalog must not be empty on day one — this is the
+/// property that closes that gap: the built-in package is installed by the
+/// time `build()` returns, active, and contributing a real widget.
+#[test]
+fn the_builtin_widget_package_is_installed_on_a_fresh_startup() {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let runtime = Runtime::builder().data_dir(dir.path()).build().unwrap();
+
+    let packages = runtime.widget_plugins().list().unwrap();
+    let builtin = packages
+        .iter()
+        .find(|p| p.id == BUILTIN_PACKAGE_ID)
+        .expect("the built-in widget package must be installed on a fresh start");
+    assert!(builtin.is_builtin);
+    assert!(builtin.enabled);
+    assert!(
+        !builtin.widgets.is_empty(),
+        "the built-in package must contribute at least one real widget"
+    );
+
+    // Restarting against the same data directory must not duplicate or
+    // reset it — the second `build()` sees it already there and leaves it
+    // alone (see `WidgetPackageStore::ensure_builtin_installed`'s own
+    // docs).
+    runtime.shutdown().unwrap();
+    let restarted = Runtime::builder().data_dir(dir.path()).build().unwrap();
+    let packages_after_restart = restarted.widget_plugins().list().unwrap();
+    assert_eq!(
+        packages_after_restart
+            .iter()
+            .filter(|p| p.id == BUILTIN_PACKAGE_ID)
+            .count(),
+        1,
+        "a restart must not install a second copy of the built-in"
+    );
+    restarted.shutdown().unwrap();
 }

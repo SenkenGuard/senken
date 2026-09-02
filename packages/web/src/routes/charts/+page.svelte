@@ -762,8 +762,12 @@
 				// Not a third `addMenuKind` state: picking it opens the
 				// indicator-authoring panel directly (its own dialog, not
 				// another row of this palette) and leaves `addMenuKind` alone.
+				// Labelled to say what it does, not just that it is
+				// different — "CUSTOM" told a reader nothing about writing
+				// an indicator, and nothing else on this screen pointed here
+				// at all.
 				{
-					label: 'CUSTOM',
+					label: 'WRITE YOUR OWN',
 					active: () => false,
 					onClick: () => {
 						closeCommand();
@@ -781,22 +785,44 @@
 					);
 				}
 				const q = query.trim().toLowerCase();
-				return indicatorCatalog.filter((def) => !q || `${def.title} ${def.legend}`.toLowerCase().includes(q)).map((def) => ({
-					icon: SigmaIcon,
-					title: def.short_title,
-					sub: def.legend,
-					meta: def.placement === 'sub_pane' ? 'SUB-PANE' : 'OVERLAY',
-					metaTone: 'dim' as const,
-					onPick: () => {
-						const item: IndicatorCatalogItem = {
-							name: def.name,
-							defaultParams: Object.fromEntries(def.params.map((param) => [param.name, param.default.value])),
-							placement: def.placement
-						};
-						void addIndicatorLayer(paneTarget, item);
-						closeCommand();
-					}
-				}));
+				const catalogRows = indicatorCatalog
+					.filter((def) => !q || `${def.title} ${def.legend}`.toLowerCase().includes(q))
+					.map((def) => ({
+						icon: SigmaIcon,
+						title: def.short_title,
+						sub: def.legend,
+						meta: def.placement === 'sub_pane' ? 'SUB-PANE' : 'OVERLAY',
+						metaTone: 'dim' as const,
+						onPick: () => {
+							const item: IndicatorCatalogItem = {
+								name: def.name,
+								defaultParams: Object.fromEntries(def.params.map((param) => [param.name, param.default.value])),
+								placement: def.placement
+							};
+							void addIndicatorLayer(paneTarget, item);
+							closeCommand();
+						}
+					}));
+				// Pinned above the catalog itself, not tucked behind the
+				// "WRITE YOUR OWN" kind tab alone — a reader who never
+				// notices the tab row still sees, the moment this list
+				// opens, that writing an indicator from scratch is an
+				// option here at all.
+				if (q) return catalogRows;
+				return [
+					{
+						icon: PencilIcon,
+						title: 'Write your own indicator',
+						sub: 'Open the indicator editor and compile it yourself',
+						meta: 'NEW',
+						metaTone: 'dim' as const,
+						onPick: () => {
+							closeCommand();
+							indicatorPanelPane = paneTarget;
+						}
+					},
+					...catalogRows
+				];
 			}
 		});
 	}

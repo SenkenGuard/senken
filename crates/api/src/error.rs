@@ -433,6 +433,9 @@ impl From<senken_plugin::widget_package::WidgetPackageError> for HandlerError {
             WidgetPackageError::NotFound(id) => Self::BadRequest(format!(
                 "no widget plugin package with id {id:?} is installed"
             )),
+            WidgetPackageError::CannotUninstallBuiltIn(id) => Self::BadRequest(format!(
+                "{id:?} ships with this server and cannot be uninstalled; disable it instead"
+            )),
             WidgetPackageError::Manifest(source) => {
                 Self::BadRequest(format!("package manifest is invalid: {source}"))
             }

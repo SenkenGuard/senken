@@ -47,4 +47,6 @@ pub use manifest::{
     DASHBOARD_WIDGET_POINT, DataSource, GridSize, ManifestError, ValidatedManifest,
     ValidatedWidgetContribution,
 };
-pub use store::{InstalledPackage, PackageStatus, WidgetPackageError, WidgetPackageStore};
+pub use store::{
+    BUILTIN_PACKAGE_ID, InstalledPackage, PackageStatus, WidgetPackageError, WidgetPackageStore,
+};

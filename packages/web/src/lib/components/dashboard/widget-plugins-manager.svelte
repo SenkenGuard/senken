@@ -220,6 +220,9 @@
 									<Badge variant={statusVariant(pkg)} data-testid={`widget-plugin-state-${pkg.id}`}>
 										{statusLabel(pkg)}
 									</Badge>
+									{#if pkg.is_builtin}
+										<Badge variant="outline" data-testid={`widget-plugin-origin-${pkg.id}`}>Built-in</Badge>
+									{/if}
 								</div>
 								<span class="truncate font-mono text-[11px] text-dim2">
 									{pkg.id}@{pkg.version} · {pkg.widget_count}
@@ -240,19 +243,21 @@
 										data-testid={`widget-plugin-toggle-${pkg.id}`}
 									/>
 								{/if}
-								<Button
-									variant="ghost"
-									size="icon-sm"
-									aria-label={`Remove ${pkg.name}`}
-									onclick={() => void remove(pkg)}
-									disabled={removingId === pkg.id}
-								>
-									{#if removingId === pkg.id}
-										<Spinner class="size-3.5" />
-									{:else}
-										<Trash2Icon class="size-3.5" />
-									{/if}
-								</Button>
+								{#if !pkg.is_builtin}
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										aria-label={`Remove ${pkg.name}`}
+										onclick={() => void remove(pkg)}
+										disabled={removingId === pkg.id}
+									>
+										{#if removingId === pkg.id}
+											<Spinner class="size-3.5" />
+										{:else}
+											<Trash2Icon class="size-3.5" />
+										{/if}
+									</Button>
+								{/if}
 							</div>
 						</div>
 					{/each}

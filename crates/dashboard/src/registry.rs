@@ -19,7 +19,10 @@ pub const BUILTIN_PROVIDER_ID: &str = "senken";
 /// label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataSource {
-    /// Reads real, live data.
+    /// Reads real, live data — or, for a widget with no external data
+    /// source at all (a calculator taking only what the user types),
+    /// computes a real answer with nothing invented. Either way, the host
+    /// draws no mockup label.
     Live,
     /// Renders a fixed, seeded example rather than anything real.
     Mock,
@@ -63,6 +66,7 @@ fn builtin_definition(
     description: &str,
     default_width: u32,
     default_height: u32,
+    data_source: DataSource,
 ) -> WidgetDefinition {
     WidgetDefinition {
         widget_type_id: format!("{BUILTIN_PROVIDER_ID}/{widget}"),
@@ -80,10 +84,7 @@ fn builtin_definition(
             width: 3,
             height: 2,
         },
-        // Every widget this build ships renders a seeded fixture: an
-        // equity curve needs a funded, connected broker account to show a
-        // real balance, and none is wired up yet.
-        data_source: DataSource::Mock,
+        data_source,
     }
 }
 
@@ -112,14 +113,59 @@ impl WidgetRegistry {
     #[must_use]
     pub fn builtin() -> Self {
         let definitions = [
-            builtin_definition("equity", "Equity Curve", "balance + benchmark", 6, 4),
-            builtin_definition("watchlist", "Watchlist", "tracked pairs", 3, 4),
-            builtin_definition("positions", "Open Positions", "live PnL table", 6, 4),
-            builtin_definition("risk", "Risk Meters", "exposure gauges", 3, 3),
-            builtin_definition("heatmap", "Volatility Heatmap", "daily grid", 4, 3),
-            builtin_definition("signals", "Signal Desk", "model verdicts", 4, 3),
-            builtin_definition("flow", "Buy / Sell Flow", "volume split", 4, 3),
-            builtin_definition("feed", "News Tape", "headline stream", 4, 3),
+            // These three read the trade engine's own accounts and
+            // portfolios (`$lib/trade/view.ts`'s `dashboardEquity`/
+            // `dashboardPositions`/`dashboardRisk`, the same functions the
+            // engine page itself renders from) — real numbers, not a
+            // fixture, so none of them reports `DataSource::Mock`.
+            //
+            // The five widgets that used to live here (watchlist,
+            // volatility heatmap, signal desk, buy/sell flow, news tape)
+            // rendered invented numbers with no account or market data
+            // behind them at all. A widget that looks real next to one
+            // that reads real prices is the most dangerous thing this
+            // catalog could ship to someone watching numbers that affect
+            // their money, so they are gone rather than merely labelled
+            // mock.
+            builtin_definition(
+                "equity",
+                "Equity Curve",
+                "balance across every account",
+                6,
+                4,
+                DataSource::Live,
+            ),
+            builtin_definition(
+                "positions",
+                "Open Positions",
+                "live PnL table",
+                6,
+                4,
+                DataSource::Live,
+            ),
+            builtin_definition(
+                "risk",
+                "Risk Meters",
+                "exposure gauges",
+                3,
+                3,
+                DataSource::Live,
+            ),
+            // Unlike the three above, this one touches no market or account
+            // data at all — every input is typed by the user and the
+            // arithmetic is exact scaled-integer division, never `f64` (see
+            // `AGENTS.md`'s money rule; a position size is a quantity, not
+            // an indicator value). It reports `DataSource::Live` for the
+            // same reason those three do: nothing it shows is invented, so
+            // it earns no mockup label either.
+            builtin_definition(
+                "position-size",
+                "Position Size Calculator",
+                "balance, risk percent and stop distance, computed exactly",
+                4,
+                5,
+                DataSource::Live,
+            ),
         ];
         let order = definitions
             .iter()
@@ -186,16 +232,17 @@ mod tests {
     }
 
     #[test]
-    fn every_builtin_widget_reports_mock_data() {
-        // No built-in widget has a broker account to read real numbers
-        // from yet; every one of them must say so rather than let the host
-        // guess.
+    fn every_builtin_widget_reports_live_data() {
+        // Every built-in widget this registry ships now reads the trade
+        // engine's own accounts and portfolios — a fixture widget belongs
+        // in a plugin, not in the catalog every install gets by default
+        // with no way to tell it apart from the real ones beside it.
         let registry = WidgetRegistry::builtin();
         for definition in registry.catalog() {
             assert_eq!(
                 definition.data_source,
-                DataSource::Mock,
-                "{} must report DataSource::Mock",
+                DataSource::Live,
+                "{} must report DataSource::Live",
                 definition.widget_type_id
             );
             assert_eq!(definition.provider_id, BUILTIN_PROVIDER_ID);
@@ -203,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_lists_all_eight_builtin_widgets_in_a_stable_order() {
+    fn the_catalog_lists_the_four_builtin_widgets_in_a_stable_order() {
         let registry = WidgetRegistry::builtin();
         let ids: Vec<&str> = registry
             .catalog()
@@ -214,13 +261,9 @@ mod tests {
             ids,
             vec![
                 "senken/equity",
-                "senken/watchlist",
                 "senken/positions",
                 "senken/risk",
-                "senken/heatmap",
-                "senken/signals",
-                "senken/flow",
-                "senken/feed",
+                "senken/position-size",
             ]
         );
         // Calling again must produce the exact same order, not one drawn

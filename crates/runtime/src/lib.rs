@@ -309,6 +309,14 @@ impl RuntimeBuilder {
 
         let widget_plugins = WidgetPackageStore::open(storage.data_dir())
             .map_err(|source| RuntimeError::WidgetPluginStoreInit { source })?;
+        // A fresh server has nothing installed on either plugin surface —
+        // this is the one widget UI package that ships regardless, so the
+        // dashboard's "add widget" picker and Settings' widget plugin
+        // manager are never simply empty. Already being present (every
+        // start after the first) is a no-op — see this method's own docs.
+        widget_plugins
+            .ensure_builtin_installed()
+            .map_err(|source| RuntimeError::WidgetPluginStoreInit { source })?;
 
         Ok(Runtime {
             storage,

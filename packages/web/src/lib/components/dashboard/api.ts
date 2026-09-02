@@ -221,6 +221,10 @@ export interface WidgetPluginPackage {
 	status: WidgetPluginStatus;
 	digest: string;
 	widget_count: number;
+	/** `true` for the package this server installs on every fresh start.
+	 * It can be disabled like any other package; `uninstallWidgetPlugin`
+	 * refuses it (the server returns 400) rather than removing its files. */
+	is_builtin: boolean;
 }
 
 export interface WidgetPluginListResponse {
