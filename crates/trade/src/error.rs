@@ -4,6 +4,8 @@ use std::error::Error;
 
 use senken_marketdata::InstrumentId;
 
+use crate::id::PositionId;
+
 /// A type-erased error an adapter can wrap.
 pub type BoxError = Box<dyn Error + Send + Sync>;
 
@@ -116,6 +118,16 @@ pub enum TradeError {
     /// nothing to close" apart from "the request itself was malformed".
     #[error("no open position for {0}")]
     UnknownPosition(InstrumentId),
+
+    /// No position with that id is open on the account.
+    ///
+    /// Distinct from [`UnknownPosition`](Self::UnknownPosition), which
+    /// names an instrument: a hedging account can hold several positions on
+    /// one instrument, so "nothing is open on BTCUSDT" and "the position
+    /// you asked to close is already gone" are different answers, and a
+    /// client that closed a stale row needs to tell them apart.
+    #[error("no open position with that id")]
+    UnknownPositionId(PositionId),
 
     /// The order exists but cannot be changed any more — already filled,
     /// already cancelled, already expired.

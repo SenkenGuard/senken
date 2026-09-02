@@ -100,6 +100,16 @@ pub struct Book {
     pub orders: Vec<BookOrder>,
     /// Every execution, newest last.
     pub fills: Vec<Fill>,
+    /// Profit banked on this account, across every instrument and every
+    /// position it has ever held, at [`CASH_SCALE`].
+    ///
+    /// An account total rather than a field on a position, because a
+    /// position that has closed is not somewhere a completed fact can
+    /// live. Keeping it per-position meant a profit survived a reversal —
+    /// which carried the old figure forward — and vanished on a clean
+    /// close, which removed the position and the number with it.
+    #[serde(default)]
+    pub realized_total: i64,
 }
 
 /// How many finished orders and fills one account keeps.
@@ -120,6 +130,7 @@ impl Book {
             positions: BTreeMap::new(),
             orders: Vec::new(),
             fills: Vec::new(),
+            realized_total: 0,
         }
     }
 
@@ -140,6 +151,7 @@ impl Book {
         self.positions.clear();
         self.orders.clear();
         self.fills.clear();
+        self.realized_total = 0;
     }
 
     /// Trims history back to [`HISTORY_LIMIT`], keeping the newest.
@@ -217,6 +229,7 @@ pub fn execute(
         .cash
         .saturating_add(applied.realized)
         .saturating_sub(applied.fee);
+    book.realized_total = book.realized_total.saturating_add(applied.realized);
 
     order.filled = quantity;
     order.average_price = Some(applied.fill_price);

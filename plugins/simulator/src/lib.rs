@@ -40,8 +40,9 @@ use senken_trade::{
     AccountAccess, AccountBalances, AccountRef, ActionOutcome, AdapterAction, AdapterCapabilities,
     AdapterFeature, AdapterHealth, AdapterKind, ChoiceOption, FieldKind, Fill, InstrumentCoverage,
     Liquidity, Order, OrderAmendment, OrderFilter, OrderId, OrderKindTag, OrderRequest,
-    OrderStatus, Position, PositionMode, PositionSide, QuantityUnit, SettingField, SettingsSchema,
-    SettingsValues, TimeInForce, TradeAccountId, TradeAdapter, TradeContext, TradeError,
+    OrderStatus, Position, PositionId, PositionMode, PositionSide, QuantityUnit, SettingField,
+    SettingsSchema, SettingsValues, TimeInForce, TradeAccountId, TradeAdapter, TradeContext,
+    TradeError,
 };
 
 /// The simulated books and the rules that move between them.
@@ -501,6 +502,7 @@ impl TradeAdapter for SimulatorAdapter {
             balance: Scaled::new(CASH_SCALE, book.cash),
             equity: Scaled::new(CASH_SCALE, book.cash.saturating_add(unrealized)),
             unrealized_pnl: Scaled::new(CASH_SCALE, unrealized),
+            realized_pnl: Scaled::new(CASH_SCALE, book.realized_total),
             margin_used: Some(Scaled::new(CASH_SCALE, margin_used)),
             margin_available: Some(Scaled::new(
                 CASH_SCALE,
@@ -509,6 +511,17 @@ impl TradeAdapter for SimulatorAdapter {
                     .saturating_sub(margin_used)
                     .max(0),
             )),
+            // Equity over margin held, as a percentage — the figure a
+            // margin call and a stop out are thresholds on. `None` with no
+            // margin held: the ratio has no denominator there, and
+            // reporting an enormous number instead would make an idle
+            // account look like its most leveraged moment.
+            margin_level: (margin_used > 0).then(|| {
+                Scaled::new(
+                    2,
+                    book.cash.saturating_add(unrealized).saturating_mul(10_000) / margin_used,
+                )
+            }),
             // No per-asset rows: this adapter is cash-settled and holds no
             // base assets to report. An empty list is the honest answer,
             // not a missing feature.
@@ -549,6 +562,11 @@ impl TradeAdapter for SimulatorAdapter {
                 None => None,
             };
             out.push(Position {
+                // One position per instrument on a netting book, so the
+                // instrument names it uniquely and the id stays stable
+                // across reads — a client holding a row from one poll can
+                // still act on it after the next.
+                id: PositionId::new(instrument.to_string()),
                 account_id: account.id,
                 instrument: instrument.clone(),
                 side: position.side,
@@ -563,6 +581,13 @@ impl TradeAdapter for SimulatorAdapter {
                         / terms.leverage,
                 )),
                 leverage: Some(Scaled::new(0, terms.leverage)),
+                // This adapter attaches no stops and has no liquidation of
+                // its own: `None` says so, rather than a zero that would
+                // read as a stop set at nothing.
+                stop_loss: None,
+                take_profit: None,
+                margin_mode: None,
+                liquidation_price: None,
                 opened_at: position.opened_at,
             });
         }

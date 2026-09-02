@@ -26,7 +26,7 @@ use senken_marketdata::{Instrument, InstrumentId};
 use crate::adapter::{AccountRef, ActionOutcome, TradeAdapter, TradeContext};
 use crate::capability::{AccountAccess, AdapterCapabilities, AdapterFeature};
 use crate::error::TradeError;
-use crate::id::OrderId;
+use crate::id::{OrderId, PositionId};
 use crate::order::{Order, OrderAmendment, OrderFilter, OrderKind, OrderRequest, OrderSide};
 use crate::portfolio::PositionSide;
 use crate::settings::SettingsValues;
@@ -259,20 +259,25 @@ impl TradeEngine {
         adapter_id: &str,
         ctx: &TradeContext<'_>,
         account: AccountRef<'_>,
-        instrument: &InstrumentId,
+        position_id: &PositionId,
     ) -> Result<Order, TradeError> {
         let adapter = self.adapter(adapter_id)?;
         let access = self.require_trading_access(adapter, ctx, account).await?;
 
+        // Addressed by position rather than by instrument because two of
+        // the systems this platform models hold more than one position on
+        // the same instrument — a hedging account by design, a futures
+        // account in hedge mode by configuration — so "the position on
+        // this instrument" is not a question with an answer there.
         let position = adapter
             .positions(ctx, account)
             .await?
             .into_iter()
-            .find(|position| &position.instrument == instrument)
-            .ok_or_else(|| TradeError::UnknownPosition(instrument.clone()))?;
+            .find(|position| &position.id == position_id)
+            .ok_or_else(|| TradeError::UnknownPositionId(position_id.clone()))?;
 
         let mut request = OrderRequest::market(
-            instrument.clone(),
+            position.instrument.clone(),
             closing_side(position.side),
             position.quantity,
         );
@@ -516,7 +521,7 @@ mod tests {
         PositionMode, QuantityUnit,
     };
     use crate::error::TradeError;
-    use crate::id::{OrderId, TradeAccountId};
+    use crate::id::{OrderId, PositionId, TradeAccountId};
     use crate::order::{
         Order, OrderAmendment, OrderFilter, OrderKind, OrderKindTag, OrderRequest, OrderSide,
         OrderStatus, TimeInForce,
@@ -692,7 +697,9 @@ mod tests {
                 balance: Scaled::new(2, 0),
                 equity: Scaled::new(2, 0),
                 unrealized_pnl: Scaled::new(2, 0),
+                realized_pnl: Scaled::new(2, 0),
                 margin_used: None,
+                margin_level: None,
                 margin_available: None,
                 assets: Vec::new(),
             })
@@ -869,7 +876,7 @@ mod tests {
             .await
     }
 
-    async fn close(engine: &TradeEngine, instrument: &InstrumentId) -> Result<Order, TradeError> {
+    async fn close(engine: &TradeEngine, position_id: &PositionId) -> Result<Order, TradeError> {
         let marks = FixedPrice;
         let instruments = OneInstrument;
         let ctx = TradeContext::new(
@@ -884,7 +891,7 @@ mod tests {
             settings: &settings,
         };
         engine
-            .close_position("recorder", &ctx, account, instrument)
+            .close_position("recorder", &ctx, account, position_id)
             .await
     }
 
@@ -915,6 +922,7 @@ mod tests {
     /// `close_position` reads.
     fn open_position(quantity: Scaled) -> Position {
         Position {
+            id: PositionId::new("okx-spot:BTCUSDT"),
             account_id: TradeAccountId::new(),
             instrument: id("okx-spot:BTCUSDT"),
             side: PositionSide::Long,
@@ -925,6 +933,10 @@ mod tests {
             realized_pnl: Scaled::new(2, 0),
             margin: None,
             leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            margin_mode: None,
+            liquidation_price: None,
             opened_at: UnixNanos::from_secs(1_700_000_000).unwrap(),
         }
     }
@@ -1288,7 +1300,9 @@ mod tests {
         // the size is not something a caller can pass in at all).
         adapter.set_positions(vec![open_position(Scaled::new(3, 500))]);
 
-        let order = close(&engine, &id("okx-spot:BTCUSDT")).await.unwrap();
+        let order = close(&engine, &PositionId::new("okx-spot:BTCUSDT"))
+            .await
+            .unwrap();
 
         assert_eq!(order.side, OrderSide::Sell, "closing a long sells");
         assert_eq!(order.kind, OrderKind::Market);
@@ -1304,7 +1318,9 @@ mod tests {
         let adapter = Arc::new(Recording::new());
         let engine = engine_with(Arc::clone(&adapter));
 
-        let error = close(&engine, &id("okx-spot:BTCUSDT")).await.unwrap_err();
+        let error = close(&engine, &PositionId::new("okx-spot:BTCUSDT"))
+            .await
+            .unwrap_err();
 
         assert!(
             matches!(error, TradeError::UnknownPosition(_)),
@@ -1322,7 +1338,9 @@ mod tests {
         adapter.set_positions(vec![open_position(Scaled::new(3, 250))]);
         let engine = engine_with(Arc::clone(&adapter));
 
-        close(&engine, &id("okx-spot:BTCUSDT")).await.unwrap();
+        close(&engine, &PositionId::new("okx-spot:BTCUSDT"))
+            .await
+            .unwrap();
         assert!(
             !adapter.taken().reduce_only,
             "the recorder's own default capabilities have no reduce-only feature"
@@ -1337,7 +1355,9 @@ mod tests {
         margined.set_positions(vec![open_position(Scaled::new(3, 250))]);
         let engine = engine_with(Arc::clone(&margined));
 
-        close(&engine, &id("okx-spot:BTCUSDT")).await.unwrap();
+        close(&engine, &PositionId::new("okx-spot:BTCUSDT"))
+            .await
+            .unwrap();
         assert!(
             margined.taken().reduce_only,
             "an account whose resolved capabilities include reduce-only must have it set on \
@@ -1358,7 +1378,9 @@ mod tests {
         let engine = engine_with(Arc::clone(&adapter));
 
         assert!(matches!(
-            close(&engine, &id("okx-spot:BTCUSDT")).await.unwrap_err(),
+            close(&engine, &PositionId::new("okx-spot:BTCUSDT"))
+                .await
+                .unwrap_err(),
             TradeError::ReadOnly { .. }
         ));
         assert!(adapter.seen.lock().unwrap().is_none());

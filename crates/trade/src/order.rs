@@ -208,6 +208,19 @@ pub struct OrderRequest {
     /// A caller-chosen idempotency key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_order_id: Option<ClientOrderId>,
+    /// A stop loss to attach to the position this order opens or adds to.
+    ///
+    /// Every platform Senken simulates lets an order carry its stops at
+    /// send time, and the reason is not convenience: a position opened
+    /// without one is unprotected for however long it takes a second
+    /// request to arrive, which on a fast market is the part that costs
+    /// money. `None` leaves whatever the position already has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_loss: Option<Scaled>,
+    /// A take profit to attach, on the same terms as
+    /// [`stop_loss`](Self::stop_loss).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take_profit: Option<Scaled>,
 }
 
 impl OrderRequest {
@@ -223,6 +236,8 @@ impl OrderRequest {
             reduce_only: false,
             post_only: false,
             client_order_id: None,
+            stop_loss: None,
+            take_profit: None,
         }
     }
 

@@ -36,7 +36,7 @@ use senken_marketdata::{Instrument, InstrumentId};
 
 use crate::capability::{AccountAccess, AdapterCapabilities, AdapterKind, InstrumentCoverage};
 use crate::error::TradeError;
-use crate::id::{OrderId, TradeAccountId};
+use crate::id::{OrderId, PositionId, TradeAccountId};
 use crate::order::{Fill, Order, OrderAmendment, OrderFilter, OrderRequest};
 use crate::portfolio::{AccountBalances, AdapterHealth, Position};
 use crate::settings::{ActionForm, SettingsSchema, SettingsValues};
@@ -475,6 +475,37 @@ pub trait TradeAdapter: Send + Sync {
     ) -> Result<Order, TradeError> {
         let _ = (ctx, account, order_id, amendment);
         Err(TradeError::unsupported(self.id(), "amending orders"))
+    }
+
+    /// Sets, changes or clears the stops attached to an open position,
+    /// returning it as it now stands.
+    ///
+    /// `None` for either price clears that stop; `Some` sets or replaces
+    /// it. There is no separate "clear" call because a position holds at
+    /// most one of each, so replacing and removing are the same operation
+    /// on the same field.
+    ///
+    /// The default refuses, which is correct for an adapter that did not
+    /// declare [`AdapterFeature::PositionStops`](crate::AdapterFeature) —
+    /// a spot account has no position to attach one to at all.
+    ///
+    /// # Errors
+    /// [`TradeError::Unsupported`] when the adapter does not offer it, an
+    /// unknown position, a price on the wrong side of the market, or the
+    /// venue's own failure.
+    async fn set_position_stops(
+        &self,
+        ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+        position_id: &PositionId,
+        stop_loss: Option<Scaled>,
+        take_profit: Option<Scaled>,
+    ) -> Result<Position, TradeError> {
+        let _ = (ctx, account, position_id, stop_loss, take_profit);
+        Err(TradeError::unsupported(
+            self.id(),
+            "attaching stops to a position",
+        ))
     }
 
     /// Runs one of [`actions`](Self::actions).

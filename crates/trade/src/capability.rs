@@ -182,6 +182,16 @@ pub enum AdapterFeature {
     Leverage,
     /// Individual executions are reported, not only orders.
     Fills,
+    /// A stop loss and a take profit can be attached to a position, and
+    /// changed on one that is already open.
+    ///
+    /// Distinct from placing a conditional order: a venue may support both,
+    /// one, or neither, and a position-attached stop follows the position
+    /// through a partial close where a free-standing order does not.
+    PositionStops,
+    /// Margin is isolated per position or shared across the account, and
+    /// the account may choose which.
+    MarginModes,
 }
 
 /// What an account may do, as distinct from what its adapter can.

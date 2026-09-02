@@ -711,6 +711,8 @@ pub(crate) async fn place_order(
         reduce_only: body.reduce_only,
         post_only: body.post_only,
         client_order_id,
+        stop_loss: body.stop_loss.map(Into::into),
+        take_profit: body.take_profit.map(Into::into),
     };
 
     let marks = StoredMarkPrice::new(state.clone());
@@ -757,8 +759,7 @@ pub(crate) async fn close_position(
     Json(body): Json<CloseRequest>,
 ) -> Result<(StatusCode, Json<OrderDto>), HandlerError> {
     let id = parse_account_id(&account_id)?;
-    let instrument = InstrumentId::parse(&body.instrument)
-        .map_err(|source| HandlerError::BadRequest(source.to_string()))?;
+    let position_id = senken_trade::PositionId::new(body.position_id);
 
     let (_, account, settings) = resolve_for_trading(&state, &ctx, id)?;
     let marks = StoredMarkPrice::new(state.clone());
@@ -774,7 +775,7 @@ pub(crate) async fn close_position(
                 label: &account.label,
                 settings: &settings,
             },
-            &instrument,
+            &position_id,
         )
         .await?;
     Ok((StatusCode::CREATED, Json(order.into())))
@@ -2074,7 +2075,7 @@ mod end_to_end_tests {
         let closed = post_json_auth(
             format!("http://{addr}/api/trade/accounts/{account}/close"),
             &token,
-            serde_json::json!({ "instrument": instrument }),
+            serde_json::json!({ "position_id": instrument }),
         )
         .await;
         assert_eq!(closed.status(), reqwest::StatusCode::CREATED);
@@ -2105,14 +2106,14 @@ mod end_to_end_tests {
     }
 
     #[tokio::test]
-    async fn closing_an_instrument_with_no_open_position_is_a_bad_request() {
+    async fn closing_a_position_that_is_not_open_is_a_bad_request() {
         let (handle, _runtime_dir, account, token) = opened_position().await;
         let addr = handle.local_addr();
 
         let response = post_json_auth(
             format!("http://{addr}/api/trade/accounts/{account}/close"),
             &token,
-            serde_json::json!({ "instrument": "okx-spot:ETHUSDT" }),
+            serde_json::json!({ "position_id": "okx-spot:ETHUSDT" }),
         )
         .await;
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
@@ -2261,7 +2262,7 @@ mod end_to_end_tests {
         let close = post_json_auth(
             format!("http://{addr}/api/trade/accounts/{account}/close"),
             &token,
-            serde_json::json!({ "instrument": instrument }),
+            serde_json::json!({ "position_id": instrument }),
         )
         .await;
         assert_eq!(

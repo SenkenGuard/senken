@@ -114,6 +114,43 @@ impl fmt::Display for OrderId {
     }
 }
 
+/// A position's identifier **as the holding venue reports it**.
+///
+/// Opaque text for the same reason [`OrderId`] is, and needed for a reason
+/// an instrument alone cannot cover: two of the systems Senken simulates
+/// hold more than one position on the same instrument at once. A
+/// MetaTrader 5 hedging account does it by design — every deal opens its
+/// own ticket, and holding a long and a short at the same time is the
+/// point. A crypto futures account in hedge mode does it by
+/// configuration.
+///
+/// Without this, "the position on BTCUSDT" is a question with no answer on
+/// those accounts, and closing one is not expressible. A netting or spot
+/// account still holds at most one per instrument and simply mints an id
+/// that is stable for it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PositionId(Box<str>);
+
+impl PositionId {
+    /// Wraps whatever the venue called this position.
+    pub fn new(raw: impl Into<Box<str>>) -> Self {
+        Self(raw.into())
+    }
+
+    /// The venue's own text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PositionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// The longest client order id every venue this project has looked at
 /// accepts. Deliberately conservative: it is far easier to widen this later
 /// than to discover that one venue in ten silently truncates, which would

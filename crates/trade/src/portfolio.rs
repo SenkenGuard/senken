@@ -11,7 +11,7 @@ use senken_core::decimal::Scaled;
 use senken_marketdata::InstrumentId;
 use serde::{Deserialize, Serialize};
 
-use crate::id::TradeAccountId;
+use crate::id::{PositionId, TradeAccountId};
 
 /// Which way a position is exposed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -34,9 +34,33 @@ impl PositionSide {
     }
 }
 
+/// Whose money backs a position's margin.
+///
+/// Crypto derivative venues let a trader choose per position, and the
+/// choice decides what liquidation means: an isolated position can be
+/// liquidated on its own without touching anything else, while cross
+/// positions share the account's balance and, on the venues that document
+/// it, a symbol's long and short share a single liquidation price.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum MarginMode {
+    /// Margin allocated to this position alone. Liquidating it leaves the
+    /// account's other positions untouched.
+    Isolated,
+    /// Margin drawn from the account's whole balance, shared with every
+    /// other cross position.
+    Cross,
+}
+
 /// One open position.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
+    /// This position, distinctly from any other on the same instrument.
+    ///
+    /// A hedging account holds several at once and the instrument alone
+    /// cannot name one; see [`PositionId`].
+    pub id: PositionId,
     /// The account holding it.
     pub account_id: TradeAccountId,
     /// The instrument.
@@ -59,6 +83,24 @@ pub struct Position {
     pub unrealized_pnl: Option<Scaled>,
     /// Profit already banked on this instrument.
     pub realized_pnl: Scaled,
+    /// The price at which this position closes itself at a loss, when the
+    /// account has one set.
+    ///
+    /// At most one, which is the invariant MetaTrader 5 enforces on a
+    /// position and which this field makes unrepresentable to violate: a
+    /// second stop loss is not a thing that can be constructed. A venue
+    /// where stops are free-standing conditional orders instead expresses
+    /// them as ordinary orders carrying
+    /// [`OrderRequest::reduce_only`](crate::OrderRequest::reduce_only) —
+    /// the two mechanisms stay distinct because the venues keep them
+    /// distinct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_loss: Option<Scaled>,
+    /// The price at which this position closes itself at a profit, when the
+    /// account has one set. At most one, for the same reason as
+    /// [`stop_loss`](Self::stop_loss).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take_profit: Option<Scaled>,
     /// Margin the venue is holding against it, where the account uses
     /// margin at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +108,20 @@ pub struct Position {
     /// Leverage applied, where the account uses leverage at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leverage: Option<Scaled>,
+    /// Whether this position's margin is its own or the account's, where
+    /// the venue offers the choice. `None` where it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin_mode: Option<MarginMode>,
+    /// The price at which the venue would close this position for want of
+    /// margin.
+    ///
+    /// `None` is the honest answer whenever the figure is not known — a
+    /// venue that does not publish one, or an account that cannot be
+    /// liquidated at all. It is never filled in with an estimate: a trader
+    /// who is shown a liquidation price will believe it, and a wrong one
+    /// is worse than an absent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liquidation_price: Option<Scaled>,
     /// When the position was first opened.
     pub opened_at: UnixNanos,
 }
@@ -103,12 +159,27 @@ pub struct AccountBalances {
     pub equity: Scaled,
     /// Unrealised profit across every open position.
     pub unrealized_pnl: Scaled,
+    /// Profit already banked on this account, across every instrument and
+    /// every position it has ever held.
+    ///
+    /// An account total rather than a position field, because a realised
+    /// profit records something that already happened and a position that
+    /// has been closed is not somewhere a completed fact can live. Reading
+    /// it off positions loses every profit the moment the position that
+    /// earned it goes flat.
+    pub realized_pnl: Scaled,
     /// Margin currently held against positions and orders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margin_used: Option<Scaled>,
     /// Margin still available to open with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margin_available: Option<Scaled>,
+    /// Equity as a percentage of margin held — MetaTrader's own figure,
+    /// and the one its margin call and stop out are thresholds on. `None`
+    /// for an account that holds no margin, where the ratio has no
+    /// denominator rather than an infinite value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin_level: Option<Scaled>,
     /// Per-asset rows, for venues that have them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<AssetBalance>,

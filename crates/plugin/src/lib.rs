@@ -582,8 +582,10 @@ mod tests {
                 balance: senken_core::decimal::Scaled::new(2, 0),
                 equity: senken_core::decimal::Scaled::new(2, 0),
                 unrealized_pnl: senken_core::decimal::Scaled::new(2, 0),
+                realized_pnl: senken_core::decimal::Scaled::new(2, 0),
                 margin_used: None,
                 margin_available: None,
+                margin_level: None,
                 assets: Vec::new(),
             })
         }

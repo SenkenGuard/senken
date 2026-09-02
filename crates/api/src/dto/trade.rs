@@ -577,18 +577,32 @@ pub(crate) struct PlaceOrderRequest {
     /// A caller-chosen idempotency key.
     #[serde(default)]
     pub client_order_id: Option<String>,
+    /// A stop loss to attach to the position this order opens, sent with
+    /// the order rather than after it: a position that has to wait for a
+    /// second request is unprotected for exactly as long as that takes.
+    #[serde(default)]
+    pub stop_loss: Option<ScaledDto>,
+    /// A take profit to attach, on the same terms as
+    /// [`stop_loss`](Self::stop_loss).
+    #[serde(default)]
+    pub take_profit: Option<ScaledDto>,
 }
 
 /// `POST /api/trade/accounts/{account_id}/close` request body.
 ///
-/// The instrument travels in the body rather than the path: an
-/// [`senken_marketdata::InstrumentId`] contains a colon, and path-encoding
-/// it invites exactly the double-decoding mistakes that make one endpoint
-/// disagree with another about the same instrument.
+/// The position travels in the body rather than the path: an id is opaque
+/// venue text that may hold any character, and path-encoding it invites
+/// exactly the double-decoding mistakes that make one endpoint disagree
+/// with another about the same thing.
+///
+/// It names a **position**, not an instrument, because a hedging account
+/// holds several on one instrument at once and "close BTCUSDT" has no
+/// answer there. A client always has the position row in hand when it
+/// offers a close, so it always has the id.
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct CloseRequest {
-    /// The instrument to close, as `source:symbol`.
-    pub instrument: String,
+    /// The position to close, as the adapter reported its id.
+    pub position_id: String,
 }
 
 /// `PATCH /api/trade/accounts/{account_id}/orders/{order_id}` request body.

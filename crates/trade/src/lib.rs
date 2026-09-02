@@ -87,13 +87,15 @@ pub use crate::capability::{
 };
 pub use crate::error::{BoxError, TradeError};
 pub use crate::id::{
-    ClientOrderId, ClientOrderIdError, MAX_CLIENT_ORDER_ID_LEN, OrderId, TradeAccountId,
+    ClientOrderId, ClientOrderIdError, MAX_CLIENT_ORDER_ID_LEN, OrderId, PositionId, TradeAccountId,
 };
 pub use crate::order::{
     Fill, Liquidity, Order, OrderAmendment, OrderFilter, OrderKind, OrderKindTag, OrderRequest,
     OrderSide, OrderStatus, TimeInForce,
 };
-pub use crate::portfolio::{AccountBalances, AdapterHealth, AssetBalance, Position, PositionSide};
+pub use crate::portfolio::{
+    AccountBalances, AdapterHealth, AssetBalance, MarginMode, Position, PositionSide,
+};
 pub use crate::settings::{
     ActionForm, ChoiceOption, FieldKind, SecretString, SettingField, SettingValue, SettingsError,
     SettingsInput, SettingsSchema, SettingsValues,

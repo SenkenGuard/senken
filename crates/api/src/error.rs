@@ -282,6 +282,12 @@ impl From<senken_trade::TradeError> for HandlerError {
             TradeError::UnknownPosition(instrument) => {
                 Self::BadRequest(format!("no open position for {instrument}"))
             }
+            // A stale row a client tried to close after the position went
+            // away is the client's answer to hear, not an internal error:
+            // it means "already gone", and refreshing shows why.
+            TradeError::UnknownPositionId(_) => {
+                Self::BadRequest("that position is no longer open".to_owned())
+            }
             TradeError::UnknownAdapter(id) => {
                 Self::BadRequest(format!("no trade adapter `{id}` is registered"))
             }

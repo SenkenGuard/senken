@@ -72,6 +72,13 @@ fn instrument() -> InstrumentId {
     InstrumentId::parse("okx-spot:BTCUSDT").unwrap()
 }
 
+/// The id this adapter mints for the one position it can hold on
+/// [`instrument`] — a netting book holds at most one per instrument, so
+/// the instrument names it.
+fn position_id() -> senken_trade::PositionId {
+    senken_trade::PositionId::new(instrument().to_string())
+}
+
 /// A price in whole currency units, at the two-decimal scale every
 /// instrument in these tests quotes at.
 fn at(units: i64) -> i64 {
@@ -1115,7 +1122,7 @@ async fn closing_through_the_engine_leaves_no_position_and_banks_the_difference(
         .unwrap();
 
     f.engine()
-        .close_position(ADAPTER_ID, &f.ctx(), f.account(&settings), &instrument())
+        .close_position(ADAPTER_ID, &f.ctx(), f.account(&settings), &position_id())
         .await
         .unwrap();
 
@@ -1170,7 +1177,7 @@ async fn closing_after_the_position_grows_between_the_read_and_the_close_uses_th
         .unwrap();
 
     f.engine()
-        .close_position(ADAPTER_ID, &f.ctx(), f.account(&settings), &instrument())
+        .close_position(ADAPTER_ID, &f.ctx(), f.account(&settings), &position_id())
         .await
         .unwrap();
 
