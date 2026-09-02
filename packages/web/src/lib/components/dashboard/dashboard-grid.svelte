@@ -61,7 +61,11 @@
 	// `layout.workspace.id` (see `routes/dashboard/+page.svelte`), which
 	// remounts it fresh rather than asking it to notice the prop changed
 	// out from under it.
-	let widgets = $state<DashboardWidgetDto[]>(structuredClone(layout.widgets));
+	// `$state.snapshot`, not `structuredClone`: `layout` is a `$state` proxy in
+	// the caller, so `layout.widgets` is a proxied array and `structuredClone`
+	// throws `DataCloneError` on it. The snapshot is Svelte's own proxy-aware
+	// deep copy, which is what "seed once, then own it" needs here.
+	let widgets = $state<DashboardWidgetDto[]>($state.snapshot(layout.widgets));
 	let columns = $state(layout.workspace.columns);
 	let revision = $state(layout.workspace.revision);
 
