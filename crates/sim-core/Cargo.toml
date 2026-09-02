@@ -1,0 +1,24 @@
+[package]
+name = "senken-sim-core"
+description = "The shared simulation kernel four Senken paper-trading adapters are built on: order intake, resting orders, fill pricing, fees and history, parameterised by one settlement model"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+senken-core = { workspace = true }
+senken-marketdata = { workspace = true }
+senken-trade = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

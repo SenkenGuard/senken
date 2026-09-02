@@ -33,6 +33,7 @@ senken-indicator-lang = { path = "crates/indicator-lang", version = "0.0.5" }
 senken-indicator-registry = { path = "crates/indicator-registry", version = "0.0.5" }
 senken-marketdata = { path = "crates/marketdata", version = "0.0.5" }
 senken-notes = { path = "crates/notes", version = "0.0.5" }
+senken-sim-core = { path = "crates/sim-core", version = "0.0.5" }
 # Lean by default inside this workspace: only the venue plugins ask for
 # `features = ["http"]`. External users get the HTTP client by default.
 senken-plugin = { path = "crates/plugin", version = "0.0.5", default-features = false }

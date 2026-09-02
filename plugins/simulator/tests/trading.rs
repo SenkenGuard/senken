@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use senken_core::UnixNanos;
 use senken_core::decimal::Scaled;
 use senken_marketdata::{Instrument, InstrumentId};
-use senken_plugin_simulator::money::CASH_SCALE;
 use senken_plugin_simulator::{ADAPTER_ID, SimulatorAdapter};
+use senken_sim_core::money::CASH_SCALE;
 use senken_storage::Storage;
 use senken_trade::{
     AccessLevel, AccountRef, InstrumentSource, MarkPrice, MarkPriceSource, OrderAmendment,

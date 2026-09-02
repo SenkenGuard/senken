@@ -47,11 +47,12 @@ use senken_trade::{
 
 /// The simulated books and the rules that move between them.
 pub mod book;
-/// Fixed-point arithmetic for those books.
-pub mod money;
+/// The netting rule this adapter settles fills by.
+pub mod netting;
 
-use crate::book::{Book, BookOrder, Terms};
-use crate::money::{CASH_SCALE, notional, rescale};
+use crate::book::{Book, BookOrder};
+use senken_sim_core::money::{CASH_SCALE, notional, rescale};
+use senken_sim_core::pricing::{Terms, apply_amendment, is_triggered, market_fill_price};
 
 /// The adapter's id, and the plugin's permission namespace.
 pub const ADAPTER_ID: &str = "simulator";
@@ -208,9 +209,7 @@ impl SimulatorAdapter {
             let Some(order) = book.orders.get(index) else {
                 continue;
             };
-            if !order.status.is_open()
-                || !crate::book::is_triggered(order.kind, order.side, mark.price)
-            {
+            if !order.status.is_open() || !is_triggered(order.kind, order.side, mark.price) {
                 continue;
             }
             let mut order = order.clone();
@@ -662,7 +661,7 @@ impl TradeAdapter for SimulatorAdapter {
         // order would refuse to accept an order on an instrument whose
         // history has not been loaded yet, which is not a real reason.
         let immediate_price = if request.kind.tag() == OrderKindTag::Market {
-            Some(crate::book::market_fill_price(
+            Some(market_fill_price(
                 ctx.mark_price(&request.instrument).await?.price,
                 request.side,
                 terms,
@@ -797,7 +796,7 @@ impl TradeAdapter for SimulatorAdapter {
             if let Some(quantity) = amendment.quantity {
                 order.quantity = quantity;
             }
-            order.kind = crate::book::apply_amendment(order.kind, amendment);
+            order.kind = apply_amendment(order.kind, amendment);
             order.updated_at = ctx.now();
             let snapshot = books.clone();
             drop(books);

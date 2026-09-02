@@ -175,6 +175,7 @@ reverse; the runtime depends on everything and nothing depends on it.
 | `indicators` | ten incremental indicators |
 | `alerts` | standalone alert evaluation |
 | `trade` | the `TradeAdapter` contract, orders/positions/balances, adapter capabilities, dynamic settings schemas, attached accounts |
+| `sim-core` | the shared simulation kernel: fixed-point money, fill pricing, resting-order triggers, and the `SettlementModel` seam four simulators differ at |
 | `venue` | HTTP, retry, rate limiting |
 | `plugin` | the plugin contract |
 | `acl` | `Action`, `Resource`, `Scope`, `decide` — no I/O |

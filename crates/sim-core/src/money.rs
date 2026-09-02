@@ -1,9 +1,14 @@
 //! Fixed-point arithmetic for the simulated books.
 //!
 //! Every function here works in `i128` and lands back on an `i64` at a
-//! declared scale. Nothing in this plugin touches a float: a simulated
-//! balance is still a balance, and a paper account whose arithmetic drifts
-//! teaches its user the wrong thing about their strategy.
+//! declared scale. Nothing here touches a float: a simulated balance is
+//! still a balance, and a paper account whose arithmetic drifts teaches
+//! its user the wrong thing about their strategy.
+//!
+//! It lives in the kernel rather than in one adapter because a fee
+//! rounding fixed in one simulator and not in another is a bug nobody can
+//! see, in the one part of this application where a wrong number is
+//! money.
 
 use senken_core::decimal::Scaled;
 use senken_trade::TradeError;

@@ -5264,6 +5264,7 @@ dependencies = [
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-sim-core",
  "senken-storage",
  "senken-trade",
  "serde",
@@ -5334,6 +5335,16 @@ dependencies = [
  "senken-core",
  "serde",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "senken-sim-core"
+version = "0.0.5"
+dependencies = [
+ "senken-core",
+ "senken-marketdata",
+ "senken-trade",
+ "tokio",
 ]
 
 [[package]]

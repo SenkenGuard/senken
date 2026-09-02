@@ -22,6 +22,10 @@ senken-marketdata = { workspace = true }
 # No `http`: this adapter reaches no network at all. It fills against
 # prices the engine hands it and keeps its books on local disk.
 senken-plugin = { workspace = true }
+# The shared simulation kernel: order intake, fill pricing, fee arithmetic
+# and resting-order triggers, so this adapter carries only its own
+# settlement rule.
+senken-sim-core = { workspace = true }
 # Atomic, versioned JSON snapshots for the simulated books — the same
 # storage every other on-disk state in Senken uses, rather than a second
 # persistence mechanism for one plugin.
@@ -32,6 +36,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+senken-sim-core = { workspace = true }
 # The `engine` feature is test-only: `TradeEngine::close_position` is what
 # these tests exercise for closing, and a headless adapter build never
 # needs the registry at all.

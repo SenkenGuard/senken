@@ -30,12 +30,16 @@ use senken_core::UnixNanos;
 use senken_core::decimal::Scaled;
 use senken_marketdata::InstrumentId;
 use senken_trade::{
-    Fill, Liquidity, Order, OrderAmendment, OrderId, OrderKind, OrderSide, OrderStatus,
-    PositionSide, TimeInForce, TradeAccountId, TradeError,
+    Fill, Liquidity, Order, OrderId, OrderKind, OrderSide, OrderStatus, PositionSide, TimeInForce,
+    TradeAccountId, TradeError,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::money::{CASH_SCALE, basis_points, notional, slip, weighted_average};
+use senken_sim_core::money::{CASH_SCALE, notional};
+use senken_sim_core::pricing::Terms;
+use senken_sim_core::{FillContext, SettlementModel};
+
+use crate::netting::Netting;
 
 /// One open position in the simulated books.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,25 +184,6 @@ impl Book {
     }
 }
 
-/// What one account's terms are, read out of its settings once per call.
-#[derive(Debug, Clone, Copy)]
-pub struct Terms {
-    /// Fee charged on every fill, in basis points of notional.
-    pub fee_bps: i64,
-    /// How far a market order fills from the mark, in basis points.
-    pub slippage_bps: i64,
-    /// Notional multiple of margin an account may hold.
-    pub leverage: i64,
-}
-
-/// Applying a fill to a book, as one value so the caller cannot use half of
-/// it.
-struct Applied {
-    fill_price: Scaled,
-    fee: i64,
-    realized: i64,
-}
-
 /// Executes `quantity` of `order` at `price`, updating the position, the
 /// cash and the fill log.
 ///
@@ -215,14 +200,15 @@ pub fn execute(
     now: UnixNanos,
 ) -> Result<(), TradeError> {
     let quantity = order.quantity;
-    let applied = apply_to_position(
-        book,
-        &order.instrument,
-        order.side,
-        quantity,
-        price,
-        terms,
-        now,
+    let applied = Netting { terms }.settle(
+        &mut book.positions,
+        &FillContext {
+            instrument: &order.instrument,
+            side: order.side,
+            quantity,
+            price,
+            now,
+        },
     )?;
 
     book.cash = book
@@ -252,105 +238,6 @@ pub fn execute(
     Ok(())
 }
 
-/// Folds one execution into the instrument's position, returning the fee
-/// charged and the profit realised by whatever it closed.
-fn apply_to_position(
-    book: &mut Book,
-    instrument: &InstrumentId,
-    side: OrderSide,
-    quantity: Scaled,
-    price: Scaled,
-    terms: Terms,
-    now: UnixNanos,
-) -> Result<Applied, TradeError> {
-    let fee = basis_points(notional(price, quantity)?, terms.fee_bps)?;
-    let opening = match side {
-        OrderSide::Buy => PositionSide::Long,
-        OrderSide::Sell => PositionSide::Short,
-    };
-
-    let Some(existing) = book.positions.get(instrument).cloned() else {
-        book.positions.insert(
-            instrument.clone(),
-            BookPosition {
-                side: opening,
-                quantity,
-                average_entry: price,
-                realized: 0,
-                opened_at: now,
-            },
-        );
-        return Ok(Applied {
-            fill_price: price,
-            fee,
-            realized: 0,
-        });
-    };
-
-    if existing.side == opening {
-        let merged = BookPosition {
-            side: opening,
-            quantity: Scaled::new(
-                existing.quantity.scale,
-                existing.quantity.value.saturating_add(quantity.value),
-            ),
-            average_entry: weighted_average(
-                existing.average_entry,
-                existing.quantity,
-                price,
-                quantity,
-            )?,
-            ..existing
-        };
-        book.positions.insert(instrument.clone(), merged);
-        return Ok(Applied {
-            fill_price: price,
-            fee,
-            realized: 0,
-        });
-    }
-
-    // Opposing: close what overlaps, then open the remainder the other way.
-    let closed = quantity.value.min(existing.quantity.value);
-    let realized = close_pnl(
-        existing.side,
-        existing.average_entry,
-        price,
-        Scaled::new(quantity.scale, closed),
-    )?;
-    let remaining = quantity.value - closed;
-
-    if remaining > 0 {
-        book.positions.insert(
-            instrument.clone(),
-            BookPosition {
-                side: opening,
-                quantity: Scaled::new(quantity.scale, remaining),
-                average_entry: price,
-                realized: existing.realized.saturating_add(realized),
-                opened_at: now,
-            },
-        );
-    } else if existing.quantity.value == closed {
-        book.positions.remove(instrument);
-    } else {
-        book.positions.insert(
-            instrument.clone(),
-            BookPosition {
-                quantity: Scaled::new(existing.quantity.scale, existing.quantity.value - closed),
-                realized: existing.realized.saturating_add(realized),
-                ..existing
-            },
-        );
-    }
-
-    Ok(Applied {
-        fill_price: price,
-        fee,
-        realized,
-    })
-}
-
 /// Profit from closing `quantity` of a position opened at `entry` at
 /// `exit`, at [`CASH_SCALE`].
 ///
@@ -365,73 +252,6 @@ pub fn close_pnl(
     let difference = Scaled::new(entry.scale, exit.value.saturating_sub(entry.value));
     let gross = notional(difference, quantity)?;
     Ok(gross.saturating_mul(side.sign()))
-}
-
-/// The price a market order fills at, given the mark.
-///
-/// # Errors
-/// [`TradeError`] when the arithmetic does not fit.
-pub fn market_fill_price(
-    mark: Scaled,
-    side: OrderSide,
-    terms: Terms,
-) -> Result<Scaled, TradeError> {
-    slip(mark, terms.slippage_bps, side.sign())
-}
-
-/// Whether a resting order's condition is met by `mark`.
-///
-/// A limit buy fills when the market comes down to it, a limit sell when it
-/// comes up. A stop is the mirror image: it exists to be triggered by the
-/// market moving *against* the position, so a stop buy triggers on the way
-/// up.
-#[must_use]
-pub fn is_triggered(kind: OrderKind, side: OrderSide, mark: Scaled) -> bool {
-    let Some(reference) = (match kind {
-        OrderKind::Limit { price } => Some((price, true)),
-        OrderKind::Stop { trigger } | OrderKind::StopLimit { trigger, .. } => {
-            Some((trigger, false))
-        }
-        // `Market` has nothing to wait for, and `OrderKind` is
-        // `#[non_exhaustive]`: a kind this adapter has not been taught
-        // never fills rather than filling on a guessed condition.
-        _ => None,
-    }) else {
-        return false;
-    };
-    let (level, is_limit) = reference;
-    let Some(mark) = mark.rescale(level.scale) else {
-        return false;
-    };
-    match (side, is_limit) {
-        (OrderSide::Buy, true) | (OrderSide::Sell, false) => mark.value <= level.value,
-        (OrderSide::Sell, true) | (OrderSide::Buy, false) => mark.value >= level.value,
-    }
-}
-
-/// Applies an amendment's supplied prices onto `kind`, keeping whichever
-/// field the amendment left `None` unchanged.
-///
-/// Every field `amendment` carries is assumed to already fit `kind` — the
-/// engine refuses a limit price for a market order, or a trigger for a
-/// plain limit, before this is ever called. `Market` has no price to amend
-/// at all, and `OrderKind` is `#[non_exhaustive]`: a kind this build has not
-/// been taught is left exactly as it was rather than guessed at.
-#[must_use]
-pub fn apply_amendment(kind: OrderKind, amendment: OrderAmendment) -> OrderKind {
-    match kind {
-        OrderKind::Limit { price } => OrderKind::Limit {
-            price: amendment.limit_price.unwrap_or(price),
-        },
-        OrderKind::Stop { trigger } => OrderKind::Stop {
-            trigger: amendment.trigger_price.unwrap_or(trigger),
-        },
-        OrderKind::StopLimit { trigger, price } => OrderKind::StopLimit {
-            trigger: amendment.trigger_price.unwrap_or(trigger),
-            price: amendment.limit_price.unwrap_or(price),
-        },
-        other => other,
-    }
 }
 
 /// Turns a stored order into the shape the engine reports.
