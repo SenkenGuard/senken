@@ -29,6 +29,16 @@ pub enum Resource {
     Strategy,
     /// A broker or exchange account attached by a user.
     Account,
+    /// An order, and the fills it produced, on one of those accounts.
+    ///
+    /// Separate from [`Account`](Self::Account) because configuring an
+    /// account and sending money-moving instructions with it are different
+    /// authorities: a role may reasonably read a portfolio without being
+    /// allowed to trade it, and an operator may attach an account for
+    /// someone else to trade. `Create` places an order, `Delete` cancels
+    /// one, `Edit` amends one, `View` reads the order book and the fill
+    /// history.
+    Order,
     /// A connected adapter (broker/exchange integration instance).
     Adapter,
     /// A user record — creating, editing or removing accounts.

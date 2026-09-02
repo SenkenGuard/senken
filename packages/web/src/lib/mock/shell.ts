@@ -1,4 +1,4 @@
-// Mock data for the shared shell chrome (TopBar / NavRail / FooterBar).
+// Mock data for the shared shell chrome (NavRail / FooterBar).
 //
 // Ported from the design reference — NAV at
 // line 1285, NAV_WIDGETS at line 1321, FOOT_WIDGETS at line 1331, SYMS at
@@ -49,29 +49,6 @@ export const NAV: NavEntry[] = [
 		desc: 'Order routing, risk caps, execution log'
 	}
 ];
-
-/** TopBar HUD stat cells (reference: NAV_WIDGETS, the "NAVBAR WIDGETS"
- * toggle panel). `tone` picks the stat-cell color: 'bright' is `--fg`,
- * 'gain' is `--gain`, 'dim' is `--dim`. */
-export interface HudWidget {
-	key: string;
-	label: string;
-	value: string;
-	tone: 'bright' | 'gain' | 'dim';
-}
-
-export const HUD_WIDGETS: HudWidget[] = [
-	{ key: 'equity', label: 'EQUITY', value: '$128,442.10', tone: 'bright' },
-	{ key: 'pnl', label: 'PNL 24H', value: '▲ +12.4%', tone: 'gain' },
-	{ key: 'risk', label: 'OPEN RISK', value: '2.1R', tone: 'bright' },
-	{ key: 'latency', label: 'LATENCY', value: '0.31 ms', tone: 'dim' },
-	{ key: 'session', label: 'SESSION', value: 'LONDON', tone: 'dim' },
-	{ key: 'margin', label: 'MARGIN USED', value: '7.4%', tone: 'dim' },
-	{ key: 'buying', label: 'BUYING POWER', value: '$412,900', tone: 'bright' }
-];
-
-/** Default visible HUD stats (reference: `navWidgets` initial state). */
-export const DEFAULT_HUD_KEYS = ['equity', 'pnl', 'risk', 'latency', 'session'];
 
 /** One key/value row inside a footer segment's hover detail card. `tone`
  * mirrors the reference's gain/loss/neutral coloring. */

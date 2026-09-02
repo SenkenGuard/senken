@@ -42,6 +42,11 @@ export interface ChartSettings {
 	symbolLabel: 'VALUE + LINE' | 'VALUE' | 'HIDDEN';
 	highLow: boolean;
 	bidAsk: boolean;
+	/** Position and working-order price lines — the account's own entry and
+	 * resting-order levels, drawn on whichever pane shows that instrument.
+	 * Defaults on: a position the user holds is not something to opt into
+	 * seeing. */
+	tradeLines: boolean;
 	dayOfWeek: boolean;
 	timeFormat: '24H' | '12H';
 	bgMode: 'THEME' | 'SOLID';
@@ -84,7 +89,7 @@ export function defaultChartSettings(): ChartSettings {
 		statusSymbol: true, statusOhlc: true, statusChange: true, statusVolume: false,
 		statusValues: true, statusInputs: true,
 		placement: 'RIGHT',
-		countdown: true, symbolLabel: 'VALUE + LINE', highLow: false, bidAsk: false, dayOfWeek: true, timeFormat: '24H',
+		countdown: true, symbolLabel: 'VALUE + LINE', highLow: false, bidAsk: false, tradeLines: true, dayOfWeek: true, timeFormat: '24H',
 		bgMode: 'THEME', bgColor: '#0a0a0c', gridV: true, gridVColor: 'auto', gridH: true, gridHColor: 'auto',
 		crosshair: 'DASHED', crosshairColor: 'auto', watermark: 'HIDDEN', watermarkColor: 'auto',
 		priceScaleMode: 'REGULAR', invertScale: false, autoScale: true, paneSplit: [],
@@ -247,6 +252,7 @@ export function buildSettingsRows(
 				chk('COUNTDOWN TO BAR CLOSE', 'countdown'),
 				optRow('SYMBOL LABEL', 'symbolLabel', ['VALUE + LINE', 'VALUE', 'HIDDEN']),
 				chk('HIGH AND LOW LINES', 'highLow'),
+				chk('POSITION AND ORDER LINES', 'tradeLines'),
 				{
 					...chk('BID AND ASK LINES', 'bidAsk'),
 					disabled: capabilities.quotes === false,

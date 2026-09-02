@@ -50,7 +50,24 @@ import type {
 	UpdateNoteRequest,
 	StorageReportDto,
 	DeleteStorageRequest,
-	DeleteStorageResponse
+	DeleteStorageResponse,
+	AdaptersResponse,
+	TradeAccountsPage,
+	TradeAccountStateDto,
+	CreateTradeAccountRequest,
+	UpdateTradeAccountRequest,
+	TradeAccountSettingsDto,
+	ReplaceSettingsRequest,
+	BalancesDto,
+	PositionDto,
+	OrderDto,
+	FillDto,
+	PlaceOrderRequest,
+	CloseRequest,
+	AmendOrderRequest,
+	HealthDto,
+	RunActionRequest,
+	ActionOutcomeDto
 } from './types';
 
 export type SessionExpiredHandler = () => void;
@@ -628,6 +645,155 @@ class ApiClient {
 			method: 'POST',
 			body: JSON.stringify(body)
 		});
+	}
+
+	// ------------------------------------------------------------------
+	// Trade engine: the adapters a plugin registered, the accounts a user
+	// attached to them, and the orders, positions and balances read back
+	// through those adapters.
+	//
+	// Nothing here is cached. A broker is the system of record for its own
+	// account, so every figure on screen is what the adapter answered on
+	// this request — the server does not keep a copy, and neither does
+	// this client.
+	// ------------------------------------------------------------------
+
+	/** `GET /api/trade/adapters`. */
+	async listTradeAdapters(): Promise<AdaptersResponse> {
+		return this.request<AdaptersResponse>('/api/trade/adapters');
+	}
+
+	/** `GET /api/trade/accounts`. */
+	async listTradeAccounts(limit = 100, offset = 0): Promise<TradeAccountsPage> {
+		return this.request<TradeAccountsPage>(
+			`/api/trade/accounts?limit=${limit}&offset=${offset}`
+		);
+	}
+
+	/** `POST /api/trade/accounts`. */
+	async createTradeAccount(body: CreateTradeAccountRequest): Promise<IdResponse> {
+		return this.request<IdResponse>('/api/trade/accounts', {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `GET /api/trade/accounts/{id}`: the account, its resolved access and
+	 * its health, in one round trip. */
+	async tradeAccountState(id: string): Promise<TradeAccountStateDto> {
+		return this.request<TradeAccountStateDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}`
+		);
+	}
+
+	/** `PATCH /api/trade/accounts/{id}`: rename, or enable/disable. */
+	async updateTradeAccount(id: string, body: UpdateTradeAccountRequest): Promise<void> {
+		await this.request<void>(`/api/trade/accounts/${encodeURIComponent(id)}`, {
+			method: 'PATCH',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `DELETE /api/trade/accounts/{id}`. */
+	async deleteTradeAccount(id: string): Promise<void> {
+		await this.request<void>(`/api/trade/accounts/${encodeURIComponent(id)}`, {
+			method: 'DELETE'
+		});
+	}
+
+	/** `GET /api/trade/accounts/{id}/settings`. Credentials come back as
+	 * `null`; `secrets_set` says which of them actually hold one. */
+	async tradeAccountSettings(id: string): Promise<TradeAccountSettingsDto> {
+		return this.request<TradeAccountSettingsDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/settings`
+		);
+	}
+
+	/** `PUT /api/trade/accounts/{id}/settings`. A secret left blank keeps
+	 * whatever is stored — the server applies that before validating, so a
+	 * required credential already on file does not have to be re-typed. */
+	async replaceTradeAccountSettings(
+		id: string,
+		body: ReplaceSettingsRequest
+	): Promise<TradeAccountSettingsDto> {
+		return this.request<TradeAccountSettingsDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/settings`,
+			{ method: 'PUT', body: JSON.stringify(body) }
+		);
+	}
+
+	/** `GET /api/trade/accounts/{id}/health`. */
+	async tradeAccountHealth(id: string): Promise<HealthDto> {
+		return this.request<HealthDto>(`/api/trade/accounts/${encodeURIComponent(id)}/health`);
+	}
+
+	/** `GET /api/trade/accounts/{id}/balances`. */
+	async tradeAccountBalances(id: string): Promise<BalancesDto> {
+		return this.request<BalancesDto>(`/api/trade/accounts/${encodeURIComponent(id)}/balances`);
+	}
+
+	/** `GET /api/trade/accounts/{id}/positions`. */
+	async tradeAccountPositions(id: string): Promise<PositionDto[]> {
+		return this.request<PositionDto[]>(`/api/trade/accounts/${encodeURIComponent(id)}/positions`);
+	}
+
+	/** `GET /api/trade/accounts/{id}/orders`. */
+	async tradeAccountOrders(id: string, status: 'open' | 'all' = 'open'): Promise<OrderDto[]> {
+		return this.request<OrderDto[]>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/orders?status=${status}`
+		);
+	}
+
+	/** `GET /api/trade/accounts/{id}/fills`. */
+	async tradeAccountFills(id: string): Promise<FillDto[]> {
+		return this.request<FillDto[]>(`/api/trade/accounts/${encodeURIComponent(id)}/fills`);
+	}
+
+	/** `POST /api/trade/accounts/{id}/orders`. */
+	async placeOrder(id: string, body: PlaceOrderRequest): Promise<OrderDto> {
+		return this.request<OrderDto>(`/api/trade/accounts/${encodeURIComponent(id)}/orders`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `DELETE /api/trade/accounts/{id}/orders/{orderId}`. */
+	async cancelOrder(id: string, orderId: string): Promise<OrderDto> {
+		return this.request<OrderDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/orders/${encodeURIComponent(orderId)}`,
+			{ method: 'DELETE' }
+		);
+	}
+
+	/** `PATCH /api/trade/accounts/{id}/orders/{orderId}`: amends a resting
+	 * order's size, limit price or trigger price in place. */
+	async amendOrder(id: string, orderId: string, body: AmendOrderRequest): Promise<OrderDto> {
+		return this.request<OrderDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/orders/${encodeURIComponent(orderId)}`,
+			{ method: 'PATCH', body: JSON.stringify(body) }
+		);
+	}
+
+	/** `POST /api/trade/accounts/{id}/close`: closes an open position by
+	 * sending an opposite market order for exactly the size the adapter
+	 * reports held right now — never a size this client chose. */
+	async closePosition(id: string, body: CloseRequest): Promise<OrderDto> {
+		return this.request<OrderDto>(`/api/trade/accounts/${encodeURIComponent(id)}/close`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `POST /api/trade/accounts/{id}/actions/{actionId}`. */
+	async runAdapterAction(
+		id: string,
+		actionId: string,
+		body: RunActionRequest
+	): Promise<ActionOutcomeDto> {
+		return this.request<ActionOutcomeDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`,
+			{ method: 'POST', body: JSON.stringify(body) }
+		);
 	}
 
 	/**

@@ -47,7 +47,15 @@ In progress: wiring `senken-runtime` to actually run a `SeriesLoader` against
 a registered `BarSource` (today it only wires `MarketDataSource`s), the HTTP
 API (`crates/api`), and the web and desktop shell.
 
-Not started: the trade engine.
+The trade engine (`crates/trade`, `crates/api`'s `/api/trade` surface, the
+built-in simulator, and the web terminal's Engine/Accounts/Adapters views) has
+landed: order placement, cancel, amend and close; per-account access
+resolution distinct from an adapter's maximum capabilities; a shared
+portfolio store the engine page and the chart's order ticket both read; and
+account health surfaced on the account card and chip. What is not built yet:
+an adapter-declared refresh cadence (every adapter is polled at the same
+fixed interval today; see `crates/trade/README.md`), and any adapter beyond
+the simulator that actually reaches a real venue.
 
 ## Layout
 
@@ -59,12 +67,13 @@ Not started: the trade engine.
 | `crates/series` | `senken-series` | yes | `Bar`, `BarSpec`, `Origin`, `Trade`, streaming aggregation, `Clock` — pure computation |
 | `crates/store` | `senken-store` | yes | Parquet-backed series storage; coverage derived from filenames |
 | `crates/venue` | `senken-venue` | yes | Shared venue plumbing: HTTP, retry, rate limiting, decode helpers |
-| `crates/plugin` | `senken-plugin` | with runtime | The plugin contract: manifest, activation context, lifecycle, the `MarketDataSource`/`BarSource` registration surface |
+| `crates/plugin` | `senken-plugin` | with runtime | The plugin contract: manifest, activation context, lifecycle, the `MarketDataSource`/`BarSource`/`TradeAdapter` registration surface |
 | `crates/loader` | `senken-loader` | yes | Resolution, caching and the job model behind chart and backtest loads |
 | `crates/subscription` | `senken-subscription` | yes | The live-data subscription pool: reference-counted, `Drop`-guarded leases on `(source, symbol)`, sharded across a venue's stream cap |
+| `crates/trade` | `senken-trade` | yes | The trade engine: the `TradeAdapter` contract, the order/position/balance vocabulary, adapter capabilities resolved per account (an MT5 investor login reads but cannot trade, even though its adapter can), dynamic settings schemas, and the attached-account store |
 | `crates/api` | `senken-api` | no | HTTP surface over the runtime |
 | `crates/runtime` | `senken-runtime` | no | Assembles storage, domain services and plugins into a running Senken |
-| `plugins/*` | `senken-plugin-*` | source: yes | One crate per venue (see below) |
+| `plugins/*` | `senken-plugin-*` | source: yes | One crate per venue (see below), plus `simulator`, the built-in paper broker |
 | `apps/cli` | `senken-cli` | — | Command line front end |
 
 Dependencies only point downward: a plugin depends on a domain crate, never the

@@ -1,23 +1,26 @@
-// Mock data for the dashboard page, plus
-// the derived dashboard props from the state/mock script block: CATALOG at
-// line 1353, the initial `workspaces` at line 1560, the mulberry-seeded
-// equity/heatmap/flow generators at lines 2185-2280, and the
-// watchlist/positions/signals/feed fixtures at lines 3103-3145.
+// Mock data for the dashboard page: the workspace/widget layout scaffolding
+// (CATALOG, INITIAL_WORKSPACES, SPAN_STEPS/SPAN_CLASS) plus the fixtures
+// behind the widgets that are not account data — watchlist, volatility
+// heatmap, signal desk, buy/sell flow, news tape.
 //
-// No `fetch`, no `/api` calls: this page is UI-only, so every value here is a
-// fixture, not a snapshot of anything real. The equity spark line, benchmark
-// line, volatility heatmap and flow bars reproduce the reference's own
+// The `equity`, `positions` and `risk` widgets are real: they read
+// `tradeStore`'s portfolios through `lib/trade/view.ts`'s
+// `dashboardEquity`/`dashboardPositions`/`dashboardRisk`, the same way the
+// engine page does, and this file exports no fixture for any of the three —
+// see those functions' own docs for why an equity *curve* specifically is
+// not among them. Everything below remains a fixture, each said so at its
+// own definition now that this file is no longer UI-only end to end. The
+// heatmap and flow generators reproduce the reference's own
 // `mulberry32`-seeded pseudo-random walks verbatim (same seeds, same
-// formulas) so the shapes rendered here match the reference exactly rather
-// than being invented.
+// formulas) so their shapes match the reference exactly rather than being
+// invented.
 //
 // Deviation from the reference: `lastPrice()` in the reference comes from
 // `genCandles`, a seeded OHLC simulator that belongs to the charts page
 // (`chart-pane` owns the candle simulation). Duplicating
-// that simulator here would cross the P2/P3 file boundary, so positions and
-// the watchlist use each symbol's fixture `base` price directly instead —
-// the same numbers `genCandles` would settle near, without importing its
-// code.
+// that simulator here would cross the P2/P3 file boundary, so the
+// watchlist uses each symbol's fixture `base` price directly instead — the
+// same numbers `genCandles` would settle near, without importing its code.
 
 export type WidgetType =
 	| 'equity'
@@ -56,7 +59,7 @@ export interface CatalogEntry {
 }
 
 export const CATALOG: CatalogEntry[] = [
-	{ type: 'equity', title: 'Equity Curve', span: 6, hint: 'balance + benchmark', minHeightClass: 'min-h-[272px]' },
+	{ type: 'equity', title: 'Account Equity', span: 6, hint: 'balance, PnL and margin', minHeightClass: 'min-h-[272px]' },
 	{ type: 'watchlist', title: 'Watchlist', span: 3, hint: 'tracked pairs', minHeightClass: 'min-h-[272px]' },
 	{ type: 'positions', title: 'Open Positions', span: 6, hint: 'live PnL table', minHeightClass: 'min-h-[272px]' },
 	{ type: 'risk', title: 'Risk Meters', span: 3, hint: 'exposure gauges', minHeightClass: 'min-h-[236px]' },
@@ -166,48 +169,8 @@ function mulberry(seed: number): () => number {
 	};
 }
 
-// --- Equity card (reference lines 154-181, values at 3103-3107) ---
-
-export interface EquityData {
-	value: string;
-	delta: string;
-	deltaTone: Tone;
-	/** 0-100 domain walk, paired with `min`/`max` below (reference: `p1`). */
-	series: number[];
-	/** 0-100 domain benchmark walk (reference: `p2`). */
-	benchmark: number[];
-	min: number;
-	max: number;
-}
-
-function buildEquitySeries(): { series: number[]; benchmark: number[] } {
-	const eq = mulberry(41);
-	let ev = 40;
-	let bv = 40;
-	const series: number[] = [];
-	const benchmark: number[] = [];
-	for (let i = 0; i < 60; i++) {
-		ev = Math.max(6, Math.min(94, ev + (eq() - 0.36) * 5));
-		bv = Math.max(6, Math.min(94, bv + (eq() - 0.45) * 4));
-		series.push(ev);
-		benchmark.push(bv);
-	}
-	return { series, benchmark };
-}
-
-const { series: equitySeries, benchmark: equityBenchmark } = buildEquitySeries();
-
-export const EQUITY: EquityData = {
-	value: '$128,442.10',
-	delta: '+$14,220.50',
-	deltaTone: 'gain',
-	series: equitySeries,
-	benchmark: equityBenchmark,
-	min: 0,
-	max: 100
-};
-
 // --- Watchlist (reference lines 183-201, values at 3108-3111) ---
+// Still a fixture: tracked-pair prices, not read from any source.
 
 export interface WatchlistRow {
 	ticker: string;
@@ -225,67 +188,8 @@ export const WATCHLIST: WatchlistRow[] = SYMS.map((s) => ({
 	tone: toneOf(s.chg)
 }));
 
-// --- Positions (reference lines 203-217, values at 3112-3131) ---
-
-export interface PositionRow {
-	ticker: string;
-	side: 'LONG' | 'SHORT';
-	sideTone: Tone;
-	entry: string;
-	mark: string;
-	pnl: string;
-	tone: Tone;
-}
-
-interface PositionSeed {
-	pair: string;
-	side: 'LONG' | 'SHORT';
-	qty: number;
-	/** entry offset from mark, e.g. -0.031 = entry 3.1% below mark. */
-	off: number;
-}
-
-const POSITION_SEEDS: PositionSeed[] = [
-	{ pair: 'BTC/USDT', side: 'LONG', qty: 0.42, off: -0.031 },
-	{ pair: 'SOL/USDT', side: 'LONG', qty: 74, off: -0.026 },
-	{ pair: 'XAU/USD', side: 'SHORT', qty: 6, off: -0.004 },
-	{ pair: 'ARB/USDT', side: 'SHORT', qty: 3200, off: 0.038 }
-];
-
-export const POSITIONS: PositionRow[] = POSITION_SEEDS.map((p) => {
-	const sym = SYMS.find((s) => s.pair === p.pair) ?? SYMS[0];
-	const mark = sym.base;
-	const entry = mark * (1 + p.off);
-	const dir = p.side === 'LONG' ? 1 : -1;
-	const pnlv = (mark - entry) * p.qty * dir;
-	return {
-		ticker: sym.ticker,
-		side: p.side,
-		sideTone: p.side === 'LONG' ? 'gain' : 'loss',
-		entry: fmt(entry),
-		mark: fmt(mark),
-		pnl: (pnlv >= 0 ? '+$' : '-$') + Math.abs(pnlv).toLocaleString('en-US', { maximumFractionDigits: 0 }),
-		tone: toneOf(pnlv)
-	};
-});
-
-// --- Risk meters (reference lines 219-234, values at 3129-3130) ---
-
-export interface RiskBar {
-	label: string;
-	value: string;
-	fraction: number;
-	tone: Tone;
-}
-
-export const RISK_BARS: RiskBar[] = [
-	{ label: 'PORTFOLIO HEAT', value: '92%', fraction: 0.92, tone: 'neutral' },
-	{ label: 'MARGIN USED', value: '7.4%', fraction: 0.074, tone: 'neutral' },
-	{ label: 'DRAWDOWN', value: '-2.1%', fraction: 0.21, tone: 'loss' },
-	{ label: 'ALLOC · BTC', value: '41%', fraction: 0.41, tone: 'gain' }
-];
-
 // --- Volatility heatmap (reference lines 236-247, generator at 2227-2232) ---
+// Still a fixture: a seeded pseudo-random grid, not read from any source.
 
 const heatRng = mulberry(9);
 export const HEAT_CELLS: number[] = Array.from({ length: 56 }, () => {
@@ -295,6 +199,7 @@ export const HEAT_CELLS: number[] = Array.from({ length: 56 }, () => {
 export const HEAT_MONTH_LABELS = ['MAY', 'JUN', 'JUL', 'AUG'];
 
 // --- Signal desk (reference lines 249-266, values at 3132-3136) ---
+// Still a fixture: no model produces these verdicts.
 
 export interface Signal {
 	pair: string;
@@ -329,6 +234,7 @@ export const SIGNALS: Signal[] = [
 ];
 
 // --- Buy / sell flow (reference lines 268-282, generator at 2244) ---
+// Still a fixture: a seeded pseudo-random split, not read from any source.
 
 export interface FlowBar {
 	up: string;
@@ -344,6 +250,7 @@ export const FLOW_BARS: FlowBar[] = Array.from({ length: 10 }, () => ({
 export const FLOW_SUMMARY = { netBuy: '+$15,256', txns: '45,447', vol: '150M' };
 
 // --- News tape (reference lines 284-293, values at 3138-3143) ---
+// Still a fixture: no source produces these headlines.
 
 export interface FeedItem {
 	time: string;

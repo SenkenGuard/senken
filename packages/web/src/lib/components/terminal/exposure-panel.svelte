@@ -2,7 +2,7 @@
 	// Overview view's "EQUITY BY ADAPTER" panel: a header line with the account/adapter counts, then
 	// one proportional bar per adapter the account set touches.
 	import { cn } from '$lib/utils.js';
-	import type { ExposureItem } from '$lib/mock/engine';
+	import type { ExposureItem } from '$lib/trade/view';
 
 	let {
 		items,
@@ -32,7 +32,10 @@
 					></div>
 				</div>
 				<span class="w-[42px] flex-none text-right font-mono text-[9.5px] text-dim2">{x.pct}%</span>
-				<span class="w-24 flex-none text-right font-mono text-[10.5px] text-foreground">{x.equity}</span>
+				<span class="w-28 flex-none text-right font-mono text-[10.5px] text-foreground">
+					{x.equity}
+					<span class="text-dim2">{x.currency}</span>
+				</span>
 			</div>
 		{/each}
 	</div>

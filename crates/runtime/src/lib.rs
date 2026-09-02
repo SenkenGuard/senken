@@ -35,6 +35,7 @@ use senken_plugin::{
 };
 use senken_storage::Storage;
 use senken_store::Store;
+use senken_trade::TradeEngine;
 
 /// Error types.
 pub mod error;
@@ -152,6 +153,7 @@ impl RuntimeBuilder {
         let mut records: Vec<PluginRecord> = Vec::with_capacity(self.plugins.len());
         let mut seen = HashSet::with_capacity(self.plugins.len());
         let mut bar_sources: Vec<Arc<dyn BarSource>> = Vec::new();
+        let mut trade = TradeEngine::new();
         // One context for the whole run, so resources it caches (the shared
         // HTTP client) are shared by every plugin.
         let mut context = ActivationContext::new();
@@ -162,8 +164,11 @@ impl RuntimeBuilder {
                 &*plugin,
                 &manifest,
                 &mut context,
-                &mut marketdata,
-                &mut bar_sources,
+                Registries {
+                    marketdata: &mut marketdata,
+                    bar_sources: &mut bar_sources,
+                    trade: &mut trade,
+                },
                 &mut seen,
                 self.identity.as_deref(),
             ) {
@@ -202,16 +207,25 @@ impl RuntimeBuilder {
             marketdata,
             series,
             series_store,
+            trade: Arc::new(trade),
         })
     }
+}
+
+/// The three registries a plugin's activation contributes into, passed as
+/// one so [`activate`]'s signature does not grow a parameter per
+/// capability.
+struct Registries<'a> {
+    marketdata: &'a mut MarketData,
+    bar_sources: &'a mut Vec<Arc<dyn BarSource>>,
+    trade: &'a mut TradeEngine,
 }
 
 fn activate(
     plugin: &dyn Plugin,
     manifest: &PluginManifest,
     context: &mut ActivationContext,
-    marketdata: &mut MarketData,
-    bar_sources: &mut Vec<Arc<dyn BarSource>>,
+    registries: Registries<'_>,
     seen: &mut HashSet<String>,
     identity: Option<&IdentityStore>,
 ) -> Result<(), RuntimeError> {
@@ -240,6 +254,7 @@ fn activate(
         // first; it must not leak into the next plugin's activation.
         drop(context.take_marketdata_sources());
         drop(context.take_bar_sources());
+        drop(context.take_trade_adapters());
         return Err(RuntimeError::PluginActivation {
             plugin: manifest.id.clone(),
             source,
@@ -266,6 +281,12 @@ fn activate(
             })?;
     }
 
+    let Registries {
+        marketdata,
+        bar_sources,
+        trade,
+    } = registries;
+
     for source in context.take_marketdata_sources() {
         tracing::info!(
             plugin = manifest.id,
@@ -287,6 +308,20 @@ fn activate(
             "registering bar source"
         );
         bar_sources.push(source);
+    }
+
+    for adapter in context.take_trade_adapters() {
+        tracing::info!(
+            plugin = manifest.id,
+            adapter = adapter.id(),
+            "registering trade adapter"
+        );
+        trade
+            .register(adapter)
+            .map_err(|source| RuntimeError::TradeAdapterRegistration {
+                plugin: manifest.id.clone(),
+                source,
+            })?;
     }
     Ok(())
 }
@@ -327,6 +362,10 @@ pub struct Runtime {
     /// instance rather than constructing a second `Store` pointed at the
     /// same directory. Cheap to clone (a path plus an `Arc`'d lock table).
     series_store: Store,
+    /// Every trade adapter the activated plugins registered. An `Arc` so
+    /// the HTTP layer can hold it for the process's lifetime, the same way
+    /// it holds [`marketdata`](Self::marketdata).
+    trade: Arc<TradeEngine>,
 }
 
 impl Runtime {
@@ -370,6 +409,16 @@ impl Runtime {
     #[must_use]
     pub fn store(&self) -> &Store {
         &self.series_store
+    }
+
+    /// Every registered trade adapter, as one registry.
+    ///
+    /// Empty when no activated plugin registered one, which is a normal
+    /// state: an installation that only reads market data has no adapters
+    /// and needs none.
+    #[must_use]
+    pub fn trade(&self) -> &Arc<TradeEngine> {
+        &self.trade
     }
 
     /// Deactivates every plugin in reverse order and consumes the runtime.
