@@ -23,6 +23,12 @@ pub enum Resource {
     ChartWorkspace,
     /// A chart layout within a chart workspace.
     ChartLayout,
+    /// A saved dashboard workspace and its widget grid. Its own variant
+    /// (not folded into `ChartWorkspace`) for the same reason that one is
+    /// not named plain `Workspace`: a dashboard and a chart are two
+    /// separate aggregates, each with grants a role or a direct grant may
+    /// need to scope independently.
+    DashboardWorkspace,
     /// A price or condition alert.
     Alert,
     /// A trading strategy definition.
@@ -37,6 +43,13 @@ pub enum Resource {
     Role,
     /// An indicator definition or instance.
     Indicator,
+    /// A published indicator registry entry — source an account has
+    /// published for other accounts to search and install. Its own
+    /// variant, distinct from `Indicator` (an indicator definition or
+    /// instance in use on a chart), because publishing to the public
+    /// registry is a separate, author-scoped action from configuring an
+    /// indicator for oneself.
+    IndicatorRegistry,
     /// A user-authored group of watched instruments, and its membership —
     /// a saved artifact like a chart workspace, so it takes the same
     /// ordinary scope-limited grants rather than a special rule of its
@@ -48,6 +61,14 @@ pub enum Resource {
     /// reclamation — distinct from the market data itself, which has no
     /// owner to check a grant against.
     Storage,
+    /// A dynamic widget UI package: installing, enabling/disabling and
+    /// removing one from the dashboard's widget catalog. Its own variant,
+    /// distinct from `Storage`, because a widget package is third-party
+    /// code the server will run in a sandboxed iframe for every user of
+    /// this server — a different, narrower administrative concern from
+    /// "how much disk this install is using", even though both are
+    /// properties of the whole server rather than any one account.
+    WidgetPlugin,
 }
 
 #[cfg(test)]

@@ -21,6 +21,8 @@ export type LoginRequest = Schemas['LoginRequest'];
 export type LoginResponse = Schemas['LoginResponse'];
 export type SetPasswordRequest = Schemas['SetPasswordRequest'];
 export type MeResponse = Schemas['MeResponse'];
+export type UserZoneResponse = Schemas['UserZoneResponse'];
+export type SetZoneRequest = Schemas['SetZoneRequest'];
 export type WsTicketResponse = Schemas['WsTicketResponse'];
 export type ErrorBody = Schemas['ErrorBody'];
 
@@ -81,6 +83,16 @@ export type IndicatorScaledPriceDto = Schemas['IndicatorScaledPriceDto'];
 export type IndicatorExtendDto = Schemas['IndicatorExtendDto'];
 export type IndicatorLabelAnchorDto = Schemas['IndicatorLabelAnchorDto'];
 export type ComputeIndicatorResponse = Schemas['ComputeIndicatorResponse'];
+export type IndicatorPluginDto = Schemas['IndicatorPluginDto'];
+export type IndicatorPluginOriginDto = Schemas['IndicatorPluginOriginDto'];
+export type IndicatorPluginStateDto = Schemas['IndicatorPluginStateDto'];
+export type PluginHealthDto = Schemas['PluginHealthDto'];
+export type PluginCircuitStateDto = Schemas['PluginCircuitStateDto'];
+export type PluginLogLineDto = Schemas['PluginLogLineDto'];
+export type PluginLogSeverityDto = Schemas['PluginLogSeverityDto'];
+export type SetIndicatorPluginEnabledRequest = Schemas['SetIndicatorPluginEnabledRequest'];
+export type CompileIndicatorRequest = Schemas['CompileIndicatorRequest'];
+export type CompileIndicatorErrorDto = Schemas['CompileIndicatorErrorDto'];
 
 // Alerts. `crates/api` mounts
 // `senken_alerts::AlertStore` as of S1, so these are now generated from
@@ -147,6 +159,15 @@ export type NotesPage = Schemas['NotesPage'];
 export type NoteDto = Schemas['NoteDto'];
 export type CreateNoteRequest = Schemas['CreateNoteRequest'];
 export type UpdateNoteRequest = Schemas['UpdateNoteRequest'];
+
+// The indicator registry (`/api/registry/indicators`) — publish, search,
+// install indicator-lang source. `IndicatorSummaryDto` (a listing row)
+// never carries an entry's source; only `IndicatorEntryDto` (`GET
+// /api/registry/indicators/{namespace}/{name}`) does.
+export type IndicatorSummaryDto = Schemas['IndicatorSummaryDto'];
+export type RegistryPage = Schemas['RegistryPage'];
+export type IndicatorEntryDto = Schemas['IndicatorEntryDto'];
+export type PublishIndicatorRequest = Schemas['PublishIndicatorRequest'];
 
 // Storage (`GET /api/storage`, `POST /api/storage/delete`) — what this
 // server is holding on disk, and reclaiming it. Only market data gets a

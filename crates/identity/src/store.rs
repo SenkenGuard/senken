@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use senken_acl::{Action, Grant, PluginPermissionName, PluginPermissionRecord, Resource, Scope};
+use senken_core::IanaZone;
 
 use crate::actor::{AuthenticatedUser, decode_grant, encode_grant, load_actor, resource_to_sql};
 use crate::error::IdentityError;
@@ -38,9 +39,10 @@ const ALL_ACTIONS: [Action; 5] = [
 
 /// Every `Resource` this crate knows about, for the same seeding purpose as
 /// [`ALL_ACTIONS`].
-const ALL_RESOURCES: [Resource; 12] = [
+const ALL_RESOURCES: [Resource; 15] = [
     Resource::ChartWorkspace,
     Resource::ChartLayout,
+    Resource::DashboardWorkspace,
     Resource::Alert,
     Resource::Strategy,
     Resource::Account,
@@ -48,9 +50,11 @@ const ALL_RESOURCES: [Resource; 12] = [
     Resource::User,
     Resource::Role,
     Resource::Indicator,
+    Resource::IndicatorRegistry,
     Resource::Watchlist,
     Resource::Note,
     Resource::Storage,
+    Resource::WidgetPlugin,
 ];
 
 /// Idle session lifetime: 30 days, refreshed on every use.
@@ -129,8 +133,8 @@ impl IdentityStore {
     /// seeds the default superadmin if the database has no
     /// users yet.
     ///
-    /// `path` is the database *file*, not the `accounts/` directory plan
-    /// 001 D12 reserves — joining this crate's default filename with an
+    /// `path` is the database *file*, not the `accounts/` directory the
+    /// application reserves — joining this crate's default filename with an
     /// application's `.data` root is left to the caller (wiring this store
     /// into `senken-runtime` is, not this crate).
     ///
@@ -687,6 +691,73 @@ impl IdentityStore {
         .ok_or(IdentityError::UserNotFound)
     }
 
+    /// The display zone exactly the account behind `user_id` has chosen, or
+    /// `None` if it never has.
+    ///
+    /// Deliberately **not** a [`senken_acl`]-guarded query, for the same
+    /// reason [`get_own_profile`](Self::get_own_profile) is not one: reading
+    /// your own display zone needs no role or grant, and this is safe only
+    /// because every caller (`GET /api/me/zone`) supplies a `user_id` it
+    /// already obtained from a resolved session
+    /// ([`AuthenticatedUser::user_id`]) — never one taken from a request
+    /// parameter naming someone else.
+    ///
+    /// # Errors
+    /// [`IdentityError::UserNotFound`] if `user_id` no longer exists;
+    /// [`IdentityError::CorruptZone`] if the stored value no longer parses
+    /// as an [`IanaZone`] (this crate never writes one that would not —
+    /// see [`set_zone`](Self::set_zone) — so this means the row was written
+    /// by an incompatible version of this crate or edited by hand);
+    /// otherwise as [`IdentityError::Database`].
+    pub fn get_zone(&self, user_id: UserId) -> Result<Option<IanaZone>, IdentityError> {
+        let conn = self.lock();
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT display_zone FROM users WHERE id = ?1",
+                [user_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(IdentityError::UserNotFound)?;
+        stored
+            .map(|id| {
+                IanaZone::new(&id).map_err(|_| {
+                    IdentityError::CorruptZone(format!(
+                        "stored display zone `{id}` no longer parses"
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    /// Sets the display zone of the account behind `user_id`.
+    ///
+    /// Takes an already-validated [`IanaZone`] rather than a raw string —
+    /// the caller (the `PUT /api/me/zone` request body's own `Deserialize`
+    /// impl) has already checked it against the bundled time zone database,
+    /// so this method has nothing left to reject. Not guarded by
+    /// [`senken_acl`], for the same "own account, no grant needed, caller
+    /// supplies a session-derived `user_id`" reasoning as
+    /// [`get_zone`](Self::get_zone). Unlike a privilege change
+    /// (`grant_direct`, `assign_role`), this does not invalidate the
+    /// account's other sessions — a display preference is not a security
+    /// boundary.
+    ///
+    /// # Errors
+    /// [`IdentityError::UserNotFound`] if `user_id` no longer exists;
+    /// otherwise as [`IdentityError::Database`].
+    pub fn set_zone(&self, user_id: UserId, zone: &IanaZone) -> Result<(), IdentityError> {
+        let conn = self.lock();
+        let updated = conn.execute(
+            "UPDATE users SET display_zone = ?1 WHERE id = ?2",
+            params![zone.as_str(), user_id],
+        )?;
+        if updated == 0 {
+            return Err(IdentityError::UserNotFound);
+        }
+        Ok(())
+    }
+
     /// Loads every plugin permission previously recorded for `plugin_id`
     /// (the `plugin_permissions` table), whether currently
     /// registered or orphaned.
@@ -1208,8 +1279,117 @@ fn now_unix() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALL_ACTIONS, ALL_RESOURCES, IdentityStore, SUPERADMIN_ROLE_NAME};
+    use super::{
+        ALL_ACTIONS, ALL_RESOURCES, DEFAULT_ADMIN_EMAIL, IdentityStore, SUPERADMIN_ROLE_NAME,
+    };
+    use senken_core::IanaZone;
     use tempfile::TempDir;
+
+    /// Clears the seeded default admin's B4 fence and returns the
+    /// [`crate::AuthenticatedUser`] needed to call `create_user` — this
+    /// module's own minimal counterpart to `crate::tests::admin_auth`
+    /// (private to that other test module, so not reusable from here).
+    const ADMIN_TEST_PASSWORD: &str = "correct horse battery staple";
+    fn admin_auth(store: &IdentityStore) -> crate::AuthenticatedUser {
+        store
+            .set_password(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD, None)
+            .unwrap();
+        let (_uid, token) = store
+            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
+            .unwrap();
+        store.resolve_session(token.reveal()).unwrap().unwrap()
+    }
+
+    #[test]
+    fn an_account_that_has_never_chosen_a_zone_reads_back_as_not_yet_chosen() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+        let admin = admin_auth(&store);
+
+        assert_eq!(
+            store.get_zone(admin.user_id()).unwrap(),
+            None,
+            "a zone nobody has set must read back as `None`, never an error"
+        );
+    }
+
+    #[test]
+    fn setting_a_zone_and_reading_it_back_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+        let admin = admin_auth(&store);
+        let tokyo = IanaZone::new("Asia/Tokyo").unwrap();
+
+        store.set_zone(admin.user_id(), &tokyo).unwrap();
+
+        assert_eq!(store.get_zone(admin.user_id()).unwrap(), Some(tokyo));
+    }
+
+    /// Two different accounts' zones must never bleed into each other —
+    /// the property the API's `GET`/`PUT /api/me/zone` handlers rely on
+    /// being true at this layer, since they derive `user_id` from the
+    /// caller's own resolved session and nothing else.
+    #[test]
+    fn two_accounts_display_zones_are_independent() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+        let admin = admin_auth(&store);
+        let other = store
+            .create_user(&admin, "other@example.com", "Other User", None)
+            .unwrap();
+
+        let new_york = IanaZone::new("America/New_York").unwrap();
+        let jakarta = IanaZone::new("Asia/Jakarta").unwrap();
+        store.set_zone(admin.user_id(), &new_york).unwrap();
+        store.set_zone(other, &jakarta).unwrap();
+
+        assert_eq!(store.get_zone(admin.user_id()).unwrap(), Some(new_york));
+        assert_eq!(
+            store.get_zone(other).unwrap(),
+            Some(jakarta),
+            "setting the admin's zone must not have overwritten the other account's"
+        );
+    }
+
+    #[test]
+    fn getting_or_setting_the_zone_of_an_unknown_user_id_is_user_not_found() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+        let unknown = crate::UserId::new();
+
+        assert!(matches!(
+            store.get_zone(unknown),
+            Err(crate::IdentityError::UserNotFound)
+        ));
+        assert!(matches!(
+            store.set_zone(unknown, &IanaZone::utc()),
+            Err(crate::IdentityError::UserNotFound)
+        ));
+    }
+
+    /// `set_zone` only ever writes a string [`IanaZone::new`] already
+    /// accepted, so the only way `display_zone` holds something that no
+    /// longer parses is a row written by hand or by an incompatible
+    /// version of this crate — exactly the scenario `CorruptZone` exists
+    /// to report rather than silently guess at.
+    #[test]
+    fn a_display_zone_the_bundled_database_no_longer_recognises_is_reported_not_guessed_at() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+        let admin = admin_auth(&store);
+
+        {
+            let conn = store.lock();
+            conn.execute(
+                "UPDATE users SET display_zone = 'Not/AZone' WHERE id = ?1",
+                [admin.user_id()],
+            )
+            .unwrap();
+        }
+
+        let err = store.get_zone(admin.user_id()).unwrap_err();
+        assert!(matches!(err, crate::IdentityError::CorruptZone(_)));
+    }
 
     fn grant_count(store: &IdentityStore) -> i64 {
         let conn = store.lock();

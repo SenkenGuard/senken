@@ -44,6 +44,14 @@ senken-feed = { workspace = true }
 # The accounts store this crate exposes over HTTP.
 senken-identity = { workspace = true }
 senken-indicators = { workspace = true }
+# `compile()` for `POST /api/indicators/compile` — turns indicator-lang
+# source into a component, with line/column diagnostics for a mistake in
+# the trader's own source.
+senken-indicator-lang = { workspace = true }
+# The indicator registry: `RegistryStore` is mounted directly by
+# `registry_handlers`, the same way `senken-notes`' `NoteStore` is mounted
+# by `notes_handlers`.
+senken-indicator-registry = { workspace = true }
 # `SeriesKey`/`BarSpec`/`Anchor`/`Origin` — the bars endpoints' request/
 # response shapes are built from these directly, not a re-declared copy.
 senken-series = { workspace = true }
@@ -54,8 +62,8 @@ senken-core = { workspace = true }
 # `InstrumentId` — parses a request's `source:symbol` the same way every
 # other consumer of `senken-marketdata` does.
 senken-marketdata = { workspace = true }
-# `SeriesLoader`/`Priority`/`Requirement`/`JobSnapshot`
-# 006 B7/S1): the bars endpoints go through this crate's resolution ladder
+# `SeriesLoader`/`Priority`/`Requirement`/`JobSnapshot`:
+# the bars endpoints go through this crate's resolution ladder
 # exactly the way `senken-cli`'s own `bars` subcommand already does, so the
 # cache/store/aggregate/backfill behaviour is not
 # reimplemented at the HTTP boundary.
@@ -89,10 +97,26 @@ senken-watchlist = { workspace = true }
 # Freeform notes: `NoteStore` is mounted directly, the same way
 # `senken-watchlist`'s `WatchlistStore` is.
 senken-notes = { workspace = true }
+# Dashboard workspace persistence: `DashboardWorkspaceStore` and
+# `WidgetRegistry` are used directly by `dashboard_handlers`, the same way
+# `senken-chart`'s `ChartWorkspaceStore` is used by `workspace_handlers`.
+senken-dashboard = { workspace = true }
+# Dynamic widget UI packages: `widget_plugin_handlers` uses
+# `senken_plugin::widget_package::WidgetPackageStore` directly, the same
+# "store checks/validates itself, the handler is transport only" shape
+# every other handler module in this crate already follows.
+senken-plugin = { workspace = true }
+# `PluginHealth`/`PluginLogLine`/`PluginLogSeverity`/`CircuitState`:
+# `indicator_handlers` reports a dynamic indicator plugin's runtime health
+# and ring log over `GET /api/indicators/plugins` directly from
+# `senken_runtime::DynamicIndicatorStatus`'s own fields, which are typed
+# against this crate — the same "reuse the domain vocabulary, do not
+# re-declare it" reasoning `senken-indicators` is depended on for above.
+senken-plugin-host = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt", "sync"] }
+tokio = { workspace = true, features = ["fs", "net", "rt", "sync"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 # The plain HTTP client `source_handlers`'s `VenueClient` wraps to fetch a
@@ -120,8 +144,10 @@ utoipa = { workspace = true }
 # not hit the network).
 async-trait = { workspace = true }
 reqwest = { workspace = true }
-# Test-only: the fake venue plugin the bars/indicators tests register.
-senken-plugin = { workspace = true }
+# Test-only: building a widget plugin package archive in memory for
+# `widget_plugin_handlers`'s own tests, the same way
+# `senken-plugin`'s own store tests build one.
+zip = { workspace = true }
 # Test-only: opens a second raw connection to the same accounts database
 # file a test's `IdentityStore` already created, to simulate a state
 # `senken-identity`'s own public API cannot produce yet (an account whose

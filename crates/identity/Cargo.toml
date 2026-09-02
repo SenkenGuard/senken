@@ -14,6 +14,11 @@ keywords.workspace = true
 
 [dependencies]
 senken-acl = { workspace = true }
+# `IanaZone`: a user's stored display zone is validated against the same
+# bundled time zone database `crates/api/src/dto/time.rs`'s typed input
+# boundary already uses, rather than this crate re-checking a raw string
+# against a second copy of the same rule.
+senken-core = { workspace = true }
 argon2 = { workspace = true }
 rand = { workspace = true }
 rusqlite = { workspace = true }

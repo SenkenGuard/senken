@@ -24,17 +24,52 @@ async-trait = { workspace = true }
 senken-acl = { workspace = true }
 senken-core = { workspace = true }
 senken-identity = { workspace = true }
+# The ten built-in indicators' descriptor vocabulary
+# (`ParamKind`/`ParamDefault`/`PlotShape`/`Drawable`/`DisplayList`) — reused
+# by `plugin_host`'s dynamic-indicator bridge so an uploaded `.wasm`
+# indicator's descriptor and output describe themselves in the exact same
+# terms a built-in's does, rather than a second vocabulary living beside it.
+senken-indicators = { workspace = true }
 senken-loader = { workspace = true }
 senken-marketdata = { workspace = true }
+# A checked, non-`as` numeric conversion `plugin_host.rs` uses for the one
+# WIT `scaled` value this bridge cannot losslessly type as
+# `senken_indicators::ScaledPrice` — see that module's own
+# `scaled_to_f64_lossy`. The same crate, same reason,
+# `senken-plugin-host` already depends on it for its own f64-to-i64
+# direction.
+num-traits = "0.2"
 # The runtime only orchestrates activation; the HTTP client is a plugin's
 # business, so it does not turn that feature on.
 senken-plugin = { workspace = true }
+# Loads and confines compiled `.wasm` indicator components. This crate is
+# the one place a Senken domain crate (`senken-series`, `senken-indicators`,
+# both already required above/below for other reasons) and the plugin
+# runtime are both in scope at once — `senken-plugin-api` must never depend
+# on a domain crate, and `senken-plugin-host`'s own domain dependency exists
+# solely to back the `builtins` WIT import — so the bridge from a real
+# `senken_series::Bar` to the WIT wire shape lives here, in `plugin_host.rs`.
+senken-plugin-host = { workspace = true }
 senken-series = { workspace = true }
 senken-storage = { workspace = true }
 senken-store = { workspace = true }
+serde_json = { workspace = true }
+# Content-addresses a registered `compiled-indicator` component (see
+# `plugin_host.rs::synthesize_compiled_info`): the language has no channel
+# of its own to declare an id or a title, and `senken_indicator_lang::compile`
+# already guarantees the same source always produces byte-identical output,
+# so hashing the compiled bytes gives a stable id for free — the same crate
+# `senken-identity` already uses to hash session tokens before storing them.
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Proves the full compile-register-compute pipeline end to end (`tests/
+# compiled_indicators.rs`) against a real indicator-lang program, produced
+# in-process with no `wasm32-wasip2` toolchain needed — unlike the
+# Rust-authored fixtures under `tests/fixtures/*`, which are ordinary crates
+# built for that target.
+senken-indicator-lang = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

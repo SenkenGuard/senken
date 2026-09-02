@@ -8,11 +8,15 @@ use std::time::{Duration, Instant};
 use axum::extract::ConnectInfo;
 use axum::{Extension, Json, http::StatusCode};
 
+use senken_core::IanaZone;
 use senken_identity::IdentityError;
 
 use crate::HandlerError;
 use crate::auth::Authed;
-use crate::dto::{GrantDto, LoginRequest, LoginResponse, MeResponse, SetPasswordRequest};
+use crate::dto::{
+    GrantDto, LoginRequest, LoginResponse, MeResponse, SetPasswordRequest, SetZoneRequest,
+    UserZoneResponse,
+};
 
 /// Sliding window a login attempt is counted in ("rate-limited per account and per source address").
 const WINDOW: Duration = Duration::from_mins(1);
@@ -153,6 +157,60 @@ pub(crate) async fn me(
     }))
 }
 
+/// `GET /api/me/zone`: the caller's own stored display zone, or `null` if
+/// none has been chosen yet. Self-scoped by construction, the same way
+/// [`me`] is: `ctx.user.user_id()` — the id a real, checked session
+/// resolved to — is the only source of the target account. There is no
+/// path or body parameter that could name a *different* user's zone, so
+/// there is nothing for a caller to spoof here.
+#[utoipa::path(
+    get,
+    path = "/api/me/zone",
+    responses(
+        (status = 200, body = UserZoneResponse),
+        (status = 401, body = crate::dto::ErrorBody),
+        (status = 403, description = "account has not set a password yet", body = crate::dto::ErrorBody),
+    )
+)]
+pub(crate) async fn get_own_zone(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    Extension(ctx): Authed,
+) -> Result<Json<UserZoneResponse>, HandlerError> {
+    let zone = state.identity.get_zone(ctx.user.user_id())?;
+    Ok(Json(UserZoneResponse { zone }))
+}
+
+/// `PUT /api/me/zone`: sets the caller's own display zone. Same self-scoping
+/// as [`get_own_zone`] — `ctx.user.user_id()` is the only account this can
+/// ever write to. `body.zone` is validated against the bundled time zone
+/// database via [`IanaZone::new`] (reusing that type's own check rather than
+/// reimplementing it) once the body has parsed, so an id the database does
+/// not recognise gets this crate's uniform `400` + `ErrorBody` response
+/// instead of axum's default rejection shape — see [`SetZoneRequest`]'s own
+/// doc comment for why validation happens here and not during
+/// deserialisation.
+#[utoipa::path(
+    put,
+    path = "/api/me/zone",
+    request_body = SetZoneRequest,
+    responses(
+        (status = 200, body = UserZoneResponse),
+        (status = 400, description = "not a zone id the bundled database recognises", body = crate::dto::ErrorBody),
+        (status = 401, body = crate::dto::ErrorBody),
+        (status = 403, description = "account has not set a password yet", body = crate::dto::ErrorBody),
+    )
+)]
+pub(crate) async fn set_own_zone(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    Extension(ctx): Authed,
+    Json(body): Json<SetZoneRequest>,
+) -> Result<Json<UserZoneResponse>, HandlerError> {
+    let zone =
+        IanaZone::new(body.zone).map_err(|source| HandlerError::BadRequest(source.to_string()))?;
+    state.identity.set_zone(ctx.user.user_id(), &zone)?;
+    Ok(Json(UserZoneResponse { zone: Some(zone) }))
+}
+
 /// `POST /api/set-password` — the one endpoint the B4 fence exempts.
 ///
 /// Two distinct callers reach this, distinguished by whether the shared
@@ -231,7 +289,7 @@ mod tests {
     use senken_identity::DEFAULT_ADMIN_EMAIL;
 
     use crate::test_support::{
-        body_json, get_auth, post_json, post_json_auth, temp_identity_store,
+        body_json, get_auth, post_json, post_json_auth, put_json_auth, temp_identity_store,
     };
     use crate::{ServeOptions, ServerHandle, serve};
 
@@ -592,6 +650,180 @@ mod tests {
         .status();
 
         assert_eq!(known_account_status, unknown_account_status);
+
+        handle.shutdown().await.unwrap();
+    }
+
+    // --- GET/PUT /api/me/zone ------------------------------------------
+
+    async fn login_token(addr: std::net::SocketAddr, email: &str, password: &str) -> String {
+        body_json(login(addr, email, password).await).await["token"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// Creates a second account (through the admin-only `POST /api/users`,
+    /// which the seeded default admin's `Superadmin` role may always call)
+    /// and returns its own session token — the second identity the
+    /// cross-account isolation tests below need.
+    async fn second_user_token(addr: std::net::SocketAddr, admin_token: &str) -> String {
+        let response = post_json_auth(
+            format!("http://{addr}/api/users"),
+            admin_token,
+            serde_json::json!({
+                "email": "other@example.com",
+                "display_name": "Other User",
+                "initial_password": "a very long password",
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+        login_token(addr, "other@example.com", "a very long password").await
+    }
+
+    #[tokio::test]
+    async fn get_zone_without_a_token_is_unauthorized() {
+        let (handle, _dir) = serve_unfenced().await;
+        let addr = handle.local_addr();
+
+        let response = reqwest::get(format!("http://{addr}/api/me/zone"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_account_that_has_never_set_a_zone_reads_back_null_not_an_error() {
+        let (handle, _dir) = serve_unfenced().await;
+        let addr = handle.local_addr();
+        let token = login_token(addr, DEFAULT_ADMIN_EMAIL, ADMIN_PASSWORD).await;
+
+        let response = get_auth(format!("http://{addr}/api/me/zone"), &token).await;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            body_json(response).await,
+            serde_json::json!({ "zone": null })
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn setting_a_zone_and_reading_it_back_round_trips_over_http() {
+        let (handle, _dir) = serve_unfenced().await;
+        let addr = handle.local_addr();
+        let token = login_token(addr, DEFAULT_ADMIN_EMAIL, ADMIN_PASSWORD).await;
+
+        let put = put_json_auth(
+            format!("http://{addr}/api/me/zone"),
+            &token,
+            serde_json::json!({ "zone": "Asia/Tokyo" }),
+        )
+        .await;
+        assert_eq!(put.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            body_json(put).await,
+            serde_json::json!({ "zone": "Asia/Tokyo" })
+        );
+
+        let get = get_auth(format!("http://{addr}/api/me/zone"), &token).await;
+        assert_eq!(
+            body_json(get).await,
+            serde_json::json!({ "zone": "Asia/Tokyo" })
+        );
+
+        handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn putting_a_zone_id_the_bundled_database_does_not_recognise_is_a_bad_request() {
+        let (handle, _dir) = serve_unfenced().await;
+        let addr = handle.local_addr();
+        let token = login_token(addr, DEFAULT_ADMIN_EMAIL, ADMIN_PASSWORD).await;
+
+        let response = put_json_auth(
+            format!("http://{addr}/api/me/zone"),
+            &token,
+            serde_json::json!({ "zone": "Not/AZone" }),
+        )
+        .await;
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        // Proves the bad request was actually refused, not silently
+        // accepted: the account still reads back with no zone chosen.
+        let get = get_auth(format!("http://{addr}/api/me/zone"), &token).await;
+        assert_eq!(body_json(get).await, serde_json::json!({ "zone": null }));
+
+        handle.shutdown().await.unwrap();
+    }
+
+    /// The property this endpoint pair exists to guarantee: a user may only
+    /// ever read or write *their own* display zone. `get_own_zone`/
+    /// `set_own_zone` take no user id from the path or body at all —
+    /// `ctx.user.user_id()`, from a real resolved session, is the only
+    /// source — so there is no request shape through which one account
+    /// could even name a different one.
+    ///
+    /// This was verified by deliberately removing the guard: `set_own_zone`
+    /// was temporarily changed to write to "the first user row in the
+    /// database" (a `SELECT id FROM users ORDER BY created_at LIMIT 1`)
+    /// instead of `ctx.user.user_id()` — simulating exactly the bug class
+    /// this self-scoping prevents, a write target coming from anywhere
+    /// other than the caller's own checked session. With that change in
+    /// place this test failed exactly as predicted: account B's `PUT`
+    /// silently landed on account A's row (the first user created) instead
+    /// of B's own, so B's own `GET` still read back `zone: null` and the
+    /// `right_zone` lookup panicked on `.unwrap()` of that `None` — proof
+    /// the write reached the wrong account rather than B's own. Restoring
+    /// `ctx.user.user_id()` made the test pass again. See this crate's
+    /// implementation report for the exact diff and the panic output.
+    #[tokio::test]
+    async fn a_user_can_never_read_or_write_another_users_zone() {
+        let (handle, _dir) = serve_unfenced().await;
+        let addr = handle.local_addr();
+        let admin_token = login_token(addr, DEFAULT_ADMIN_EMAIL, ADMIN_PASSWORD).await;
+        let other_token = second_user_token(addr, &admin_token).await;
+
+        let admin_put = put_json_auth(
+            format!("http://{addr}/api/me/zone"),
+            &admin_token,
+            serde_json::json!({ "zone": "America/New_York" }),
+        )
+        .await;
+        assert_eq!(admin_put.status(), reqwest::StatusCode::OK);
+
+        let other_put = put_json_auth(
+            format!("http://{addr}/api/me/zone"),
+            &other_token,
+            serde_json::json!({ "zone": "Europe/London" }),
+        )
+        .await;
+        assert_eq!(other_put.status(), reqwest::StatusCode::OK);
+
+        let left_zone = body_json(
+            get_auth(format!("http://{addr}/api/me/zone"), &admin_token).await,
+        )
+        .await["zone"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let right_zone = body_json(
+            get_auth(format!("http://{addr}/api/me/zone"), &other_token).await,
+        )
+        .await["zone"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        assert_eq!(left_zone, "America/New_York");
+        assert_eq!(right_zone, "Europe/London");
+        assert_ne!(
+            left_zone, right_zone,
+            "each account's own PUT must never be visible through the other account's session"
+        );
 
         handle.shutdown().await.unwrap();
     }

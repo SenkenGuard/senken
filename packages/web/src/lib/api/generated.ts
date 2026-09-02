@@ -154,6 +154,131 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/widgets/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/dashboard/widgets/catalog`: every widget type this build's
+         *     server currently knows how to serve. Unlike every other handler in
+         *     this module, this one takes no store — the registry is pure, in-memory
+         *     data with nothing to authorize.
+         */
+        get: operations["dashboard_widget_catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/dashboard/workspaces`. Scoped by
+         *     `DashboardWorkspaceStore::list_workspaces` itself — a superadmin sees
+         *     every workspace, an ordinary user sees only their own, and the
+         *     reported `total` already respects that scope too.
+         */
+        get: operations["list_dashboard_workspaces"];
+        put?: never;
+        /** `POST /api/dashboard/workspaces`. */
+        post: operations["create_dashboard_workspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/workspaces/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/dashboard/workspaces/default`: the caller's default
+         *     workspace, created on first call.
+         */
+        get: operations["default_dashboard_workspace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/workspaces/{workspace_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * `DELETE /api/dashboard/workspaces/{id}`. Deleting a user's last
+         *     workspace is not specially refused — `GET .../default` re-creates one
+         *     the moment none exists, the same healing `senken-chart`'s own
+         *     `delete_workspace` relies on.
+         */
+        delete: operations["delete_dashboard_workspace"];
+        options?: never;
+        head?: never;
+        /** `PATCH /api/dashboard/workspaces/{id}`. */
+        patch: operations["rename_dashboard_workspace"];
+        trace?: never;
+    };
+    "/api/dashboard/workspaces/{workspace_id}/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/dashboard/workspaces/{id}/layout`: the workspace's full grid.
+         *     Whether a given widget's provider is still available is not decided
+         *     here — a caller cross-references each `widget_type_id` against `GET
+         *     /api/dashboard/widgets/catalog` itself to decide whether to render it
+         *     for real or as a placeholder.
+         */
+        get: operations["get_dashboard_layout"];
+        /**
+         * `PUT /api/dashboard/workspaces/{id}/layout`: replaces the workspace's
+         *     entire widget grid in one transaction. Add, move, resize and delete are
+         *     all just different snapshots through this one call — see
+         *     `senken_dashboard::DashboardWorkspaceStore::replace_layout`'s own docs.
+         *     `409` on `expected_revision` mismatch: another write (most likely a
+         *     second open tab) landed first, and the caller's snapshot is discarded
+         *     rather than silently overwriting it.
+         * @description Responds with the full layout, not just the new revision: a newly
+         *     added widget's id is assigned by the server and never appears in the
+         *     request, so reading it back here (rather than a second `GET`) is the
+         *     only way a caller learns it in time to name that widget by id on its
+         *     very next move or resize.
+         */
+        put: operations["replace_dashboard_layout"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/drawings/{drawing_id}": {
         parameters: {
             query?: never;
@@ -196,12 +321,42 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /api/indicators`: the catalogue of
-         *     `senken-indicators`' ten built-ins.
+         * `GET /api/indicators`: the catalogue of `senken-indicators`' ten
+         *     built-ins, plus every currently-enabled indicator loaded from an
+         *     uploaded `.wasm` component. A plugin disabled through `POST
+         *     /api/indicators/plugins/{name}/enabled` drops out of this list
+         *     immediately — see `senken_runtime::DynamicIndicators::catalog`'s own
+         *     docs for why a chart already showing it is left to notice on its own
+         *     (a placeholder, keeping its stored parameters) rather than this
+         *     endpoint reaching into any chart's state.
          */
         get: operations["list_indicators"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/indicators/compile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/indicators/compile`: compiles indicator-lang `source` into a
+         *     component and registers it the same way `POST /api/indicators/plugins`
+         *     registers an uploaded one — the authoring panel's "run" action. Requires
+         *     `Action::Create` on `Resource::Indicator` at `Scope::All`, the same as
+         *     uploading a compiled component directly: either way the result joins
+         *     the one dynamic-indicator catalogue every user of this server shares.
+         */
+        post: operations["compile_indicator"];
         delete?: never;
         options?: never;
         head?: never;
@@ -222,9 +377,67 @@ export interface paths {
          *     whatever bars are already resolvable for `instrument`/`spec`/`from`/`to`
          *     through the named indicator, one bar at a time — the same incremental
          *     discipline `senken-indicators` itself is built on ("one code path, live or backfilled") — and reports one point per bar once the
-         *     indicator is `initialized()` (never a warm-up value).
+         *     indicator is `initialized()` (never a warm-up value). `indicator.name`
+         *     is looked up against the ten built-ins first and `DynamicIndicators`
+         *     second, so a client never needs to know in advance which catalogue
+         *     serves a given name.
          */
         post: operations["compute_indicator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/indicators/plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/indicators/plugins`: every registered dynamic indicator,
+         *     enabled or not, **including one that never finished loading** — unlike
+         *     `GET /api/indicators`, which only ever lists what a chart may place
+         *     right now. Each entry carries its own runtime health and ring log, so
+         *     this is also the one HTTP surface for diagnosing why a plugin is
+         *     `incompatible`, `failed_to_load` or `auto_disabled` — no separate
+         *     per-plugin log/health endpoint exists, since every entry already reports
+         *     both here. Requires `Action::View` on `Resource::Indicator` at
+         *     `Scope::All`.
+         */
+        get: operations["list_indicator_plugins"];
+        put?: never;
+        /**
+         * `POST /api/indicators/plugins`: registers a compiled `wasm32-wasip2`
+         *     component as a dynamic indicator, from the raw component bytes as the
+         *     request body. Requires `Action::Create` on `Resource::Indicator` at
+         *     `Scope::All`.
+         */
+        post: operations["upload_indicator_plugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/indicators/plugins/{name}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/indicators/plugins/{name}/enabled`: flips whether `GET
+         *     /api/indicators` currently offers this dynamic indicator, without
+         *     discarding the loaded component. Requires `Action::Edit` on
+         *     `Resource::Indicator` at `Scope::All`.
+         */
+        post: operations["set_indicator_plugin_enabled"];
         delete?: never;
         options?: never;
         head?: never;
@@ -365,6 +578,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/zone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/me/zone`: the caller's own stored display zone, or `null` if
+         *     none has been chosen yet. Self-scoped by construction, the same way
+         *     [`me`] is: `ctx.user.user_id()` — the id a real, checked session
+         *     resolved to — is the only source of the target account. There is no
+         *     path or body parameter that could name a *different* user's zone, so
+         *     there is nothing for a caller to spoof here.
+         */
+        get: operations["get_own_zone"];
+        /**
+         * `PUT /api/me/zone`: sets the caller's own display zone. Same self-scoping
+         *     as [`get_own_zone`] — `ctx.user.user_id()` is the only account this can
+         *     ever write to. `body.zone` is validated against the bundled time zone
+         *     database via [`IanaZone::new`] (reusing that type's own check rather than
+         *     reimplementing it) once the body has parsed, so an id the database does
+         *     not recognise gets this crate's uniform `400` + `ErrorBody` response
+         *     instead of axum's default rejection shape — see [`SetZoneRequest`]'s own
+         *     doc comment for why validation happens here and not during
+         *     deserialisation.
+         */
+        put: operations["set_own_zone"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/notes": {
         parameters: {
             query?: never;
@@ -402,6 +650,160 @@ export interface paths {
         post?: never;
         /** `DELETE /api/notes/{note_id}`. */
         delete: operations["delete_note"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/handle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/registry/handle`: reports the caller's own claimed registry
+         *     handle, or `null` if they have not chosen one yet.
+         */
+        get: operations["get_my_handle"];
+        /**
+         * `PUT /api/registry/handle`: claims, or replaces, the caller's own
+         *     registry handle — the human-readable address other users type instead
+         *     of the caller's raw account id (`alice` in `alice/supertrend` rather
+         *     than the account's own id). Requires a session; the target account is
+         *     always the caller's own, never one named in the request body.
+         *     [`publish_indicator`] refuses to run until this has succeeded at least
+         *     once — see `senken_indicator_registry`'s own module docs for why.
+         */
+        put: operations["set_my_handle"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/indicators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/registry/indicators`. The public catalog: no session
+         *     required, every published indicator across every namespace is
+         *     searchable by anyone.
+         */
+        get: operations["search_indicators"];
+        put?: never;
+        /**
+         * `POST /api/registry/indicators`. Requires a session — publishing needs
+         *     an account; installing does not (see this crate's module docs).
+         */
+        post: operations["publish_indicator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/indicators/mine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/registry/indicators/mine`. Scoped by
+         *     `RegistryStore::list_mine` itself — an ordinary author sees only what
+         *     they have published, an actor granted wider access sees every
+         *     namespace's, and the reported `total` already respects that scope too.
+         */
+        get: operations["list_my_indicators"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/indicators/{namespace}/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/registry/indicators/{namespace}/{name}`: the full published
+         *     indicator, source included. Public, like [`search_indicators`].
+         */
+        get: operations["get_indicator"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/indicators/{namespace}/{name}/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/registry/indicators/{namespace}/{name}/install`: fetches the
+         *     current published source, checks its recorded language version against
+         *     this host's own, and — only once that check passes — compiles it with
+         *     `senken_indicator_lang::compile`, right here, on this host. Public: no
+         *     account is required to install (see this crate's module docs).
+         * @description The response body is the compiled `compiled-indicator` WebAssembly
+         *     component's raw bytes (`Content-Type: application/wasm`), not JSON —
+         *     this is the artifact "compiled on the installing machine" actually
+         *     means, not a description of one. The language version it was compiled
+         *     against is echoed in the `X-Indicator-Language-Version` header for a
+         *     caller that wants it without a second round trip to
+         *     [`get_indicator`].
+         */
+        post: operations["install_indicator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/indicators/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * `DELETE /api/registry/indicators/{name}`: revokes the caller's own
+         *     published entry. Carries no request body and no `namespace` path
+         *     segment — a delete always targets the caller's own namespace, the same
+         *     server-derives-identity shape [`PublishIndicatorRequest`] already
+         *     establishes for publishing, so this can never reach another author's
+         *     entry regardless of what the caller's grants say (see
+         *     `senken_indicator_registry::RegistryStore::delete`'s own docs). An
+         *     indicator someone else has already installed is unaffected: installing
+         *     copies the compiled bytes to that machine, so nothing here reaches
+         *     back into a copy that already left this registry.
+         */
+        delete: operations["delete_indicator"];
         options?: never;
         head?: never;
         patch?: never;
@@ -850,6 +1252,134 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/widget-plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/widget-plugins`: every installed package, enabled or not.
+         *     **Route this at `Authenticated`** — the handler itself requires
+         *     `Action::View` on `Resource::WidgetPlugin` at `Scope::All` (see
+         *     [`require_widget_plugins_all`]'s own docs on why its own resource).
+         */
+        get: operations["list_widget_plugins"];
+        put?: never;
+        /**
+         * `POST /api/widget-plugins`: installs a package from the raw bytes of a
+         *     zip archive (its `manifest.json` at the archive root, its assets under
+         *     `web/`). **Route this at `Authenticated`, with a body-size limit of
+         *     [`WIDGET_PLUGIN_PACKAGE_MAX_BYTES`]** in place of the router-wide JSON
+         *     default — see `indicator_handlers::upload_indicator_plugin`'s own
+         *     `mount()` call for the exact pattern to copy. The handler itself
+         *     requires `Action::Create` on `Resource::WidgetPlugin` at `Scope::All`:
+         *     installing code that will run on this server (even sandboxed) is an
+         *     admin action, for every plugin kind this server loads.
+         */
+        post: operations["install_widget_plugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/widget-plugins/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/widget-plugins/catalog`: every widget every currently active
+         *     widget plugin package contributes. **Route this at `Authenticated`** —
+         *     every signed-in caller sees the same catalog, the same choice
+         *     `dashboard_handlers::dashboard_widget_catalog` already makes for the
+         *     built-in catalog.
+         * @description A caller merges this with `GET /api/dashboard/widgets/catalog` to get
+         *     the full effective catalog a dashboard's "add widget" picker and
+         *     placeholder check need — merging is left to the caller since the two
+         *     live in different crates this module does not depend on.
+         */
+        get: operations["widget_plugin_catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/widget-plugins/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/widget-plugins/refresh`: an explicit rescan of the data
+         *     directory, for the direct-file-drop install path — refresh is
+         *     explicit, never a filesystem watcher, since a watcher can fire mid-copy
+         *     and read a half-written file. **Route this at `Authenticated`** — the
+         *     handler requires `Action::View` on `Resource::WidgetPlugin` at
+         *     `Scope::All`, same as the plain listing.
+         */
+        post: operations["refresh_widget_plugins"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/widget-plugins/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * `DELETE /api/widget-plugins/{id}`: removes a package's files entirely.
+         *     **Route this at `Authenticated`** — the handler requires `Action::Delete`
+         *     on `Resource::WidgetPlugin` at `Scope::All`.
+         */
+        delete: operations["uninstall_widget_plugin"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/widget-plugins/{id}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/widget-plugins/{id}/enabled`: flips whether this package's
+         *     widgets are in the effective catalog, without touching its files or
+         *     anything a dashboard has stored about a placed instance of one of its
+         *     widgets. **Route this at `Authenticated`** — the handler requires
+         *     `Action::Edit` on `Resource::WidgetPlugin` at `Scope::All`.
+         */
+        post: operations["set_widget_plugin_enabled"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces": {
         parameters: {
             query?: never;
@@ -1227,6 +1757,41 @@ export interface components {
              */
             supported: boolean;
         };
+        /**
+         * @description `POST /api/indicators/compile`'s error body for a mistake in the
+         *     trader's own source (a `senken_indicator_lang::CompileError::Syntax` or
+         *     `::Type`) — line and column and message exactly as the compiler reports
+         *     them, never collapsed into the crate's usual one-line [`ErrorBody`](crate::dto::ErrorBody):
+         *     the authoring panel places this at the offending line, which a flattened
+         *     string cannot drive.
+         *
+         *     Not used for [`senken_indicator_lang::CompileError::Internal`] — that
+         *     variant names a bug in the compiler, not in anything the trader wrote,
+         *     so it is reported as an ordinary [`ErrorBody`](crate::dto::ErrorBody)-shaped `500` instead of a
+         *     line this source never had.
+         */
+        CompileIndicatorErrorDto: {
+            /**
+             * Format: int32
+             * @description One-based column the problem starts on.
+             */
+            column: number;
+            /**
+             * Format: int32
+             * @description One-based line the problem starts on.
+             */
+            line: number;
+            /** @description What was wrong, in the language a trader writing an indicator uses. */
+            message: string;
+        };
+        /**
+         * @description `POST /api/indicators/compile` request body: indicator-lang source, as
+         *     the authoring panel's editor holds it right now.
+         */
+        CompileIndicatorRequest: {
+            /** @description The program, in the language `senken-indicator-lang` implements. */
+            source: string;
+        };
         /** @description `POST /api/indicators/compute` request body. */
         ComputeIndicatorRequest: {
             /**
@@ -1296,6 +1861,11 @@ export interface components {
             /** @description The bar timeframe to evaluate over, e.g. `"1h"`. */
             timeframe: string;
         };
+        /** @description `POST /api/dashboard/workspaces` request body. */
+        CreateDashboardWorkspaceRequest: {
+            /** @description The new workspace's display name. */
+            name: string;
+        };
         /** @description `POST /api/notes` request body. */
         CreateNoteRequest: {
             /** @description The new note's body. */
@@ -1337,6 +1907,223 @@ export interface components {
         CreateWorkspaceRequest: {
             /** @description The new workspace's display name. */
             name: string;
+        };
+        /**
+         * @description Where a widget's data comes from, on the wire — see
+         *     `senken_dashboard::DataSource`'s own docs.
+         * @enum {string}
+         */
+        DashboardDataSourceDto: "live" | "mock";
+        /** @description A grid size, in grid cells — never pixels. */
+        DashboardGridSizeDto: {
+            /**
+             * Format: int32
+             * @description Height, in grid rows.
+             */
+            height: number;
+            /**
+             * Format: int32
+             * @description Width, in grid columns.
+             */
+            width: number;
+        };
+        /** @description `GET /api/dashboard/workspaces/{id}/layout` response body. */
+        DashboardLayoutDto: {
+            /** @description Every widget placed on this workspace's grid. */
+            widgets: components["schemas"]["DashboardWidgetDto"][];
+            /** @description The workspace's own identity and grid width. */
+            workspace: components["schemas"]["DashboardWorkspaceDto"];
+        };
+        /**
+         * @description `GET /api/dashboard/widgets/catalog` response body — every widget type
+         *     this build's server currently knows how to serve.
+         */
+        DashboardWidgetCatalogResponse: {
+            /** @description The effective catalog. */
+            widgets: components["schemas"]["DashboardWidgetDefinitionDto"][];
+        };
+        /** @description One widget type's metadata, on the wire — never an instance. */
+        DashboardWidgetDefinitionDto: {
+            /** @description Where this widget's data comes from. */
+            data_source: components["schemas"]["DashboardDataSourceDto"];
+            /** @description The size a newly added instance starts at. */
+            default_size: components["schemas"]["DashboardGridSizeDto"];
+            /** @description A one-line description, for the "add widget" picker. */
+            description: string;
+            /** @description The smallest size this widget can be resized to. */
+            min_size: components["schemas"]["DashboardGridSizeDto"];
+            /** @description The provider that contributes this widget. */
+            provider_id: string;
+            /**
+             * @description Display title, for the "add widget" picker and the widget's own
+             *     header.
+             */
+            title: string;
+            /** @description `<provider_id>/<widget>`. */
+            widget_type_id: string;
+        };
+        /** @description One widget placed on a workspace's grid, on the wire. */
+        DashboardWidgetDto: {
+            /**
+             * @description This widget's configuration, as opaque JSON-object text. The
+             *     server stores and returns it without interpreting it; the widget's
+             *     own provider owns what the fields inside mean.
+             */
+            config: string;
+            /**
+             * Format: int32
+             * @description The version of `config`'s own shape.
+             */
+            config_schema_version: number;
+            /**
+             * Format: int64
+             * @description Unix timestamp this widget was first placed.
+             */
+            created_at: number;
+            /**
+             * Format: int32
+             * @description This widget's height, in grid rows.
+             */
+            height: number;
+            /** @description This widget instance's id. */
+            id: string;
+            /**
+             * Format: int32
+             * @description This widget's left edge, in grid columns — never pixels.
+             */
+            position_x: number;
+            /**
+             * Format: int32
+             * @description This widget's top edge, in grid rows.
+             */
+            position_y: number;
+            /**
+             * @description The plugin (or `"senken"` for a built-in) that contributes this
+             *     widget's rendering.
+             */
+            provider_id: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp of the last change to this widget's placement,
+             *     visibility or config.
+             */
+            updated_at: number;
+            /** @description Whether this widget is currently shown. */
+            visible: boolean;
+            /**
+             * @description `<provider_id>/<widget>` — looked up against `GET
+             *     /api/dashboard/widgets/catalog` to render this widget for real, or
+             *     a placeholder when the lookup misses.
+             */
+            widget_type_id: string;
+            /**
+             * Format: int32
+             * @description This widget's width, in grid columns.
+             */
+            width: number;
+        };
+        /**
+         * @description One widget to write, as part of `PUT
+         *     /api/dashboard/workspaces/{id}/layout`'s full-workspace snapshot.
+         */
+        DashboardWidgetPlacementRequest: {
+            /** @description This widget's configuration, as opaque JSON-object text. */
+            config: string;
+            /**
+             * Format: int32
+             * @description The version of `config`'s own shape.
+             */
+            config_schema_version: number;
+            /**
+             * Format: int32
+             * @description This widget's height, in grid rows.
+             */
+            height: number;
+            /**
+             * @description Omitted for a newly added widget (a fresh id is generated by the
+             *     server); present to update an existing widget in place, preserving
+             *     its id. An id that does not already belong to this workspace is
+             *     rejected with `400`, not silently adopted.
+             */
+            id?: string | null;
+            /**
+             * Format: int32
+             * @description This widget's left edge, in grid columns.
+             */
+            position_x: number;
+            /**
+             * Format: int32
+             * @description This widget's top edge, in grid rows.
+             */
+            position_y: number;
+            /** @description The rendering provider. */
+            provider_id: string;
+            /** @description Whether this widget is currently shown. */
+            visible: boolean;
+            /** @description The widget type, `<provider_id>/<widget>`. */
+            widget_type_id: string;
+            /**
+             * Format: int32
+             * @description This widget's width, in grid columns.
+             */
+            width: number;
+        };
+        /** @description A dashboard workspace row (list/create/rename/delete). */
+        DashboardWorkspaceDto: {
+            /**
+             * Format: int32
+             * @description How many grid columns this workspace's layout uses.
+             */
+            columns: number;
+            /**
+             * Format: int64
+             * @description Unix timestamp of creation.
+             */
+            created_at: number;
+            /** @description The workspace's id. */
+            id: string;
+            /** @description The workspace's display name. */
+            name: string;
+            /** @description The account that owns this workspace. */
+            owner_id: string;
+            /**
+             * Format: int64
+             * @description The optimistic-concurrency token a client must echo back as
+             *     `expected_revision` when it next calls `PUT .../layout`.
+             */
+            revision: number;
+            /**
+             * Format: int64
+             * @description Unix timestamp of the last change to the workspace's own fields or
+             *     its widget layout.
+             */
+            updated_at: number;
+        };
+        /**
+         * @description `GET /api/dashboard/workspaces` response body (scope reaches the query,
+         *     including this `total`).
+         */
+        DashboardWorkspacesPage: {
+            /** @description The rows for this page. */
+            rows: components["schemas"]["DashboardWorkspaceDto"][];
+            /**
+             * Format: int64
+             * @description How many rows exist in total, under the same scope as `rows`.
+             */
+            total: number;
+        };
+        /**
+         * @description `GET /api/dashboard/workspaces/default` response body ("opening the
+         *     dashboard with no workspace creates a default one" belongs on the
+         *     server, not in the client, so it holds for any client that ever
+         *     connects).
+         */
+        DefaultDashboardWorkspaceResponse: {
+            /**
+             * @description The caller's default workspace, created on first call and returned
+             *     unchanged on every later one.
+             */
+            workspace_id: string;
         };
         /** @description `GET /api/workspaces/default` response body ("default-on- first-open belongs on the server, not in the client, so it holds for any client that ever connects"). */
         DefaultWorkspaceResponse: {
@@ -1621,6 +2408,14 @@ export interface components {
             /** @description How far that permission reaches. */
             scope: string;
         };
+        /** @description `GET /api/registry/handle` response body. */
+        HandleResponse: {
+            /**
+             * @description The caller's own claimed registry handle, or `null` if they have
+             *     not chosen one yet.
+             */
+            handle?: string | null;
+        };
         /** @description `GET /api/health` response body. */
         Health: {
             /**
@@ -1750,6 +2545,32 @@ export interface components {
             value: number;
         };
         /**
+         * @description A full published indicator, source included — `GET
+         *     /api/registry/indicators/{namespace}/{name}` only.
+         */
+        IndicatorEntryDto: {
+            /**
+             * Format: int64
+             * @description Unix timestamp this entry was first published.
+             */
+            created_at: number;
+            /** @description This entry's id. */
+            id: string;
+            /** @description See [`IndicatorSummaryDto::language_version`]. */
+            language_version: string;
+            /** @description See [`IndicatorSummaryDto::name`]. */
+            name: string;
+            /** @description See [`IndicatorSummaryDto::namespace`]. */
+            namespace: string;
+            /** @description The indicator-lang source exactly as published. */
+            source: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp of the last successful publish to this entry.
+             */
+            updated_at: number;
+        };
+        /**
          * @description How far a segment or level extends past its anchors — mirrors
          *     `senken_indicators::Extend`.
          * @enum {string}
@@ -1815,6 +2636,68 @@ export interface components {
             label: string;
             /** @description Either `line` or `histogram`. */
             shape: string;
+        };
+        /**
+         * @description One entry in `GET /api/indicators/plugins`'s listing — every dynamic
+         *     indicator ever registered, regardless of whether it ever finished
+         *     loading, mirroring `senken_runtime::plugin_host::DynamicIndicatorStatus`
+         *     field-for-field. Unlike `GET /api/indicators` (which only ever lists
+         *     what a chart may place right now), this reports a disabled, incompatible
+         *     or failed-to-load entry too, since re-enabling one is exactly what this
+         *     endpoint exists to let an operator do — and diagnosing why one broke,
+         *     via `health`/`logs`, is the other half of that same job.
+         */
+        IndicatorPluginDto: (null | components["schemas"]["IndicatorCatalogEntry"]) & components["schemas"]["IndicatorPluginStateDto"] & {
+            health?: null | components["schemas"]["PluginHealthDto"];
+            /**
+             * @description This entry's identity: a real descriptor id once one has been read,
+             *     otherwise a content hash of the bytes that failed to load.
+             */
+            id: string;
+            /**
+             * @description This plugin's own ring log, oldest first — empty for the same reason
+             *     `health` is `None` for `incompatible`/`failed_to_load`.
+             */
+            logs: components["schemas"]["PluginLogLineDto"][];
+            /** @description Where these bytes came from. */
+            origin: components["schemas"]["IndicatorPluginOriginDto"];
+        };
+        /**
+         * @description Where a registered dynamic indicator's bytes came from, on the wire —
+         *     mirrors `senken_runtime::plugin_host::PluginOrigin`.
+         * @enum {string}
+         */
+        IndicatorPluginOriginDto: "built_in" | "uploaded" | "data_directory";
+        /**
+         * @description Which of the five user-facing states one registered entry is in right
+         *     now, on the wire — mirrors
+         *     `senken_runtime::plugin_host::DynamicIndicatorState` field-for-field;
+         *     see that type's own docs for what each state means and what remedy it
+         *     calls for.
+         */
+        IndicatorPluginStateDto: {
+            /** @enum {string} */
+            state: "active";
+        } | {
+            /** @enum {string} */
+            state: "disabled";
+        } | {
+            /** @description The version the component itself names. */
+            found_version: string;
+            /** @enum {string} */
+            state: "incompatible";
+            /** @description The version this host supports. */
+            supported_version: string;
+        } | {
+            /** @description Why loading failed. */
+            reason: string;
+            /** @enum {string} */
+            state: "failed_to_load";
+        } | {
+            /** @description The reason the breaker recorded when it tripped. */
+            reason: string;
+            /** @enum {string} */
+            state: "auto_disabled";
         };
         /**
          * @description A chart coordinate used by a non-series drawable — mirrors
@@ -1900,6 +2783,44 @@ export interface components {
             name: string;
             /** @description The indicator's parameters, as JSON-object text. */
             params: string;
+        };
+        /**
+         * @description A published indicator without its source, as returned by a listing —
+         *     see [`IndicatorEntryDto`] for the full row.
+         */
+        IndicatorSummaryDto: {
+            /**
+             * Format: int64
+             * @description Unix timestamp this entry was first published.
+             */
+            created_at: number;
+            /** @description This entry's id. */
+            id: string;
+            /**
+             * @description The indicator language version this entry was last published
+             *     against.
+             */
+            language_version: string;
+            /** @description The indicator's name within its namespace. */
+            name: string;
+            /**
+             * @description The publishing account's id — this indicator's namespace. The
+             *     qualified name is `{namespace}/{name}`.
+             */
+            namespace: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp of the last successful publish to this entry.
+             */
+            updated_at: number;
+        };
+        /** @description `POST /api/widget-plugins` response body. */
+        InstallWidgetPluginResponse: {
+            /**
+             * @description The installed package's own id, read from its manifest — never
+             *     chosen by the caller.
+             */
+            id: string;
         };
         /**
          * @description One instrument-search hit (`GET /api/instruments`). Market data is global
@@ -2231,6 +3152,19 @@ export interface components {
             timeframe: string;
         };
         /**
+         * @description A circuit breaker's current state, on the wire — mirrors
+         *     `senken_plugin_host::CircuitState`.
+         */
+        PluginCircuitStateDto: {
+            /** @enum {string} */
+            state: "closed";
+        } | {
+            /** @description Why the breaker tripped. */
+            reason: string;
+            /** @enum {string} */
+            state: "open";
+        };
+        /**
          * @description `POST /api/users/{user_id}/plugin-grants` (and its `role_id`/`.../revoke`
          *     siblings) request body: a plugin permission is granted
          *     or revoked whole, by name — never interpreted, unlike a core [`GrantDto`].
@@ -2239,6 +3173,55 @@ export interface components {
             /** @description The permission's full name, `<plugin-id>.<resource>:<operation>`. */
             name: string;
         };
+        /**
+         * @description One plugin's runtime health, on the wire — mirrors
+         *     `senken_plugin_host::PluginHealth` field-for-field.
+         */
+        PluginHealthDto: {
+            /**
+             * @description Whether the shared circuit breaker currently allows calls through,
+             *     and why not if it does not.
+             */
+            circuit: components["schemas"]["PluginCircuitStateDto"];
+            /**
+             * Format: int64
+             * @description The subset of `trap_count` caused specifically by exceeding a live
+             *     wall-clock deadline.
+             */
+            deadline_exceeded_count: number;
+            /**
+             * Format: int64
+             * @description The highest linear-memory size, in bytes, any single instance of
+             *     this plugin was ever granted.
+             */
+            peak_memory_bytes: number;
+            /**
+             * Format: int64
+             * @description Every call that returned a trap, for the lifetime of the plugin.
+             */
+            trap_count: number;
+        };
+        /**
+         * @description One line in a plugin's ring log, on the wire — mirrors
+         *     `senken_plugin_host::PluginLogLine`.
+         */
+        PluginLogLineDto: {
+            /** @description The line's own text, already stripped of its trailing newline. */
+            message: string;
+            /** @description How urgent it is. */
+            severity: components["schemas"]["PluginLogSeverityDto"];
+            /**
+             * Format: int64
+             * @description When this line was recorded, as nanoseconds since the Unix epoch.
+             */
+            timestamp: number;
+        };
+        /**
+         * @description How urgent one plugin log line is, on the wire — mirrors
+         *     `senken_plugin_host::PluginLogSeverity`.
+         * @enum {string}
+         */
+        PluginLogSeverityDto: "info" | "warn";
         /**
          * @description The forming bar a client is drawing, as scaled integers at the
          *     instrument's own price scale — the same wire form [`super::BarDto`] uses.
@@ -2275,6 +3258,39 @@ export interface components {
              */
             volume: components["schemas"]["VolumeDto"];
         };
+        /**
+         * @description `POST /api/registry/indicators` request body. Carries no `namespace`
+         *     field on purpose: a publish always targets the caller's own account —
+         *     see `senken_indicator_registry`'s own module docs for why a namespace
+         *     is an account id rather than a client-chosen string in the first
+         *     place, which is exactly what makes deriving it from the session, never
+         *     accepting it as input, both correct and safe here.
+         */
+        PublishIndicatorRequest: {
+            /** @description The indicator's name within the caller's own namespace. */
+            name: string;
+            /** @description The indicator-lang source to publish. */
+            source: string;
+        };
+        /**
+         * @description `GET /api/registry/indicators` and `GET /api/registry/indicators/mine`
+         *     response body. Scope reaches the query, including this `total` — see
+         *     `senken_indicator_registry::RegistryStore::list_mine`'s own docs.
+         */
+        RegistryPage: {
+            /** @description The rows for this page. */
+            rows: components["schemas"]["IndicatorSummaryDto"][];
+            /**
+             * Format: int64
+             * @description How many rows exist in total, under the same scope as `rows`.
+             */
+            total: number;
+        };
+        /** @description `PATCH /api/dashboard/workspaces/{id}` request body. */
+        RenameDashboardWorkspaceRequest: {
+            /** @description The workspace's new display name. */
+            name: string;
+        };
         /** @description `PATCH /api/watchlists/{group_id}` request body. */
         RenameWatchlistGroupRequest: {
             /** @description The group's new display name. */
@@ -2300,6 +3316,30 @@ export interface components {
         ReorderWatchlistMembersRequest: {
             /** @description Every member id in this group, in the new display order. */
             ids: string[];
+        };
+        /**
+         * @description `PUT /api/dashboard/workspaces/{id}/layout` request body. Every widget
+         *     the caller wants kept — moved, resized or entirely unchanged — must be
+         *     present in `widgets` with its own id; any existing widget whose id is
+         *     not present is deleted. This is the one call add/move/resize/delete all
+         *     go through, guarded by `expected_revision`.
+         */
+        ReplaceDashboardLayoutRequest: {
+            /**
+             * Format: int32
+             * @description How many grid columns this workspace's layout uses.
+             */
+            columns: number;
+            /**
+             * Format: int64
+             * @description The workspace's `revision` this snapshot was built against. A
+             *     mismatch against the server's current revision means another write
+             *     (most likely a second open tab) landed first, and this call is
+             *     refused with `409` rather than silently overwriting it.
+             */
+            expected_revision: number;
+            /** @description The workspace's complete widget grid after this call. */
+            widgets: components["schemas"]["DashboardWidgetPlacementRequest"][];
         };
         /**
          * @description `PUT /api/layouts/{id}` request body: replaces a layout's entire pane/
@@ -2344,6 +3384,20 @@ export interface components {
              */
             total: number;
         };
+        /** @description `PUT /api/registry/handle` request body. */
+        SetHandleRequest: {
+            /**
+             * @description The handle to claim: lowercase ASCII letters, digits and hyphens
+             *     only, 3-32 characters, starting and ending with a letter or digit
+             *     (see `senken_indicator_registry::Handle`).
+             */
+            handle: string;
+        };
+        /** @description `POST /api/indicators/plugins/{name}/enabled` request body. */
+        SetIndicatorPluginEnabledRequest: {
+            /** @description The desired enabled state. */
+            enabled: boolean;
+        };
         /**
          * @description `POST /api/set-password` request body.
          *
@@ -2360,6 +3414,32 @@ export interface components {
             email?: string | null;
             /** @description The new password (length floor only, checked by `senken-identity`). */
             new_password: string;
+        };
+        /** @description `POST /api/widget-plugins/{id}/enabled` request body. */
+        SetWidgetPluginEnabledRequest: {
+            /** @description The new enable/disable flag. */
+            enabled: boolean;
+        };
+        /**
+         * @description `PUT /api/me/zone` request body.
+         *
+         *     `zone` is a plain `String` here, not an [`IanaZone`], deliberately unlike
+         *     [`TimeInputDto::Civil`]'s own `zone` field: an [`IanaZone`] rejects an
+         *     unrecognised id while axum is still deserialising the body, which — with
+         *     no custom rejection handler in this crate — answers `422` with axum's own
+         *     plain-text rejection body rather than this crate's uniform
+         *     [`crate::dto::ErrorBody`]. `identity_handlers::set_own_zone` instead
+         *     validates `zone` against [`IanaZone::new`] itself, once the body has
+         *     parsed, so an unrecognised id gets the same `400` + [`ErrorBody`](crate::dto::ErrorBody)
+         *     shape every other malformed request in this crate already does.
+         */
+        SetZoneRequest: {
+            /**
+             * @description The IANA zone id to store as the caller's display zone, e.g.
+             *     `"Europe/London"`.
+             * @example Europe/London
+             */
+            zone: string;
         };
         /** @description What one registered market-data source can do. */
         SourceCapabilityDto: {
@@ -2549,6 +3629,26 @@ export interface components {
             password_set: boolean;
         };
         /**
+         * @description `GET /api/me/zone` response body, and `PUT /api/me/zone`'s own response
+         *     echoing the value it just stored.
+         *
+         *     `zone` is nullable — not because the wire format is ambiguous, but
+         *     because "this account has not chosen a display zone yet" is a real,
+         *     distinct state (see `senken_identity::IdentityStore::get_zone`), and a
+         *     caller must be able to tell it apart from any actual zone rather than
+         *     having one silently substituted here. The browser's own detected zone is
+         *     this app's proposed default for that state, applied client-side — see
+         *     `packages/web/src/lib/time/zone.ts` — never invented at this boundary.
+         */
+        UserZoneResponse: {
+            /**
+             * @description The caller's stored display zone, e.g. `"America/New_York"`, or
+             *     `null` if none has been chosen yet.
+             * @example America/New_York
+             */
+            zone?: string | null;
+        };
+        /**
          * @description `GET /api/users` response body (scope reaches the
          *     query, including this `total`).
          */
@@ -2630,6 +3730,134 @@ export interface components {
              * @description This member's display order within its group.
              */
             position: number;
+        };
+        /** @description `GET /api/widget-plugins/catalog` response body. */
+        WidgetPluginCatalogResponse: {
+            /**
+             * @description Every widget every currently active widget plugin package
+             *     contributes.
+             */
+            widgets: components["schemas"]["WidgetPluginDefinitionDto"][];
+        };
+        /**
+         * @description Where a widget's data comes from, on the wire.
+         * @enum {string}
+         */
+        WidgetPluginDataSourceDto: "live" | "mock";
+        /**
+         * @description One widget a plugin package contributes, on the wire — the effective
+         *     catalog entry a dashboard's "add widget" picker and placeholder check
+         *     read.
+         */
+        WidgetPluginDefinitionDto: {
+            /** @description A free-text grouping label for the "add widget" picker. */
+            category: string;
+            /**
+             * @description A JSON-object schema for this widget's `config`; the host never
+             *     interprets its fields.
+             */
+            config_schema: unknown;
+            /**
+             * Format: int32
+             * @description The version of this widget's own `config` shape.
+             */
+            config_schema_version: number;
+            /** @description Where this widget's data comes from. */
+            data_source: components["schemas"]["WidgetPluginDataSourceDto"];
+            /** @description The size a newly added instance starts at. */
+            default_size: components["schemas"]["WidgetPluginGridSizeDto"];
+            /** @description A one-line description, for the "add widget" picker. */
+            description: string;
+            /**
+             * @description The URL, on this server's own origin, serving this widget's entry
+             *     document — already resolved from the package's `web/`-relative
+             *     `entry`, so a caller never builds this path itself. Point a
+             *     sandboxed `<iframe src>` at exactly this.
+             */
+            entry_url: string;
+            max_size?: null | components["schemas"]["WidgetPluginGridSizeDto"];
+            /** @description The smallest size this widget can be resized to. */
+            min_size: components["schemas"]["WidgetPluginGridSizeDto"];
+            /**
+             * @description The package that contributes this widget — the `widget_type_id`
+             *     prefix, split out once here so a caller never re-derives it.
+             */
+            provider_id: string;
+            /**
+             * @description Host capability names this widget needs (not yet enforced by this
+             *     build).
+             */
+            required_capabilities: string[];
+            /**
+             * @description Permission names this widget needs granted before it renders for
+             *     real (not yet enforced by this build).
+             */
+            required_permissions: string[];
+            /**
+             * @description Display title, for the "add widget" picker and the widget's own
+             *     header.
+             */
+            title: string;
+            /** @description `<provider_id>/<widget id>`. */
+            widget_type_id: string;
+        };
+        /** @description A grid size, in grid cells, on the wire. */
+        WidgetPluginGridSizeDto: {
+            /**
+             * Format: int32
+             * @description Height, in grid rows.
+             */
+            height: number;
+            /**
+             * Format: int32
+             * @description Width, in grid columns.
+             */
+            width: number;
+        };
+        /**
+         * @description `GET /api/widget-plugins` and `POST /api/widget-plugins/refresh`
+         *     response body.
+         */
+        WidgetPluginListResponse: {
+            /** @description Every installed package, in a stable order. */
+            packages: components["schemas"]["WidgetPluginPackageDto"][];
+        };
+        /** @description One installed widget plugin package, on the wire. */
+        WidgetPluginPackageDto: {
+            /** @description A one-line description. */
+            description: string;
+            /** @description A SHA-256 hex digest of this package's own `manifest.json` bytes. */
+            digest: string;
+            /** @description The admin-controlled enable/disable flag. */
+            enabled: boolean;
+            /** @description The package's own id. */
+            id: string;
+            /** @description Display name. */
+            name: string;
+            /** @description This package's current status. */
+            status: components["schemas"]["WidgetPluginStatusDto"];
+            /** @description The package's own version string. */
+            version: string;
+            /**
+             * @description How many widgets this package declares (`0` while
+             *     [`WidgetPluginStatusDto::Disabled`] or
+             *     [`WidgetPluginStatusDto::Failed`], since neither contributes
+             *     anything to the effective catalog).
+             */
+            widget_count: number;
+        };
+        /** @description Where an installed package currently stands, on the wire. */
+        WidgetPluginStatusDto: {
+            /** @enum {string} */
+            state: "active";
+        } | {
+            /** @enum {string} */
+            state: "disabled";
+        } | {
+            /** @description Why — shown to whoever installed it. */
+            reason: string;
+            /** @enum {string} */
+            state: "failed";
         };
         /** @description A workspace row (list/create/rename/delete). */
         WorkspaceDto: {
@@ -3058,6 +4286,339 @@ export interface operations {
             };
         };
     };
+    dashboard_widget_catalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardWidgetCatalogResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_dashboard_workspaces: {
+        parameters: {
+            query?: {
+                /** @description page size, default 50, max 200 */
+                limit?: number;
+                /** @description rows to skip, default 0 */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardWorkspacesPage"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_dashboard_workspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDashboardWorkspaceRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    default_dashboard_workspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefaultDashboardWorkspaceResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_dashboard_workspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    rename_dashboard_workspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameDashboardWorkspaceRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_dashboard_layout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardLayoutDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    replace_dashboard_layout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceDashboardLayoutRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardLayoutDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     delete_drawing: {
         parameters: {
             query?: never;
@@ -3194,6 +4755,54 @@ export interface operations {
             };
         };
     };
+    compile_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompileIndicatorRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndicatorCatalogEntry"];
+                };
+            };
+            /** @description a mistake in the source, or the compiled component was rejected */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompileIndicatorErrorDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     compute_indicator: {
         parameters: {
             query?: never;
@@ -3224,6 +4833,135 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_indicator_plugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndicatorPluginDto"][];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    upload_indicator_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/wasm": number[];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndicatorCatalogEntry"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    set_indicator_plugin_enabled: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetIndicatorPluginEnabledRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3547,6 +5285,91 @@ export interface operations {
             };
         };
     };
+    get_own_zone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserZoneResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description account has not set a password yet */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    set_own_zone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetZoneRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserZoneResponse"];
+                };
+            };
+            /** @description not a zone id the bundled database recognises */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description account has not set a password yet */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_notes: {
         parameters: {
             query?: {
@@ -3729,6 +5552,298 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_my_handle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandleResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    set_my_handle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetHandleRequest"];
+            };
+        };
+        responses: {
+            /** @description handle claimed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description another account already holds this handle */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    search_indicators: {
+        parameters: {
+            query?: {
+                /** @description matches indicator names containing this text */
+                query?: string;
+                /** @description page size, default 50, max 200 */
+                limit?: number;
+                /** @description rows to skip, default 0 */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryPage"];
+                };
+            };
+        };
+    };
+    publish_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishIndicatorRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_my_indicators: {
+        parameters: {
+            query?: {
+                /** @description page size, default 50, max 200 */
+                limit?: number;
+                /** @description rows to skip, default 0 */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryPage"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the publishing account's id, or its claimed handle */
+                namespace: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndicatorEntryDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    install_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the publishing account's id, or its claimed handle */
+                namespace: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the compiled WebAssembly component, `application/wasm` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description indicator revoked */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -4755,6 +6870,240 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ReorderWatchlistMembersRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_widget_plugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WidgetPluginListResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    install_widget_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/zip": number[];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallWidgetPluginResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    widget_plugin_catalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WidgetPluginCatalogResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    refresh_widget_plugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WidgetPluginListResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    uninstall_widget_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    set_widget_plugin_enabled: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetWidgetPluginEnabledRequest"];
             };
         };
         responses: {

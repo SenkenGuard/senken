@@ -8,8 +8,8 @@ use crate::role::Role;
 use crate::scope::Scope;
 
 /// Everything [`crate::decide`] needs to know about the party requesting
-/// access: the roles it holds, and any grants attached to it directly (plan
-/// 004 B5 — "a user has roles, and may also hold direct grants").
+/// access: the roles it holds, and any grants attached to it directly — a
+/// user has roles, and may also hold direct grants.
 ///
 /// `Actor` carries no identifier (no user id, no email). The scope
 /// [`crate::decide`] returns tells a storage layer *how far* an allowed

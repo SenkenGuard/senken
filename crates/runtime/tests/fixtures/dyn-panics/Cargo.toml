@@ -1,0 +1,15 @@
+# Its own tiny workspace, isolated from the root — see
+# `crates/plugin-host/tests/fixtures/panics/Cargo.toml` for why.
+[workspace]
+
+[package]
+name = "fixture-dyn-panics"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+senken-plugin-api = { path = "../../../../plugin-api" }

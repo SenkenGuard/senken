@@ -3,8 +3,8 @@
 // importing `WsClient` or touching a `WebSocket` itself — same one-funnel
 // rule as `ApiClient` for REST.
 //
-// The envelope itself (`type`/`payload`/`receivedAt`) stays generic: plan
-// 006 S5 only defines one real message shape a component actually needs to
+// The envelope itself (`type`/`payload`/`receivedAt`) stays generic: only
+// one message shape is something a component actually needs to
 // read (`price`, `crates/api/src/ws.rs`'s `ServerFrame::Price`) — narrowing
 // `payload` itself into a full discriminated union for `connected`/
 // `subscribed`/`unsubscribed` too would be speculative typing for messages

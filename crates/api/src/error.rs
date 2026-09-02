@@ -269,6 +269,106 @@ impl From<senken_notes::NoteError> for HandlerError {
     }
 }
 
+/// `dashboard_handlers`' translation from
+/// `senken_dashboard::DashboardError`, mirroring
+/// [`From<senken_chart::ChartError>`] exactly — the same guarded-store
+/// shape, the same "the store's `Identity` error reuses this crate's own
+/// `IdentityError` mapping" reasoning. `RevisionConflict` is this store's
+/// one addition over the others: a `409`, the same status
+/// [`HandlerError::Conflict`] already carries for an already-registered
+/// email, since both mean "the request was well-formed, but the state it
+/// assumed no longer holds."
+impl From<senken_dashboard::DashboardError> for HandlerError {
+    fn from(error: senken_dashboard::DashboardError) -> Self {
+        use senken_dashboard::DashboardError;
+        match error {
+            DashboardError::Identity(source) => source.into(),
+            DashboardError::WorkspaceNotFound => {
+                Self::BadRequest("no such dashboard workspace".to_owned())
+            }
+            DashboardError::WidgetNotFound => {
+                Self::BadRequest("no such widget in this workspace".to_owned())
+            }
+            DashboardError::RevisionConflict { expected, current } => Self::Conflict(format!(
+                "expected revision {expected}, but the workspace is now at revision {current}"
+            )),
+            DashboardError::OutOfBounds {
+                x,
+                y,
+                width,
+                columns,
+            } => Self::BadRequest(format!(
+                "widget at ({x}, {y}) with width {width} does not fit within {columns} columns"
+            )),
+            DashboardError::ZeroSizedWidget { x, y } => {
+                Self::BadRequest(format!("widget at ({x}, {y}) has zero width or height"))
+            }
+            DashboardError::OverlappingWidgets { x1, y1, x2, y2 } => {
+                Self::BadRequest(format!("widgets at ({x1}, {y1}) and ({x2}, {y2}) overlap"))
+            }
+            DashboardError::InvalidConfig(reason) => {
+                Self::BadRequest(format!("widget config is not valid JSON: {reason}"))
+            }
+            DashboardError::EmptyWidgetIdentity => Self::BadRequest(
+                "widget provider_id and widget_type_id must not be empty".to_owned(),
+            ),
+            DashboardError::Database(source) => {
+                tracing::error!(%source, "dashboard store: database error");
+                Self::Internal
+            }
+            // Any future `#[non_exhaustive]` variant fails closed the same
+            // way every other guarded store's mapping here does.
+            other => {
+                tracing::error!(?other, "dashboard store: unmapped error variant");
+                Self::Internal
+            }
+        }
+    }
+}
+
+/// `widget_plugin_handlers`' translation from
+/// `senken_plugin::widget_package::WidgetPackageError`. Like
+/// `senken_store::StoreError` below, this has no `Identity` variant to
+/// defer to — the store itself has no notion of a user, so
+/// `widget_plugin_handlers` calls `AuthenticatedUser::authorize` itself
+/// before ever reaching the store.
+impl From<senken_plugin::widget_package::WidgetPackageError> for HandlerError {
+    fn from(error: senken_plugin::widget_package::WidgetPackageError) -> Self {
+        use senken_plugin::widget_package::WidgetPackageError;
+        match error {
+            WidgetPackageError::NotFound(id) => Self::BadRequest(format!(
+                "no widget plugin package with id {id:?} is installed"
+            )),
+            WidgetPackageError::Manifest(source) => {
+                Self::BadRequest(format!("package manifest is invalid: {source}"))
+            }
+            WidgetPackageError::InvalidArchive(reason) => {
+                Self::BadRequest(format!("package archive is invalid: {reason}"))
+            }
+            WidgetPackageError::UnsafeArchiveEntry(name) => {
+                Self::BadRequest(format!("package archive contains an unsafe path: {name:?}"))
+            }
+            WidgetPackageError::MissingManifest => {
+                Self::BadRequest("package archive has no manifest.json at its root".to_owned())
+            }
+            WidgetPackageError::EntryNotFound(widget_id, entry) => Self::BadRequest(format!(
+                "widget {widget_id:?} names entry {entry:?}, which the archive does not contain"
+            )),
+            WidgetPackageError::UnsafeAssetPath(path) => {
+                Self::BadRequest(format!("asset path {path:?} is not a valid relative path"))
+            }
+            WidgetPackageError::Storage(source) => {
+                tracing::error!(%source, "widget plugin store: storage error");
+                Self::Internal
+            }
+            WidgetPackageError::Io(source) => {
+                tracing::error!(%source, "widget plugin store: io error");
+                Self::Internal
+            }
+        }
+    }
+}
+
 /// `storage_handlers`' translation from `senken_store::StoreError`.
 /// Unlike every other guarded-store mapping in this file, this one has no
 /// `Identity` variant to defer to — `senken-store` has no notion of a

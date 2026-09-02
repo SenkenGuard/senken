@@ -24,12 +24,13 @@
 //! ```
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use senken_identity::IdentityStore;
 use senken_marketdata::MarketData;
+use senken_plugin::widget_package::WidgetPackageStore;
 use senken_plugin::{
     ActivationContext, BarSource, Plugin, PluginError, PluginManifest, reconcile_plugin_permissions,
 };
@@ -38,14 +39,109 @@ use senken_store::Store;
 
 /// Error types.
 pub mod error;
+/// Bridges `senken_series::Bar` to the WIT wire shapes
+/// `senken-plugin-host` speaks, and the catalog of indicators loaded from
+/// uploaded `.wasm` components.
+pub mod plugin_host;
 /// Bar-fetching services: [`SeriesData`], `Runtime::series()`.
 mod series;
 
 pub use crate::error::RuntimeError;
+pub use crate::plugin_host::{
+    DYNAMIC_INDICATOR_MAX_DISPLAY_OBJECTS, DynamicIndicatorError, DynamicIndicatorInfo,
+    DynamicIndicatorInstance, DynamicIndicatorStatus, DynamicIndicators, DynamicOnBar,
+    DynamicParamSpec, DynamicPlotSpec, reject_if_over_display_cap,
+};
 pub use crate::series::SeriesData;
 
 /// Where data lives when the builder is given no other location.
 pub const DEFAULT_DATA_DIR: &str = ".data";
+
+/// Directory name under the data directory where a `.wasm` indicator
+/// component dropped in by hand (never through the upload or compile
+/// endpoints) is picked up at startup — see
+/// [`scan_indicator_plugin_directory`].
+const INDICATOR_PLUGINS_DIR: &str = "indicator-plugins";
+
+/// Registers every `.wasm` file directly under
+/// `<data_dir>/`[`INDICATOR_PLUGINS_DIR`] as a
+/// [`crate::plugin_host::PluginOrigin::DataDirectory`] dynamic indicator, so
+/// a plugin placed there by hand is picked up the moment the runtime
+/// starts, the same way an operator dropping a widget package under
+/// `<data_dir>/widget-plugins/packages/` is picked up the moment anything
+/// calls [`senken_plugin::widget_package::WidgetPackageStore::list`].
+///
+/// One plugin failing to load never aborts startup. `register_with_origin`
+/// already turns a load failure into a visible, named catalog entry (see
+/// that method's own docs) rather than only returning an error to its
+/// immediate caller — this function logs the failure for the operator and
+/// moves on to the next file regardless, so **the failed entry, not a
+/// crashed server, is the visible result**. The directory itself is created
+/// if it does not exist yet, so a fresh install has somewhere to drop a
+/// file into without creating the directory by hand first.
+fn scan_indicator_plugin_directory(
+    dynamic_indicators: &plugin_host::DynamicIndicators,
+    data_dir: &Path,
+) {
+    let dir = data_dir.join(INDICATOR_PLUGINS_DIR);
+    if let Err(source) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            %source,
+            path = %dir.display(),
+            "could not create the indicator-plugins data directory; skipping the startup scan"
+        );
+        return;
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(source) => {
+            tracing::warn!(
+                %source,
+                path = %dir.display(),
+                "could not read the indicator-plugins data directory; skipping the startup scan"
+            );
+            return;
+        }
+    };
+    // Sorted so a startup scan registers the same plugins in the same order
+    // on every run, regardless of what order the filesystem happens to
+    // return directory entries in.
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "wasm"))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(source) => {
+                tracing::warn!(
+                    %source,
+                    path = %path.display(),
+                    "could not read a data-directory indicator plugin file"
+                );
+                continue;
+            }
+        };
+        match dynamic_indicators
+            .register_with_origin(&bytes, plugin_host::PluginOrigin::DataDirectory)
+        {
+            Ok(info) => tracing::info!(
+                id = %info.id,
+                path = %path.display(),
+                "loaded a data-directory indicator plugin"
+            ),
+            Err(source) => tracing::warn!(
+                %source,
+                path = %path.display(),
+                "a data-directory indicator plugin failed to load; it is recorded as a \
+                 failed catalog entry rather than aborting startup"
+            ),
+        }
+    }
+}
 
 /// An activated plugin.
 #[derive(Debug)]
@@ -196,12 +292,21 @@ impl RuntimeBuilder {
             .map_err(|source| RuntimeError::SeriesStoreInit { source })?;
         let series = SeriesData::build(&series_store, &marketdata, bar_sources);
 
+        let dynamic_indicators = crate::plugin_host::DynamicIndicators::new()
+            .map_err(|source| RuntimeError::DynamicIndicatorHostInit { source })?;
+        scan_indicator_plugin_directory(&dynamic_indicators, storage.data_dir());
+
+        let widget_plugins = WidgetPackageStore::open(storage.data_dir())
+            .map_err(|source| RuntimeError::WidgetPluginStoreInit { source })?;
+
         Ok(Runtime {
             storage,
             plugins: records,
             marketdata,
             series,
             series_store,
+            dynamic_indicators,
+            widget_plugins,
         })
     }
 }
@@ -327,6 +432,19 @@ pub struct Runtime {
     /// instance rather than constructing a second `Store` pointed at the
     /// same directory. Cheap to clone (a path plus an `Arc`'d lock table).
     series_store: Store,
+    /// Indicators loaded from an uploaded `.wasm` component, alongside the
+    /// ten built-ins `senken-indicators` ships with.
+    dynamic_indicators: crate::plugin_host::DynamicIndicators,
+    /// Dynamic widget UI packages, rooted at the same data directory as
+    /// everything else. Unlike `dynamic_indicators`, this store needs no
+    /// startup scan of its own here: it re-reads its `packages/` directory
+    /// from disk on every `list`/`refresh` call rather than caching an
+    /// in-memory catalog (see that type's own docs), so a package dropped
+    /// in by hand is already visible the moment anything asks — opening it
+    /// here only has to happen once, at startup, so every caller shares one
+    /// instance instead of each opening (and re-preparing the directory
+    /// for) its own.
+    widget_plugins: WidgetPackageStore,
 }
 
 impl Runtime {
@@ -370,6 +488,24 @@ impl Runtime {
     #[must_use]
     pub fn store(&self) -> &Store {
         &self.series_store
+    }
+
+    /// Indicators loaded from an uploaded `.wasm` component, alongside the
+    /// ten built-ins `senken-indicators` ships with — what
+    /// `indicator_handlers` merges into `GET /api/indicators`'s catalogue
+    /// and dispatches `POST /api/indicators/compute` against when a
+    /// request names something other than a built-in.
+    #[must_use]
+    pub fn dynamic_indicators(&self) -> &crate::plugin_host::DynamicIndicators {
+        &self.dynamic_indicators
+    }
+
+    /// Dynamic widget UI packages: install, discovery, enable/disable, and
+    /// the effective widget catalog every currently active package
+    /// contributes — what `widget_plugin_handlers` exposes over HTTP.
+    #[must_use]
+    pub fn widget_plugins(&self) -> &WidgetPackageStore {
+        &self.widget_plugins
     }
 
     /// Deactivates every plugin in reverse order and consumes the runtime.

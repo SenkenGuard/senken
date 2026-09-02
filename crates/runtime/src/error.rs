@@ -55,4 +55,20 @@ pub enum RuntimeError {
         #[source]
         source: senken_store::StoreError,
     },
+
+    /// The dynamic-indicator plugin host could not be built.
+    #[error("dynamic indicator host initialisation failed")]
+    DynamicIndicatorHostInit {
+        /// The underlying failure.
+        #[source]
+        source: crate::plugin_host::DynamicIndicatorError,
+    },
+
+    /// The widget UI package store's directory could not be prepared.
+    #[error("widget plugin store initialisation failed")]
+    WidgetPluginStoreInit {
+        /// The underlying failure.
+        #[source]
+        source: senken_plugin::widget_package::WidgetPackageError,
+    },
 }

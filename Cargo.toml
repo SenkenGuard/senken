@@ -26,13 +26,24 @@ keywords = [
 senken-acl = { path = "crates/acl", version = "0.0.5" }
 senken-alerts = { path = "crates/alerts", version = "0.0.5" }
 senken-core = { path = "crates/core", version = "0.0.5" }
+senken-dashboard = { path = "crates/dashboard", version = "0.0.5" }
 senken-identity = { path = "crates/identity", version = "0.0.5" }
 senken-indicators = { path = "crates/indicators", version = "0.0.5" }
+senken-indicator-lang = { path = "crates/indicator-lang", version = "0.0.5" }
+senken-indicator-registry = { path = "crates/indicator-registry", version = "0.0.5" }
 senken-marketdata = { path = "crates/marketdata", version = "0.0.5" }
 senken-notes = { path = "crates/notes", version = "0.0.5" }
 # Lean by default inside this workspace: only the venue plugins ask for
 # `features = ["http"]`. External users get the HTTP client by default.
 senken-plugin = { path = "crates/plugin", version = "0.0.5", default-features = false }
+# Versioned on its own (see that crate's `Cargo.toml`): this is the public
+# SDK a compiled plugin links against, not part of the application's own
+# release cadence.
+senken-plugin-api = { path = "crates/plugin-api", version = "0.1.0" }
+# Loads and confines compiled plugin components (wasmtime, capability-zero
+# WASI). Part of the application's own release cadence, unlike
+# `senken-plugin-api` above.
+senken-plugin-host = { path = "crates/plugin-host", version = "0.0.5" }
 senken-plugin-bingx = { path = "plugins/bingx", version = "0.0.5" }
 senken-plugin-bitfinex = { path = "plugins/bitfinex", version = "0.0.5" }
 senken-plugin-bitmart = { path = "plugins/bitmart", version = "0.0.5" }
@@ -102,6 +113,15 @@ clap = { version = "4.6.6", features = ["derive", "env"] }
 dirs = "6.0.0"
 divan = "0.1.21"
 futures = { version = "0.3.34", default-features = false, features = ["std"] }
+# `senken-core`: civil-datetime-plus-zone to instant conversion at the API's
+# typed input boundary, and DST disambiguation. `tzdb-bundle-always` embeds
+# the full IANA database in the binary so that conversion is reproducible on
+# every machine regardless of the host OS's own tzdb version — the same
+# determinism argument as `arrow`'s pin below, applied to time zones instead
+# of columnar layout. `tzdb-zoneinfo` and `tz-system` are left off the
+# feature list (both are on by default) so the host machine's own time zone
+# is never even reachable, let alone read.
+jiff = { version = "0.2.35", default-features = false, features = ["std", "serde", "tzdb-bundle-always"] }
 # Byte-bounded caches in `senken-loader`: verified available and
 # MSRV-compatible so a hand-rolled LRU is not reinvented.
 lru = "0.18.3"
@@ -169,6 +189,12 @@ utoipa = "5.5.0"
 # `senken-identity`: user, role and session ids.
 uuid = { version = "1.26.0", features = ["v4"] }
 wiremock = "0.6"
+# `senken-plugin`: unpacking an uploaded dynamic widget UI package (manifest
+# + static bundle) into the data directory. `deflate` is the only
+# compression method enabled — the one every common zip writer produces —
+# so this stays a small, well-trodden dependency rather than pulling in
+# every codec the format supports.
+zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

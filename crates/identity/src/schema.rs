@@ -93,6 +93,59 @@
 //!   only by `senken-watchlist`/`senken-notes`, which share this connection
 //!   via [`crate::IdentityStore::shared_connection`] rather than opening
 //!   their own.
+//! - **v10**: `dashboard_workspaces`/`dashboard_widgets` — a dashboard
+//!   workspace and the widgets placed on its grid. Same single-schema-owner
+//!   reasoning as v3/v4/v5/v9: created here because they reference
+//!   `users(id)`, queried only by `senken-dashboard`, which shares this
+//!   connection the same way `senken-chart`/`senken-notes` do. A dashboard
+//!   workspace is its own aggregate, not a row in `chart_workspaces` — see
+//!   `senken-chart`'s own module docs for why the two never share a table.
+//!   `dashboard_widgets` has no foreign key from `widget_type_id` to any
+//!   registry on purpose: a registry entry can disappear (a plugin
+//!   disabled, or simply an older build) while a stored layout must still
+//!   read back — see `senken-dashboard`'s own module docs.
+//! - **v11**: `users.display_zone` — the IANA zone id a user has chosen for
+//!   how times are shown to them, validated as a `senken_core::IanaZone`
+//!   before this crate ever writes it. Nullable with no default (unlike
+//!   `panes.settings`/`chart_workspaces.settings`'s `'{}'`): there is no
+//!   meaningful placeholder zone to invent for an account that has never
+//!   chosen one, so a fresh column reads back exactly as "not yet chosen"
+//!   (`NULL`, decoded as `Option::None`) rather than a guessed value
+//!   quietly standing in for one. The browser's own detected zone is a
+//!   client-side suggestion for that case only — see
+//!   `packages/web/src/lib/time/zone.ts` — never something this crate
+//!   invents server-side.
+//! - **v12**: `indicator_registry_entries` — one row per published
+//!   indicator-lang source, for `senken-indicator-registry`. Same
+//!   single-schema-owner reasoning as v3/v4/v5/v9/v10: created here
+//!   because it references `users(id)`, queried only by that crate, which
+//!   shares this connection the same way `senken-chart`/`senken-notes` do.
+//!   `owner_id` **is** a published indicator's namespace — see that
+//!   crate's own module docs for why an account id, not a self-chosen
+//!   display handle, is what closes publisher impersonation — so
+//!   `UNIQUE (owner_id, name)` is what lets two different authors publish
+//!   the same `name` without colliding while making it structurally
+//!   impossible to hold a second row for a name an account already owns.
+//!   `source` is indicator-lang source text, never a compiled artifact —
+//!   this registry's whole point is that a binary is never what is stored
+//!   or served. `language_version` records the *publishing* host's own
+//!   compiler version at the moment of that publish, so an installing host
+//!   — potentially a different build, months apart — can refuse an entry
+//!   newer than itself with a message naming both versions, rather than
+//!   failing to load with none.
+//! - **v13**: `registry_handles` — one row per account that has claimed a
+//!   human-readable registry handle, for `senken-indicator-registry`. Same
+//!   single-schema-owner reasoning as v3/v4/v5/v9/v10/v12: created here
+//!   because it references `users(id)`, queried only by that crate, which
+//!   shares this connection the same way `senken-chart`/`senken-notes` do.
+//!   `owner_id` is the primary key — one handle per account — and
+//!   `handle` is `UNIQUE`, which is what makes a handle a pointer at
+//!   exactly one account rather than a second, unenforced naming scheme
+//!   sitting next to the real one. The account id (`owner_id`, a
+//!   published indicator's `namespace`) stays the canonical,
+//!   storage-level identity; a handle is only ever a human-facing address
+//!   that resolves to it — see that crate's own module docs for why both
+//!   are needed.
 
 use std::path::Path;
 use std::time::Duration;
@@ -105,7 +158,7 @@ use crate::error::IdentityError;
 /// this and extend the schema (or add a migration step) when the shape
 /// changes — there is deliberately no migration crate, not schema
 /// evolution itself.
-const SCHEMA_VERSION: i32 = 9;
+const SCHEMA_VERSION: i32 = 13;
 
 /// `CREATE TABLE` statements for every table assigned to this
 /// milestone: users, roles and the grants attached to either, plus
@@ -539,6 +592,94 @@ CREATE INDEX notes_owner_id ON notes(owner_id);
 COMMIT;
 ";
 
+/// Statements added in schema v10: `dashboard_workspaces`/
+/// `dashboard_widgets`, for `senken-dashboard`.
+///
+/// `columns` and `revision` both default to values a fresh row always
+/// supplies explicitly (`senken_dashboard::DashboardWorkspaceStore` never
+/// relies on either default) — kept anyway so a hand-inspected row without
+/// them is still valid `STRICT` data, the same defensive default this
+/// schema already gives `dashboard_widgets.visible`.
+///
+/// `widget_type_id` intentionally has no foreign key: a registry entry can
+/// disappear (a plugin disabled, or simply an older build) while a stored
+/// layout must still read back — see `senken-dashboard`'s own module docs.
+/// Collision-rectangle and grid-bounds validation is `senken-dashboard`'s
+/// job in Rust, not a constraint here — plain SQL cannot express "no two
+/// rows' rectangles overlap".
+const SCHEMA_SQL_V10: &str = r"
+CREATE TABLE dashboard_workspaces (
+    id          TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    columns     INTEGER NOT NULL DEFAULT 12,
+    revision    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+) STRICT;
+CREATE INDEX dashboard_workspaces_owner_id ON dashboard_workspaces(owner_id);
+
+CREATE TABLE dashboard_widgets (
+    id                     TEXT PRIMARY KEY,
+    workspace_id           TEXT NOT NULL
+        REFERENCES dashboard_workspaces(id) ON DELETE CASCADE,
+    provider_id            TEXT NOT NULL,
+    widget_type_id         TEXT NOT NULL,
+    position_x             INTEGER NOT NULL,
+    position_y             INTEGER NOT NULL,
+    width                  INTEGER NOT NULL,
+    height                 INTEGER NOT NULL,
+    visible                INTEGER NOT NULL DEFAULT 1,
+    config                 TEXT NOT NULL,
+    config_schema_version  INTEGER NOT NULL,
+    created_at             INTEGER NOT NULL,
+    updated_at             INTEGER NOT NULL
+) STRICT;
+CREATE INDEX dashboard_widgets_workspace_id ON dashboard_widgets(workspace_id);
+";
+
+/// `ALTER TABLE` statement added in schema v11: `users.display_zone` — see
+/// this module's doc comment. No `DEFAULT`, unlike v6/v7/v9's JSON-object
+/// columns: `NULL` already means exactly what this column needs an existing
+/// row to mean ("this account has not chosen a display zone"), so there is
+/// no placeholder value to fabricate for a row written before this column
+/// existed.
+const SCHEMA_SQL_V11: &str = r"
+ALTER TABLE users ADD COLUMN display_zone TEXT;
+";
+
+/// `CREATE TABLE` statement added in schema v12: `indicator_registry_entries`,
+/// for `senken-indicator-registry`. See this module's doc comment.
+const SCHEMA_SQL_V12: &str = r"
+CREATE TABLE indicator_registry_entries (
+    id                TEXT PRIMARY KEY,
+    owner_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name              TEXT NOT NULL,
+    source            TEXT NOT NULL,
+    language_version  TEXT NOT NULL,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    UNIQUE (owner_id, name)
+) STRICT;
+
+CREATE INDEX indicator_registry_entries_owner_id ON indicator_registry_entries(owner_id);
+CREATE INDEX indicator_registry_entries_name ON indicator_registry_entries(name);
+";
+
+/// `CREATE TABLE` statement added in schema v13: `registry_handles`, for
+/// `senken-indicator-registry`. See this module's doc comment. `handle`'s
+/// `UNIQUE` constraint is the actual guard against two accounts holding the
+/// same handle -- the only one that also closes the race an
+/// application-level check-then-insert cannot, which is why this is a
+/// column constraint and not left to that crate alone.
+const SCHEMA_SQL_V13: &str = r"
+CREATE TABLE registry_handles (
+    owner_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    handle      TEXT NOT NULL UNIQUE,
+    created_at  INTEGER NOT NULL
+) STRICT;
+";
+
 /// Opens (creating if absent) the SQLite database at `path`, applies the
 /// the pragmas this database requires, and creates or checks the schema.
 ///
@@ -579,7 +720,11 @@ pub(crate) fn open(path: &Path) -> Result<Connection, IdentityError> {
 /// `layers.style` column, v7 merges `layers`/`drawings` into
 /// `chart_pane_items` and renames the chart tables to `chart_*`, v8 adds
 /// v9's `chart_workspaces.settings` column plus the watchlist and notes
-/// tables), since there is no migration crate but not migrating by hand.
+/// tables, v9 adds v10's `dashboard_workspaces`/`dashboard_widgets`
+/// tables, v10 adds v11's `users.display_zone` column, v11 adds v12's
+/// `indicator_registry_entries` table, v12 adds v13's `registry_handles`
+/// table), since there is no
+/// migration crate but not migrating by hand.
 /// A database newer than this crate knows about is reported, never guessed
 /// at.
 fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
@@ -631,6 +776,22 @@ fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
         conn.execute_batch(SCHEMA_SQL_V9)?;
         version = 9;
     }
+    if version == 9 {
+        conn.execute_batch(SCHEMA_SQL_V10)?;
+        version = 10;
+    }
+    if version == 10 {
+        conn.execute_batch(SCHEMA_SQL_V11)?;
+        version = 11;
+    }
+    if version == 11 {
+        conn.execute_batch(SCHEMA_SQL_V12)?;
+        version = 12;
+    }
+    if version == 12 {
+        conn.execute_batch(SCHEMA_SQL_V13)?;
+        version = 13;
+    }
     debug_assert_eq!(
         version, SCHEMA_VERSION,
         "every step from `found` to SCHEMA_VERSION must be applied above"
@@ -679,6 +840,10 @@ mod tests {
             "watchlist_groups",
             "watchlist_members",
             "notes",
+            "dashboard_workspaces",
+            "dashboard_widgets",
+            "indicator_registry_entries",
+            "registry_handles",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -739,6 +904,9 @@ mod tests {
             "watchlist_groups",
             "watchlist_members",
             "notes",
+            "dashboard_workspaces",
+            "dashboard_widgets",
+            "indicator_registry_entries",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -1278,7 +1446,9 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        // The database must end up on the current version, not stop at the
+        // v9 this migration step itself targets — see the v1 test's own
+        // comment for why this is `super::SCHEMA_VERSION`, not a literal.
         assert_eq!(version, super::SCHEMA_VERSION);
 
         for table in ["watchlist_groups", "watchlist_members", "notes"] {
@@ -1368,6 +1538,231 @@ mod tests {
             member_count, 0,
             "a watchlist member must be cascade-deleted with its group"
         );
+    }
+
+    /// Builds a genuine v9 database at `path` (the real v1..v9 SQL this
+    /// crate has actually shipped) with one pre-existing chart workspace,
+    /// so the v10 migration test below can assert that row survives
+    /// untouched.
+    fn seed_v9_workspace_fixture(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V2).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V3).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V4).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V5).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V6).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V7).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V8).unwrap();
+        conn.execute_batch(super::SCHEMA_SQL_V9).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, display_name, created_at) VALUES ('user-v9', 'v9@example.com', 'V9 User', 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO chart_workspaces (id, owner_id, name, created_at, updated_at) VALUES ('ws-v9', 'user-v9', 'Pre-existing', 0, 0)",
+            [],
+        ).unwrap();
+        conn.pragma_update(None, "user_version", 9).unwrap();
+    }
+
+    #[test]
+    fn a_v9_database_migrates_to_v10_with_the_dashboard_tables() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        seed_v9_workspace_fixture(&path);
+
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        for table in ["dashboard_workspaces", "dashboard_widgets"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            assert!(
+                exists,
+                "table `{table}` was not created by the v10 migration"
+            );
+        }
+
+        // The migration must not touch a pre-existing chart workspace —
+        // this is an added table, not a rewrite of anything that already
+        // existed.
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM chart_workspaces WHERE id = 'ws-v9'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "Pre-existing");
+    }
+
+    #[test]
+    fn a_v10_database_can_insert_into_every_new_table() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        let conn = open(&path).unwrap();
+
+        conn.execute(
+            "INSERT INTO users (id, email, display_name, created_at) VALUES ('user-v10', 'v10@example.com', 'V10 User', 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO dashboard_workspaces (id, owner_id, name, columns, revision, created_at, updated_at)
+             VALUES ('dash-1', 'user-v10', 'Default', 12, 0, 0, 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO dashboard_widgets (
+                id, workspace_id, provider_id, widget_type_id, position_x, position_y,
+                width, height, visible, config, config_schema_version, created_at, updated_at
+             ) VALUES ('widget-1', 'dash-1', 'senken', 'senken/equity', 0, 0, 6, 4, 1, '{}', 1, 0, 0)",
+            [],
+        ).unwrap();
+
+        // Cascade: deleting the owning workspace must remove its widget
+        // row, the same `ON DELETE CASCADE` `chart_workspaces` already
+        // relies on for its own child tables.
+        conn.execute("DELETE FROM dashboard_workspaces WHERE id = 'dash-1'", [])
+            .unwrap();
+        let widget_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dashboard_widgets", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            widget_count, 0,
+            "a dashboard widget must be cascade-deleted with its workspace"
+        );
+    }
+
+    #[test]
+    fn a_v10_database_is_migrated_to_v11_and_an_existing_user_reads_back_with_no_zone_chosen() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        {
+            // A user row written before `display_zone` existed at all.
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V2).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V3).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V4).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V5).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V6).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V7).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V8).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V9).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V10).unwrap();
+            conn.execute(
+                "INSERT INTO users (id, email, display_name, created_at) VALUES ('user-v10', 'v10-zone@example.com', 'V10 User', 0)",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 10).unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        // Migration must not fabricate a zone for an account that never
+        // chose one — the column must exist and read back `NULL`, never an
+        // empty string or a guessed default.
+        let zone: Option<String> = conn
+            .query_row(
+                "SELECT display_zone FROM users WHERE id = 'user-v10'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            zone, None,
+            "a user written before this column existed must read back with no zone chosen, not a guessed default"
+        );
+    }
+
+    #[test]
+    fn a_v11_database_is_migrated_to_v12_and_gains_the_registry_table() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V2).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V3).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V4).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V5).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V6).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V7).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V8).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V9).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V10).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V11).unwrap();
+            conn.pragma_update(None, "user_version", 11).unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'indicator_registry_entries'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(exists, "migration must add `indicator_registry_entries`");
+    }
+
+    #[test]
+    fn a_v12_database_is_migrated_to_v13_and_gains_the_registry_handles_table() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V2).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V3).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V4).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V5).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V6).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V7).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V8).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V9).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V10).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V11).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V12).unwrap();
+            conn.pragma_update(None, "user_version", 12).unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registry_handles'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        assert!(exists, "migration must add `registry_handles`");
     }
 
     #[test]

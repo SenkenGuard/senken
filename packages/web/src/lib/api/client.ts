@@ -13,6 +13,8 @@ import type {
 	HealthResponse,
 	LoginResponse,
 	MeResponse,
+	UserZoneResponse,
+	SetZoneRequest,
 	UsersPage,
 	RolesPage,
 	CreateUserRequest,
@@ -38,6 +40,10 @@ import type {
 	IndicatorCatalogEntry,
 	ComputeIndicatorRequest,
 	ComputeIndicatorResponse,
+	IndicatorPluginDto,
+	SetIndicatorPluginEnabledRequest,
+	CompileIndicatorRequest,
+	CompileIndicatorErrorDto,
 	InstrumentsPage,
 	SourcesResponse,
 	WatchlistGroupsPage,
@@ -48,12 +54,25 @@ import type {
 	NoteDto,
 	CreateNoteRequest,
 	UpdateNoteRequest,
+	RegistryPage,
+	IndicatorEntryDto,
+	PublishIndicatorRequest,
 	StorageReportDto,
 	DeleteStorageRequest,
 	DeleteStorageResponse
 } from './types';
 
 export type SessionExpiredHandler = () => void;
+
+/** `installIndicator`'s result — the compiled `wasm32-wasip2` component's
+ * raw bytes plus the language version they were compiled against. Not a
+ * generated DTO: `install_indicator`'s success body is
+ * `application/wasm`, not JSON, so there is no `serde` struct for
+ * `openapi-typescript` to have derived this shape from. */
+export interface InstalledIndicator {
+	wasm: ArrayBuffer;
+	languageVersion: string;
+}
 
 // B16 point 2: "route to login exactly once." Q5 plugs in the real
 // navigation with one call to `setSessionExpiredHandler` (`app-shell.svelte`,
@@ -172,6 +191,26 @@ class ApiClient {
 	 * `heartbeatTick`'s doc). */
 	async me(): Promise<MeResponse> {
 		return this.request<MeResponse>('/api/me');
+	}
+
+	/** `GET /api/me/zone` — the caller's own stored display (timezone) zone,
+	 * or `null` if this account has never chosen one. The browser's own
+	 * detected zone (`$lib/time/zone.ts`'s `detectBrowserZone`) is only ever
+	 * a client-side suggestion for that `null` case — never a substitute
+	 * server-side, and never used once a real value comes back here. */
+	async getZone(): Promise<UserZoneResponse> {
+		return this.request<UserZoneResponse>('/api/me/zone');
+	}
+
+	/** `PUT /api/me/zone` — sets the caller's own display zone. Rejected with
+	 * a typed `HttpError` (400) if `zone` is not an id the server's bundled
+	 * time zone database recognises. */
+	async setZone(zone: string): Promise<UserZoneResponse> {
+		const body: SetZoneRequest = { zone };
+		return this.request<UserZoneResponse>('/api/me/zone', {
+			method: 'PUT',
+			body: JSON.stringify(body)
+		});
 	}
 
 	/**
@@ -509,6 +548,62 @@ class ApiClient {
 		});
 	}
 
+	/** `POST /api/indicators/compile`: compiles indicator-lang source and
+	 * registers the result the same way `uploadIndicatorPlugin` registers a
+	 * compiled `.wasm` component. A `400` here carries a
+	 * `CompileIndicatorErrorDto` body (`line`/`column`/`message`), not the
+	 * crate-wide `{error}` shape — pass `HttpError.body` to
+	 * `readCompileIndicatorError` below rather than `getErrorMessage`, which
+	 * only ever looks for `error`. */
+	async compileIndicator(source: string): Promise<IndicatorCatalogEntry> {
+		const body: CompileIndicatorRequest = { source };
+		return this.request<IndicatorCatalogEntry>('/api/indicators/compile', {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `POST /api/indicators/plugins`: registers a compiled `wasm32-wasip2`
+	 * component (the raw component bytes, not JSON) as a dynamic indicator.
+	 * Requires the caller to hold `Action::Create` on `Resource::Indicator`
+	 * at `Scope::All` — an ordinary account gets a 403, the same as any
+	 * other storage-wide administrative call. */
+	async uploadIndicatorPlugin(wasm: Uint8Array | ArrayBuffer): Promise<IndicatorCatalogEntry> {
+		return this.request<IndicatorCatalogEntry>('/api/indicators/plugins', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/wasm' },
+			body: wasm instanceof ArrayBuffer ? wasm : new Uint8Array(wasm)
+		});
+	}
+
+	/** `GET /api/indicators/plugins`: every dynamic indicator ever
+	 * registered, enabled or not — unlike `listIndicators`, which only ever
+	 * reports what a chart may place right now. */
+	async listIndicatorPlugins(): Promise<IndicatorPluginDto[]> {
+		return this.request<IndicatorPluginDto[]>('/api/indicators/plugins');
+	}
+
+	/** `POST /api/indicators/plugins/{id}/enabled`: flips whether
+	 * `listIndicators` currently offers this dynamic indicator, without
+	 * discarding the loaded component. A chart layer already plotting it
+	 * keeps its own stored parameters regardless — disabling only removes
+	 * it from the catalogue, so a client shows a placeholder rather than
+	 * dropping the layer, and enabling restores the real plot.
+	 *
+	 * `id` is `IndicatorPluginDto.id` — present for every entry regardless
+	 * of state, unlike its flattened catalogue fields (`name`, `title`, …)
+	 * which are only there once a descriptor has actually been read.
+	 * Passing `enabled: true` also closes this plugin's circuit breaker, so
+	 * this same call re-enables one the runtime auto-disabled after
+	 * repeated traps. */
+	async setIndicatorPluginEnabled(id: string, enabled: boolean): Promise<void> {
+		const body: SetIndicatorPluginEnabledRequest = { enabled };
+		await this.request<void>(`/api/indicators/plugins/${encodeURIComponent(id)}/enabled`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
 	// ------------------------------------------------------------------
 	// Watchlists: a user-owned group of watched instruments and its
 	// membership. `senken_watchlist::WatchlistStore` performs its own
@@ -606,6 +701,95 @@ class ApiClient {
 	/** `DELETE /api/notes/{id}`. */
 	async deleteNote(id: string): Promise<void> {
 		await this.request<void>(`/api/notes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+	}
+
+	// ------------------------------------------------------------------
+	// The indicator registry: publish, search, install indicator-lang
+	// source. `senken_indicator_registry::RegistryStore` performs its own
+	// guarded check on `publish`/`listMyIndicators`; `searchIndicators` and
+	// `getRegistryIndicator` need no session — a published indicator is
+	// public by design (`crates/api/src/registry_handlers.rs`'s own doc).
+	// ------------------------------------------------------------------
+
+	/** `POST /api/registry/indicators`: publishes `source` under `name` in
+	 * the caller's own namespace, replacing an earlier publish of the same
+	 * name. */
+	async publishIndicator(name: string, source: string): Promise<IdResponse> {
+		const body: PublishIndicatorRequest = { name, source };
+		return this.request<IdResponse>('/api/registry/indicators', { method: 'POST', body: JSON.stringify(body) });
+	}
+
+	/** `GET /api/registry/indicators`: the public catalog, across every
+	 * namespace — no session required. `query` matches on indicator name;
+	 * an empty string lists everything published, newest first. */
+	async searchIndicators(query: string, limit = 50, offset = 0): Promise<RegistryPage> {
+		const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+		if (query) params.set('query', query);
+		return this.request<RegistryPage>(`/api/registry/indicators?${params.toString()}`);
+	}
+
+	/** `GET /api/registry/indicators/mine`: every indicator the caller has
+	 * published. */
+	async listMyIndicators(limit: number, offset: number): Promise<RegistryPage> {
+		return this.request<RegistryPage>(`/api/registry/indicators/mine?limit=${limit}&offset=${offset}`);
+	}
+
+	/** `GET /api/registry/indicators/{namespace}/{name}`: the full published
+	 * entry, source included. */
+	async getRegistryIndicator(namespace: string, name: string): Promise<IndicatorEntryDto> {
+		return this.request<IndicatorEntryDto>(
+			`/api/registry/indicators/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+		);
+	}
+
+	/**
+	 * `POST /api/registry/indicators/{namespace}/{name}/install`: fetches
+	 * the published source and compiles it right here on this host, the
+	 * same "what you read is what you run" guarantee
+	 * `registry_handlers.rs`'s own doc describes. No session required — see
+	 * that same doc for why install, like search and get, is public.
+	 *
+	 * This cannot go through `request` above: a successful response body is
+	 * the compiled `application/wasm` component's raw bytes, not JSON, so
+	 * `safeJson` would misparse it. Everything else — attaching a
+	 * credential when one exists, the network/401/403/other-error
+	 * classification — mirrors `request` exactly.
+	 */
+	async installIndicator(namespace: string, name: string): Promise<InstalledIndicator> {
+		const server = activeServer();
+		const base = resolveBaseUrl(server);
+		const token = credentialReader.get(server.id);
+		const path = `/api/registry/indicators/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/install`;
+		const headers = new Headers();
+		if (token) headers.set('Authorization', `Bearer ${token}`);
+
+		let response: Response;
+		try {
+			response = await fetch(`${base}${path}`, { method: 'POST', headers });
+		} catch (cause) {
+			throw new NetworkError(`Could not reach ${base}${path}.`, cause);
+		}
+
+		switch (classifyResponse(response)) {
+			case 'unauthorized': {
+				if (token) this.handleSessionExpired(server.id);
+				const body = await safeJson(response);
+				throw new UnauthorizedError(errorBodyMessage(body) ?? undefined);
+			}
+			case 'forbidden':
+				throw new ForbiddenError();
+			case 'http-error': {
+				const body = await safeJson(response);
+				throw new HttpError(`Request to ${path} failed with ${response.status}.`, response.status, body);
+			}
+			case 'no-content':
+				throw new HttpError(`Request to ${path} returned no body.`, response.status);
+			case 'ok':
+				return {
+					wasm: await response.arrayBuffer(),
+					languageVersion: response.headers.get('X-Indicator-Language-Version') ?? ''
+				};
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -718,6 +902,22 @@ async function safeJson(response: Response): Promise<unknown> {
 }
 
 export const apiClient = new ApiClient();
+
+/** Narrows an `HttpError.body` from `compileIndicator` into its
+ * `CompileIndicatorErrorDto` shape, or `null` if the body is the crate-wide
+ * `{error}` shape instead (a registration failure past the compiler, or an
+ * unrelated error) — the two are deliberately different shapes so a caller
+ * can tell "highlight this line" apart from "show this message" without
+ * guessing from field presence alone. */
+export function readCompileIndicatorError(body: unknown): CompileIndicatorErrorDto | null {
+	if (!body || typeof body !== 'object') return null;
+	const candidate = body as Partial<CompileIndicatorErrorDto>;
+	return typeof candidate.line === 'number' &&
+		typeof candidate.column === 'number' &&
+		typeof candidate.message === 'string'
+		? (candidate as CompileIndicatorErrorDto)
+		: null;
+}
 
 /** Switch the active server and restart the heartbeat against it — the
  * pairing its done-criterion asks for ("point at a different server and
