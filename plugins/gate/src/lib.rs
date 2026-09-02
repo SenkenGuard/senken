@@ -20,6 +20,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{RawContract, RawPair};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{GateBarSource, bar_source_spot};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "gate-spot";
@@ -242,7 +247,16 @@ impl Plugin for GatePlugin {
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
         context.register_marketdata_source(Arc::new(usdt_perp_source(client.clone())));
         context.register_marketdata_source(Arc::new(btc_perp_source(client.clone())));
-        context.register_marketdata_source(Arc::new(usdt_delivery_source(client)));
+        context.register_marketdata_source(Arc::new(usdt_delivery_source(client.clone())));
+        // Spot only: Gate's futures candlesticks answer with a different
+        // shape entirely and need their own source (see `bars`' own docs).
+        context.register_bar_source(Arc::new(bar_source_spot(client.clone())));
+        // Spot and USDT perpetual only: the other two markets' depth
+        // endpoints were not recorded live this session (see `book`'s own
+        // docs).
+        context.register_book_source(Arc::new(crate::book::book_source_spot(client.clone())));
+        context.register_book_source(Arc::new(crate::book::book_source_usdt_perp(client)));
+        context.register_feed_source(Arc::new(crate::feed::GateFeedSource::new()));
         Ok(())
     }
 }

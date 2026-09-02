@@ -20,6 +20,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{Envelope, RawContract, RawSymbol};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{BitgetBarSource, bar_source_spot};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "bitget-spot";
@@ -253,7 +258,15 @@ impl Plugin for BitgetPlugin {
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
         context.register_marketdata_source(Arc::new(usdt_futures_source(client.clone())));
         context.register_marketdata_source(Arc::new(usdc_futures_source(client.clone())));
-        context.register_marketdata_source(Arc::new(coin_futures_source(client)));
+        context.register_marketdata_source(Arc::new(coin_futures_source(client.clone())));
+        context.register_bar_source(Arc::new(bar_source_spot(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        // Depth, declared the same way as everything above rather than
+        // wired into the HTTP layer by hand.
+        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client)));
+        context.register_feed_source(Arc::new(crate::feed::BitgetFeedSource::new()));
         Ok(())
     }
 }

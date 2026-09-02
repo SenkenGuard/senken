@@ -26,6 +26,12 @@ use senken_marketdata::source::SourceError;
 use senken_plugin::{HttpActivationContext, Plugin, PluginError, PluginManifest};
 use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{BitfinexBarSource, bar_source_spot};
+
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "bitfinex-spot";
 /// Source id of the perpetual market.
@@ -154,7 +160,23 @@ impl Plugin for BitfinexPlugin {
         let group = context.limit_group("bitfinex");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(perp_source(client)));
+        context.register_marketdata_source(Arc::new(perp_source(client.clone())));
+        // Spot only: bar fetching has been verified for `bitfinex-spot`
+        // (see `bars`' own module docs); the perpetual market's candles
+        // have not been audited and need their own source once they are.
+        context.register_bar_source(Arc::new(bars::bar_source_spot(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        // Depth, spot only — this endpoint carries no timestamp of its
+        // own, so the book source needs the same real-time clock the bar
+        // source above closes candles against (see `book`'s own module
+        // docs).
+        context.register_book_source(Arc::new(crate::book::book_source(
+            client,
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_feed_source(Arc::new(crate::feed::BitfinexFeedSource::new()));
         Ok(())
     }
 }

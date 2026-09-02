@@ -68,8 +68,8 @@ use senken_venue::normalise_symbol;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::protocol::{LiveUpdate, VenueProtocol};
-use crate::symbol_map::SymbolMap;
+use senken_subscription::SymbolMap;
+use senken_subscription::{FeedSource, LiveUpdate, VenueProtocol};
 
 /// OKX joins base and quote with `-` in every native symbol this capture
 /// and the kline capture both observed (`BTC-USDT`).
@@ -78,10 +78,10 @@ const OKX_SEPARATOR: char = '-';
 /// `wss://ws.okx.com:8443/ws/v5/public` — confirmed live 2026-08-31: it
 /// accepted a `trades` subscribe and started streaming within the same
 /// connection, no separate handshake or auth step for public channels.
-pub const OKX_PUBLIC_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
+pub(crate) const OKX_PUBLIC_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
 
 /// OKX's public `trades` channel (confirmed live — see module docs).
-pub struct OkxTradesProtocol {
+pub(crate) struct OkxTradesProtocol {
     source_id: Box<str>,
     symbols: Arc<dyn SymbolMap>,
 }
@@ -92,7 +92,7 @@ impl OkxTradesProtocol {
     /// `senken-marketdata` — this crate does not assume one), resolving
     /// each subscribe's native symbol through `symbols`.
     #[must_use]
-    pub fn new(source_id: impl Into<Box<str>>, symbols: Arc<dyn SymbolMap>) -> Self {
+    pub(crate) fn new(source_id: impl Into<Box<str>>, symbols: Arc<dyn SymbolMap>) -> Self {
         Self {
             source_id: source_id.into(),
             symbols,
@@ -261,12 +261,58 @@ struct OkxEntry {
     ask_sz: Option<String>,
 }
 
+/// OKX's live-feed registration.
+///
+/// Serves only `okx-spot` today: the trades channel this protocol subscribes
+/// to was verified live against spot instruments, and claiming the swap and
+/// futures markets without having seen a frame from either would be exactly
+/// the invented venue fact this project's fixtures exist to prevent. Adding
+/// them is a matter of confirming the channel and widening
+/// [`source_ids`](FeedSource::source_ids) — the pool underneath already
+/// shards several sources onto one connection.
+pub(crate) struct OkxFeedSource {
+    source_ids: Vec<String>,
+}
+
+impl OkxFeedSource {
+    /// The registration OKX's plugin hands the runtime.
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self {
+            source_ids: vec![crate::SPOT_ID.to_owned()],
+        }
+    }
+}
+
+impl Default for OkxFeedSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FeedSource for OkxFeedSource {
+    fn source_ids(&self) -> &[String] {
+        &self.source_ids
+    }
+
+    fn serves_quotes(&self) -> bool {
+        // OKX's public feed carries `trades` and `tickers` on one socket,
+        // and this protocol decodes both — verified live against the
+        // capture in this module's own docs.
+        true
+    }
+
+    fn protocol(&self, symbols: Arc<dyn SymbolMap>) -> Arc<dyn VenueProtocol> {
+        Arc::new(OkxTradesProtocol::new(crate::SPOT_ID, symbols))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{OKX_PUBLIC_WS_URL, OkxTradesProtocol};
-    use crate::protocol::{LiveUpdate, VenueProtocol};
-    use crate::symbol_map::IdentitySymbolMap;
     use senken_marketdata::InstrumentId;
+    use senken_subscription::IdentitySymbolMap;
+    use senken_subscription::{LiveUpdate, VenueProtocol};
     use std::sync::Arc;
 
     fn protocol() -> OkxTradesProtocol {
@@ -368,7 +414,7 @@ mod tests {
     #[test]
     fn an_instrument_the_symbol_map_cannot_resolve_is_reported_not_silently_skipped() {
         struct EmptyMap;
-        impl crate::symbol_map::SymbolMap for EmptyMap {
+        impl senken_subscription::SymbolMap for EmptyMap {
             fn source_symbol(&self, _: &InstrumentId) -> Option<String> {
                 None
             }

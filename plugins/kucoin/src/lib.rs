@@ -17,6 +17,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{Envelope, RawContract, RawSymbol};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{KucoinBarSource, bar_source_spot};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "kucoin-spot";
@@ -206,7 +211,17 @@ impl Plugin for KucoinPlugin {
         let group = context.limit_group("kucoin");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(futures_source(client)));
+        context.register_marketdata_source(Arc::new(futures_source(client.clone())));
+        context.register_bar_source(Arc::new(bar_source_spot(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        // Depth, declared the same way as everything above rather than
+        // wired into the HTTP layer by hand.
+        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client.clone())));
+        // The live feed fetches its own WebSocket token over HTTP before
+        // every dial, so it needs the same rate-limited client as the rest.
+        context.register_feed_source(Arc::new(crate::feed::KucoinFeedSource::new(client)));
         Ok(())
     }
 }

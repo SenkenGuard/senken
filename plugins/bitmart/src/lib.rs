@@ -23,6 +23,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{Envelope, RawContract, RawSpot, Symbols};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{BitmartBarSource, bar_source};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "bitmart-spot";
@@ -207,7 +212,17 @@ impl Plugin for BitmartPlugin {
         let group = context.limit_group("bitmart");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(futures_source(client)));
+        context.register_marketdata_source(Arc::new(futures_source(client.clone())));
+        // Spot only: BitMart's futures klines are not covered by this
+        // source (see `bars`' own docs).
+        context.register_bar_source(Arc::new(bar_source(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        // Spot only, same as bars: the depth endpoint this source uses is
+        // the v3 spot quotation host — see `book`'s own docs.
+        context.register_book_source(Arc::new(crate::book::book_source(client)));
+        context.register_feed_source(Arc::new(crate::feed::BitmartFeedSource::new()));
         Ok(())
     }
 }

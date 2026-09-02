@@ -15,12 +15,19 @@ homepage.workspace = true
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
+senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
 senken-plugin = { workspace = true, features = ["http"] }
+senken-series = { workspace = true }
+# The order-book port this plugin's `book` module implements (unregistered
+# — see `book.rs`'s own module docs).
+senken-subscription = { workspace = true }
 senken-venue = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+reqwest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = { workspace = true }

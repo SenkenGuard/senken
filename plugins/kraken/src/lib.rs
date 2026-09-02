@@ -4,6 +4,35 @@
 //! name and carries Kraken's legacy asset codes (`XXBT`, `ZUSD`), which are
 //! normalised here. Futures answer with an array covering perpetuals and
 //! dated contracts, linear and inverse together.
+//!
+//! # No live feed, and exactly why
+//!
+//! Kraken's stream and its REST API disagree about what an instrument is
+//! called, and the catalog can only remember one of the two names.
+//! Confirmed live, 2026-09-02:
+//!
+//! ```text
+//! REST  /0/public/Depth?pair=XBTUSD  → the book
+//! REST  /0/public/Depth?pair=XBT/USD → {"error":["EQuery:Unknown asset pair"]}
+//! WS v2 subscribe symbol "XBTUSD"    → "Currency pair not in ISO 4217-A3 format"
+//! WS v2 subscribe symbol "XBT/USD"   → "Currency pair not supported"
+//! WS v2 subscribe symbol "BTC/USD"   → subscribed
+//! WS v1 subscribe pair   "BTC/USD"   → subscribed (echoed back as XBT/USD)
+//! ```
+//!
+//! Instruments, bars and depth all need `altname` (`XBTUSD`), which is
+//! what this plugin stores as `source_symbol` — and the stream needs a
+//! slashed ISO form that is not derivable from it, because which
+//! characters were separators is precisely what normalising removed.
+//! `SymbolMap` resolves one symbol per instrument, so there is nowhere to
+//! put the second.
+//!
+//! Registering a feed anyway would mean guessing where to split `XBTUSD`,
+//! which is the kind of invented venue fact this project's fixtures exist
+//! to prevent. The fix is for the instrument catalog to carry a venue's
+//! *stream* symbol beside its *request* symbol — a `senken-marketdata`
+//! contract change, worth making deliberately rather than smuggling in
+//! here.
 
 use std::sync::Arc;
 
@@ -19,6 +48,10 @@ use senken_venue::{HttpSource, VenueClient, iso8601_ms, normalise_symbol, skip};
 use crate::api::{AssetPairsResponse, InstrumentsResponse, RawInstrument, RawPair};
 
 mod api;
+mod bars;
+mod book;
+
+pub use bars::{KrakenBarSource, bar_source_spot};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "kraken-spot";
@@ -253,7 +286,18 @@ impl Plugin for KrakenPlugin {
         let group = context.limit_group("kraken");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(futures_source(client)));
+        context.register_marketdata_source(Arc::new(futures_source(client.clone())));
+        // Spot only: the futures OHLC endpoint has its own shape and was
+        // not covered this session — see `bars`' own module docs.
+        context.register_bar_source(Arc::new(bar_source_spot(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_book_source(Arc::new(crate::book::book_source_spot(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_book_source(Arc::new(crate::book::book_source_futures(client)));
         Ok(())
     }
 }

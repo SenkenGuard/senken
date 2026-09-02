@@ -18,6 +18,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{Envelope, RawContract, RawSymbol};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{HtxSpotBarSource, bar_source_spot};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "htx-spot";
@@ -269,7 +274,17 @@ impl Plugin for HtxPlugin {
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
         context.register_marketdata_source(Arc::new(linear_source(client.clone())));
         context.register_marketdata_source(Arc::new(inverse_swap_source(client.clone())));
-        context.register_marketdata_source(Arc::new(inverse_futures_source(client)));
+        context.register_marketdata_source(Arc::new(inverse_futures_source(client.clone())));
+        // Spot only: the three derivative markets live on a different host
+        // with a different path per market — see `bars`' own module docs.
+        context.register_bar_source(Arc::new(bar_source_spot(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        // Spot only: the three derivative markets' depth endpoints were
+        // not recorded live this session (see `book`'s own module docs).
+        context.register_book_source(Arc::new(crate::book::book_source_spot(client)));
+        context.register_feed_source(Arc::new(crate::feed::HtxFeedSource::new()));
         Ok(())
     }
 }

@@ -24,6 +24,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{ProductsResponse, RawProduct};
 
 mod api;
+mod bars;
+mod book;
+
+pub use bars::{PhemexPerpBarSource, bar_source_perp};
+pub use book::{PhemexBookSource, book_source};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "phemex-spot";
@@ -201,7 +206,35 @@ impl Plugin for PhemexPlugin {
         let group = context.limit_group("phemex");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(perp_source(client)));
+        context.register_marketdata_source(Arc::new(perp_source(client.clone())));
+        // The bar source is deliberately **not** registered yet.
+        //
+        // Phemex returns prices as already-scaled integers whose scale is
+        // per-symbol, and this crate does not capture that `priceScale`
+        // from the product catalogue. `bars` reads the digits verbatim,
+        // which is right for `BTCUSD` — the one symbol whose scale was
+        // established from a real response — and silently wrong for any
+        // perpetual whose scale differs.
+        //
+        // Silently wrong is the operative word: nothing would fail, no
+        // error would be raised, and mispriced bars would be written to
+        // Parquet looking exactly like good ones. A venue absent from the
+        // chart is a visible gap a user can report; a venue quoting
+        // BTC at 7.8246 is data this project cannot afford to have
+        // persisted. Registration resumes once `api.rs` carries
+        // `priceScale` per symbol and `bars` reads it from there.
+        //
+        // `book`'s order-book depth carries the identical gap and is
+        // registered nowhere for the identical reason — see that module's
+        // own docs. A venue missing from the depth panel is a visible
+        // absence; BTC quoted at 7.8246 a level is not.
+        //
+        // A live feed is absent for the same reason and not a separate
+        // one: Phemex's stream quotes prices as scaled integers too, so a
+        // tick decoded without the symbol's own scale would be wrong in
+        // exactly the same way a bar would be — and a wrong live price is
+        // what a reader trusts most immediately.
+        let _ = &client;
         Ok(())
     }
 }

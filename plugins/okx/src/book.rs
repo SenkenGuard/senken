@@ -1,6 +1,6 @@
 //! OKX order-book depth — `GET /api/v5/market/books`.
 //!
-//! Unlike [`crate::okx::OkxTradesProtocol`], this is not a WebSocket
+//! Unlike [`crate::feed::OkxTradesProtocol`], this is not a WebSocket
 //! adapter: a fixed-depth book is fetched fresh on request rather than
 //! streamed, so this source is a plain HTTP call through a
 //! [`VenueClient`], the same shape `senken-plugin-okx`'s own bar source
@@ -102,7 +102,8 @@ struct RawBook {
 /// OKX order-book depth, fetched through a [`VenueClient`] — a fresh
 /// request per call, never a maintained local book (see module docs).
 #[derive(Debug, Clone)]
-pub struct OkxBookSource {
+pub(crate) struct OkxBookSource {
+    source_id: String,
     url: String,
     client: VenueClient,
 }
@@ -110,8 +111,9 @@ pub struct OkxBookSource {
 impl OkxBookSource {
     /// Points this source at a different URL — a local stand-in in tests,
     /// mirroring `OkxBarSource::with_url`.
+    #[cfg(test)]
     #[must_use]
-    pub fn with_url(mut self, url: impl Into<String>) -> Self {
+    pub(crate) fn with_url(mut self, url: impl Into<String>) -> Self {
         self.url = url.into();
         self
     }
@@ -119,8 +121,9 @@ impl OkxBookSource {
 
 /// Builds an [`OkxBookSource`] against the real OKX endpoint.
 #[must_use]
-pub fn book_source(client: VenueClient) -> OkxBookSource {
+pub(crate) fn book_source(source_id: impl Into<String>, client: VenueClient) -> OkxBookSource {
     OkxBookSource {
+        source_id: source_id.into(),
         url: BOOKS_URL.to_owned(),
         client,
     }
@@ -153,6 +156,10 @@ fn scaled(raw: &str, scale: u8) -> Result<i64, SourceError> {
 
 #[async_trait]
 impl BookSource for OkxBookSource {
+    fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
     async fn book_snapshot(
         &self,
         symbol: &SourceSymbol,
@@ -222,14 +229,14 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(BOOKS, "application/json"))
             .mount(&server)
             .await;
-        let source = book_source(test_client()).with_url(server.uri());
+        let source = book_source("okx-spot", test_client()).with_url(server.uri());
         (server, source)
     }
 
     #[test]
     fn the_real_url_is_used_by_default() {
         assert_eq!(
-            book_source(test_client()).url,
+            book_source("okx-spot", test_client()).url,
             BOOKS_URL,
             "must default to the real OKX endpoint, not require with_url"
         );
@@ -279,7 +286,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let source = book_source(test_client()).with_url(server.uri());
+        let source = book_source("okx-spot", test_client()).with_url(server.uri());
 
         let error = source.book_snapshot(&btc_usdt(), 5).await.unwrap_err();
         assert!(matches!(

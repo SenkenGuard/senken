@@ -18,6 +18,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{RawInstrument, RawProduct};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{CoinbaseBarSource, bar_source_spot};
 
 /// Source id of the Coinbase Exchange spot market.
 pub const SPOT_ID: &str = "coinbase-spot";
@@ -177,7 +182,19 @@ impl Plugin for CoinbasePlugin {
         let group = context.limit_group("coinbase");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(perp_source(client)));
+        context.register_marketdata_source(Arc::new(perp_source(client.clone())));
+        // Exchange spot only: bar fetching has been verified for
+        // `coinbase-spot` (see `bars`' own module docs); International's
+        // perpetual candles have not been audited and need their own
+        // source once they are.
+        context.register_bar_source(Arc::new(bar_source_spot(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        // Depth, Exchange spot only — International's perpetual book has
+        // not been audited, the same scope `bar_source_spot` above keeps.
+        context.register_book_source(Arc::new(crate::book::book_source(client)));
+        context.register_feed_source(Arc::new(crate::feed::CoinbaseFeedSource::new()));
         Ok(())
     }
 }

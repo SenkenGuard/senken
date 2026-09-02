@@ -22,6 +22,8 @@ use crate::api::{InstrumentsResponse, RawInstrument};
 
 mod api;
 mod bars;
+mod book;
+mod feed;
 
 pub use crate::bars::{OkxBarSource, bar_source as bar_source_spot};
 
@@ -294,7 +296,12 @@ impl Plugin for OkxPlugin {
         // above: one Binance-scale ban has already
         // happened this project because bar fetching is the request-hungry
         // traffic that a doubled budget would exhaust fastest.
-        context.register_bar_source(Arc::new(bar_source_spot(client)));
+        context.register_bar_source(Arc::new(bar_source_spot(client.clone())));
+        // Depth and the live stream, declared the same way as everything
+        // above rather than wired into the HTTP layer by hand — a venue
+        // that serves neither simply registers neither.
+        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client)));
+        context.register_feed_source(Arc::new(crate::feed::OkxFeedSource::new()));
         Ok(())
     }
 }
