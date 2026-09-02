@@ -71,6 +71,38 @@ use std::sync::Arc;
 use senken_subscription::SymbolMap;
 use senken_subscription::{FeedSource, LiveUpdate, VenueProtocol};
 
+/// The marker OKX appends to a perpetual's id.
+const SWAP_SUFFIX: &str = "-SWAP";
+
+/// Which of this plugin's sources an `instId` belongs to.
+///
+/// Read off the id's own shape, which OKX keeps strictly regular and
+/// which this plugin's catalog already relies on:
+///
+/// ```text
+/// BTC-USDT           two parts            spot
+/// BTC-USDT-SWAP      trailing -SWAP       perpetual
+/// BTC-USD-260904     trailing six digits  dated future
+/// BTC-USD-260903-72000-C   an option      not served here
+/// ```
+///
+/// Returns `None` for an option, which this feed does not carry: those
+/// are separate sources per family and no frame from one has been
+/// captured.
+fn source_of(inst_id: &str) -> Option<&'static str> {
+    if inst_id.ends_with(SWAP_SUFFIX) {
+        return Some(crate::SWAP_ID);
+    }
+    let parts: Vec<&str> = inst_id.split(OKX_SEPARATOR).collect();
+    match parts.as_slice() {
+        [_, _] => Some(crate::SPOT_ID),
+        [_, _, expiry] if expiry.len() == 6 && expiry.bytes().all(|b| b.is_ascii_digit()) => {
+            Some(crate::FUTURES_ID)
+        }
+        _ => None,
+    }
+}
+
 /// OKX joins base and quote with `-` in every native symbol this capture
 /// and the kline capture both observed (`BTC-USDT`).
 const OKX_SEPARATOR: char = '-';
@@ -99,7 +131,10 @@ pub(crate) const OKX_PUBLIC_WS_URL: &str = "wss://ws.okx.com/ws/v5/public";
 
 /// OKX's public `trades` channel (confirmed live — see module docs).
 pub(crate) struct OkxTradesProtocol {
-    source_id: Box<str>,
+    /// Every source this protocol may publish under. One socket carries
+    /// spot, swap and futures alike, so a frame's own `instId` decides
+    /// which — see [`source_of`].
+    source_ids: Vec<String>,
     symbols: Arc<dyn SymbolMap>,
 }
 
@@ -109,9 +144,12 @@ impl OkxTradesProtocol {
     /// `senken-marketdata` — this crate does not assume one), resolving
     /// each subscribe's native symbol through `symbols`.
     #[must_use]
-    pub(crate) fn new(source_id: impl Into<Box<str>>, symbols: Arc<dyn SymbolMap>) -> Self {
+    pub(crate) fn new(
+        source_ids: impl IntoIterator<Item = String>,
+        symbols: Arc<dyn SymbolMap>,
+    ) -> Self {
         Self {
-            source_id: source_id.into(),
+            source_ids: source_ids.into_iter().collect(),
             symbols,
         }
     }
@@ -182,9 +220,26 @@ impl VenueProtocol for OkxTradesProtocol {
 }
 
 impl OkxTradesProtocol {
+    /// The instrument a frame belongs to, or `None` when this feed does
+    /// not serve that market.
+    ///
+    /// The market has to come from the id because one socket carries all
+    /// of them, and it cannot come from the *normalised* symbol either:
+    /// `BTC-USDT` and `BTC-USDT-SWAP` both normalise to `BTCUSDT`, and
+    /// only the source id keeps spot and swap apart.
+    fn instrument(&self, inst_id: &str) -> Option<InstrumentId> {
+        let source = source_of(inst_id)?;
+        if !self.source_ids.iter().any(|id| id == source) {
+            return None;
+        }
+        // The same rule this plugin's catalog applies: the `-SWAP` marker
+        // is a market, not part of the symbol.
+        let symbol = normalise_symbol(inst_id.trim_end_matches(SWAP_SUFFIX), &[OKX_SEPARATOR]);
+        InstrumentId::new(source, &symbol).ok()
+    }
+
     fn decode_trade(&self, trade: &OkxEntry) -> Option<(InstrumentId, LiveUpdate)> {
-        let symbol = normalise_symbol(&trade.inst_id, &[OKX_SEPARATOR]);
-        let instrument = InstrumentId::new(&self.source_id, &symbol).ok()?;
+        let instrument = self.instrument(&trade.inst_id)?;
 
         let price_scale = decimal_places(&trade.px);
         let price = senken_core::parse_scaled(&trade.px, price_scale)?;
@@ -208,11 +263,7 @@ impl OkxTradesProtocol {
     }
 
     fn decode_quote(&self, quote: &OkxEntry) -> Option<(InstrumentId, LiveUpdate)> {
-        let instrument = InstrumentId::new(
-            &self.source_id,
-            &normalise_symbol(&quote.inst_id, &[OKX_SEPARATOR]),
-        )
-        .ok()?;
+        let instrument = self.instrument(&quote.inst_id)?;
         let bid = quote.bid_px.as_deref()?;
         let ask = quote.ask_px.as_deref()?;
         let bid_size = quote.bid_sz.as_deref()?;
@@ -296,7 +347,13 @@ impl OkxFeedSource {
     #[must_use]
     pub(crate) fn new() -> Self {
         Self {
-            source_ids: vec![crate::SPOT_ID.to_owned()],
+            // One socket serves all three, so all three share one pool
+            // rather than opening a connection each.
+            source_ids: vec![
+                crate::SPOT_ID.to_owned(),
+                crate::SWAP_ID.to_owned(),
+                crate::FUTURES_ID.to_owned(),
+            ],
         }
     }
 }
@@ -320,7 +377,7 @@ impl FeedSource for OkxFeedSource {
     }
 
     fn protocol(&self, symbols: Arc<dyn SymbolMap>) -> Arc<dyn VenueProtocol> {
-        Arc::new(OkxTradesProtocol::new(crate::SPOT_ID, symbols))
+        Arc::new(OkxTradesProtocol::new(self.source_ids.clone(), symbols))
     }
 }
 
@@ -332,8 +389,17 @@ mod tests {
     use senken_subscription::{LiveUpdate, VenueProtocol};
     use std::sync::Arc;
 
+    /// The three markets one OKX socket carries.
+    fn all_markets() -> Vec<String> {
+        vec![
+            crate::SPOT_ID.to_owned(),
+            crate::SWAP_ID.to_owned(),
+            crate::FUTURES_ID.to_owned(),
+        ]
+    }
+
     fn protocol() -> OkxTradesProtocol {
-        OkxTradesProtocol::new("okx-spot", Arc::new(IdentitySymbolMap))
+        OkxTradesProtocol::new(all_markets(), Arc::new(IdentitySymbolMap))
     }
 
     #[test]
@@ -386,7 +452,8 @@ mod tests {
     /// treatment as the price — never a float.
     #[test]
     fn a_trade_carries_its_size_at_its_own_scale() {
-        let protocol = OkxTradesProtocol::new("okx-spot", std::sync::Arc::new(IdentitySymbolMap));
+        let protocol =
+            OkxTradesProtocol::new(all_markets(), std::sync::Arc::new(IdentitySymbolMap));
         let frame = r#"{"arg":{"channel":"trades","instId":"BTC-USDT"},"data":[{"instId":"BTC-USDT","tradeId":"1","px":"78808.8","sz":"0.00504905","side":"sell","ts":"1788118931677","count":"1","source":"0","seqId":1}]}"#;
 
         let updates = protocol.parse_message(frame);
@@ -453,8 +520,63 @@ mod tests {
                 None
             }
         }
-        let protocol = OkxTradesProtocol::new("okx-spot", Arc::new(EmptyMap));
+        let protocol = OkxTradesProtocol::new(all_markets(), Arc::new(EmptyMap));
         let instrument = InstrumentId::new("okx-spot", "BTCUSDT").unwrap();
         assert!(protocol.subscribe_frame(&instrument).is_err());
+    }
+
+    /// One socket carries all three markets, and `BTC-USDT` and
+    /// `BTC-USDT-SWAP` normalise to the *same* symbol — so if the market
+    /// were not read off the id, every perpetual trade would be published
+    /// as a spot one.
+    #[test]
+    fn a_frame_is_attributed_to_the_market_its_id_names() {
+        let swap = r#"{"arg":{"channel":"trades","instId":"BTC-USDT-SWAP"},"data":[{"instId":"BTC-USDT-SWAP","tradeId":"2889778978","px":"76605","sz":"6.75","side":"buy","ts":"1788346729654","count":"10","source":"0","seqId":337633910062}]}"#;
+
+        let updates = protocol().parse_message(swap);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].0,
+            InstrumentId::new(crate::SWAP_ID, "BTCUSDT").unwrap(),
+            "the -SWAP marker names the market and never becomes part of the symbol"
+        );
+    }
+
+    /// A dated future is told apart by its six-digit expiry. Captured
+    /// live 2026-09-02 on the same socket as the spot frames above.
+    #[test]
+    fn a_dated_future_is_attributed_to_the_futures_market() {
+        let frame = r#"{"arg":{"channel":"tickers","instId":"BTC-USD-260904"},"data":[{"instType":"FUTURES","instId":"BTC-USD-260904","last":"76558.4","lastSz":"0.2","askPx":"76684.9","askSz":"0.2","bidPx":"76674.6","bidSz":"1.4","open24h":"78195.8","high24h":"78398.6","low24h":"76263.4","sodUtc0":"77454.2","sodUtc8":"77655.6","volCcy24h":"15.1481","vol24h":"11689.4","ts":"1788346816368"}]}"#;
+
+        let updates = protocol().parse_message(frame);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].0,
+            InstrumentId::new(crate::FUTURES_ID, "BTCUSD260904").unwrap()
+        );
+        assert!(matches!(updates[0].1, LiveUpdate::Quote(_)));
+    }
+
+    /// Options are separate sources per family and this feed does not
+    /// serve them, so their frames are dropped rather than filed under
+    /// whichever market happens to sort first.
+    #[test]
+    fn an_option_frame_is_not_attributed_to_any_served_market() {
+        let frame = r#"{"arg":{"channel":"trades","instId":"BTC-USD-260903-72000-C"},"data":[{"instId":"BTC-USD-260903-72000-C","tradeId":"1","px":"0.1","sz":"1","side":"buy","ts":"1788346729654"}]}"#;
+        assert!(protocol().parse_message(frame).is_empty());
+    }
+
+    /// A protocol built for spot alone must not publish a swap frame —
+    /// the pool it feeds has no lease for that source.
+    #[test]
+    fn a_market_this_feed_does_not_serve_is_dropped() {
+        let spot_only = OkxTradesProtocol::new(
+            vec![crate::SPOT_ID.to_owned()],
+            std::sync::Arc::new(IdentitySymbolMap),
+        );
+        let swap = r#"{"arg":{"channel":"trades","instId":"BTC-USDT-SWAP"},"data":[{"instId":"BTC-USDT-SWAP","tradeId":"1","px":"76605","sz":"6.75","side":"buy","ts":"1788346729654"}]}"#;
+        assert!(spot_only.parse_message(swap).is_empty());
     }
 }

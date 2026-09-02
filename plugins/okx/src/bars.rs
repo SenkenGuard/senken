@@ -145,6 +145,7 @@ fn interval_of(spec: BarSpec) -> Option<String> {
 /// [`senken_series::Clock`] is needed, unlike Binance.
 #[derive(Debug, Clone)]
 pub struct OkxBarSource {
+    source_id: &'static str,
     url: String,
     client: VenueClient,
     supported: Vec<BarSpec>,
@@ -177,13 +178,16 @@ impl OkxBarSource {
     }
 }
 
-/// OKX bars, spanning every instrument type OKX's candles endpoint serves
-/// (it addresses by `instId`, not by a market-specific path) — registered
-/// under [`crate::SPOT_ID`] since only a spot symbol has been fetched and
-/// verified.
+/// OKX bars for `source_id`.
+///
+/// One endpoint serves every market: it addresses by `instId` and takes no
+/// market in its path, so spot, perpetual and dated-future candles come
+/// back from the same call with the same row shape. Confirmed live
+/// 2026-09-02 by fetching all three.
 #[must_use]
-pub fn bar_source(client: VenueClient) -> OkxBarSource {
+pub fn bar_source(source_id: &'static str, client: VenueClient) -> OkxBarSource {
     OkxBarSource {
+        source_id,
         url: HISTORY_CANDLES_URL.to_owned(),
         client,
         supported: supported_specs(),
@@ -193,7 +197,7 @@ pub fn bar_source(client: VenueClient) -> OkxBarSource {
 #[async_trait::async_trait]
 impl BarSource for OkxBarSource {
     fn source_id(&self) -> &str {
-        crate::SPOT_ID
+        self.source_id
     }
 
     fn supported(&self) -> &[BarSpec] {
@@ -330,7 +334,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(CANDLES, "application/json"))
             .mount(&server)
             .await;
-        let source = bar_source(test_client()).with_url(server.uri());
+        let source = bar_source(crate::SPOT_ID, test_client()).with_url(server.uri());
         (server, source)
     }
 
@@ -375,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unsupported_spec_is_rejected_not_guessed() {
-        let source = bar_source(test_client());
+        let source = bar_source(crate::SPOT_ID, test_client());
         let error = source
             .bars(&btc_usdt(), BarSpec::new(1, BarUnit::Second), wide_range())
             .await
@@ -395,7 +399,7 @@ mod tests {
         // this API". Getting these two swapped would silently walk the
         // wrong direction through history while still compiling and often
         // still returning *some* rows.
-        let source = bar_source(test_client());
+        let source = bar_source(crate::SPOT_ID, test_client());
         let range = TimeRange::new(
             UnixNanos::from_millis(1_788_066_600_000).unwrap(),
             UnixNanos::from_millis(1_788_066_720_000).unwrap(),
@@ -426,13 +430,13 @@ mod tests {
 
     #[test]
     fn max_rows_is_the_history_endpoints_tested_cap() {
-        let source = bar_source(test_client());
+        let source = bar_source(crate::SPOT_ID, test_client());
         assert_eq!(source.max_rows(), 100);
     }
 
     #[test]
     fn source_id_is_the_spot_market() {
-        let source = bar_source(test_client());
+        let source = bar_source(crate::SPOT_ID, test_client());
         assert_eq!(source.source_id(), "okx-spot");
     }
 }

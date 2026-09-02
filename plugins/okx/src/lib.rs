@@ -25,7 +25,7 @@ mod bars;
 mod book;
 mod feed;
 
-pub use crate::bars::{OkxBarSource, bar_source as bar_source_spot};
+pub use crate::bars::{OkxBarSource, bar_source};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "okx-spot";
@@ -296,11 +296,19 @@ impl Plugin for OkxPlugin {
         // above: one Binance-scale ban has already
         // happened this project because bar fetching is the request-hungry
         // traffic that a doubled budget would exhaust fastest.
-        context.register_bar_source(Arc::new(bar_source_spot(client.clone())));
+        // One candles endpoint and one depth endpoint serve all three
+        // markets — both address by `instId` and take no market in their
+        // path — so each is registered once per source rather than
+        // reimplemented.
+        for market in [SPOT_ID, SWAP_ID, FUTURES_ID] {
+            context.register_bar_source(Arc::new(bar_source(market, client.clone())));
+            context
+                .register_book_source(Arc::new(crate::book::book_source(market, client.clone())));
+        }
         // Depth and the live stream, declared the same way as everything
         // above rather than wired into the HTTP layer by hand — a venue
         // that serves neither simply registers neither.
-        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client)));
+        let _ = &client;
         context.register_feed_source(Arc::new(crate::feed::OkxFeedSource::new()));
         Ok(())
     }
