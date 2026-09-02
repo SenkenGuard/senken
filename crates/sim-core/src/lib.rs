@@ -22,6 +22,8 @@
 pub mod money;
 /// Fill pricing and resting-order triggers.
 pub mod pricing;
+/// Account risk, and what a system does when it is breached.
+pub mod risk;
 /// The one thing four simulated systems genuinely disagree about.
 pub mod settlement;
 
@@ -29,4 +31,5 @@ pub use crate::money::{
     BPS_DIVISOR, CASH_SCALE, basis_points, notional, rescale, slip, weighted_average,
 };
 pub use crate::pricing::{Terms, apply_amendment, is_triggered, market_fill_price};
+pub use crate::risk::{ForcedClose, RiskBreach, RiskState};
 pub use crate::settlement::{FillContext, Settled, SettlementModel};

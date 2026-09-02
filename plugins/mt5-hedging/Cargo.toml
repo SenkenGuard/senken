@@ -1,0 +1,25 @@
+[package]
+name = "senken-plugin-mt5-hedging"
+description = "A paper-trading adapter that simulates a MetaTrader 5 hedging account: independent tickets per deal, per-symbol margin calc modes, margin level, margin call and stop out"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+senken-core = { workspace = true }
+senken-marketdata = { workspace = true }
+senken-sim-core = { workspace = true }
+senken-trade = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
