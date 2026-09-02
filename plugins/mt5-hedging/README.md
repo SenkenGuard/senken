@@ -40,9 +40,12 @@ memory of a broker's page.
 
 Implemented and tested: the margin formulas, the four account figures
 (balance, equity, margin used, free margin), the margin level percentage,
-the ticket book, the stop-out selection rule, swap accrual with per-broker
-rollover and triple-swap day, and volume validation against the symbol's
-minimum, maximum, step and total limit.
+the ticket book, swap accrual with per-broker rollover and triple-swap
+day, volume validation against the symbol's minimum, maximum, step and
+total limit, MetaTrader's profit formula, and both risk events — a margin
+call that blocks opening and closes nothing, and a stop-out loop that
+closes the biggest loser, looks again, and stops as soon as the level
+recovers.
 
 Not yet implemented: commission, partial close and close-by, the order
 lifecycle, and the `TradeAdapter` implementation that joins them into a

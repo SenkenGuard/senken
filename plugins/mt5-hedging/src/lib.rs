@@ -27,6 +27,8 @@
 //! from the symbol specification, never a constant invented here. MT5
 //! fixes the formulas; brokers fix the numbers.
 
+/// One account: its cash, its tickets, and its two risk events.
+pub mod account;
 /// MT5's margin formulas and the four figures a terminal shows.
 pub mod margin;
 /// Swap, charged per position per rollover day.
