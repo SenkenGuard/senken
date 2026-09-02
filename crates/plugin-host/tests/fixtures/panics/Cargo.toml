@@ -1,0 +1,19 @@
+# A deliberately broken test fixture for `senken-plugin-host`'s own test
+# suite — not part of the main workspace (see the `[workspace]` table
+# below), so it is built on demand by `tests/support.rs`, the same way a
+# venue plugin's fixture is a real captured response rather than an
+# invented one: this is a real compiled component with a real, verifiable
+# defect, not a description of one.
+[workspace]
+
+[package]
+name = "fixture-panics"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+senken-plugin-api = { path = "../../../../plugin-api" }
