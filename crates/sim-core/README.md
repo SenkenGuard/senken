@@ -66,6 +66,27 @@ The last three default to "nothing happens", so a system with no risk to
 measure does not have to write an empty answer for one — which is what
 keeps spot from carrying margin vocabulary it has no use for.
 
+## Settling through time, not at a point
+
+A resting order evaluated against the single price that happened to be
+current when someone read the account is not a simulation of resting. A
+stop fills at the reader's price rather than at the bar that touched it,
+and if nobody looks for an hour, the stop fills an hour late — the
+trader's real risk was never modelled.
+
+Senken stores bars, which almost nothing in this class of application
+does. So settlement replays the bars between the book's own
+`settled_through` and now, in order: a level is reached by the bar whose
+high or low actually reached it, at that bar's own time, and the range is
+half-open at the start so reading twice settles nothing again.
+
+**Intrabar order is unknowable and this says so.** Within one bar, whether
+the high or the low came first cannot be recovered. When a bar reaches
+both a stop loss and a take profit, the **worse-for-the-trader** side is
+taken first — because assuming the profitable one would flatter every
+strategy replayed through it. Finer bars narrow that window; they never
+close it.
+
 ## Money
 
 Nothing here touches a float. Every function works in `i128` and lands back
