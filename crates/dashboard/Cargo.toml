@@ -1,0 +1,28 @@
+[package]
+name = "senken-dashboard"
+description = "Dashboard persistence for Senken: user-owned workspaces and their widget grid, as SQLite records sharing senken-identity's accounts database rather than a second one"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+senken-acl = { workspace = true }
+senken-identity = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
