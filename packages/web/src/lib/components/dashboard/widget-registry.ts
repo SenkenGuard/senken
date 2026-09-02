@@ -56,7 +56,13 @@ export interface ClientWidgetRenderer {
 	// itself is necessarily heterogeneous, the same way the server's own
 	// catalog is untyped past `widget_type_id`.
 	component: Component<any>;
-	props: () => Record<string, unknown>;
+	// `object`, not `Record<string, unknown>`: each widget's props type is a
+	// concrete interface with named fields and no index signature (e.g.
+	// `DashboardEquityData`), and TypeScript does not consider a plain
+	// interface assignable to an indexed type — only `object` is broad
+	// enough to admit every one of them while still ruling out a bare
+	// primitive.
+	props: () => object;
 }
 
 /** The render binding for every built-in widget this build ships,
