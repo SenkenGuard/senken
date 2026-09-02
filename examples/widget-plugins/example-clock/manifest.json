@@ -1,0 +1,32 @@
+{
+  "id": "example-clock",
+  "name": "Example Clock Widget",
+  "version": "1.0.0",
+  "description": "A minimal, vanilla-JS dashboard widget showing a live clock — proves the widget host protocol end to end.",
+  "contributes": [
+    {
+      "point": "dashboard.widget",
+      "widget": {
+        "apiVersion": "senken.widget/v1",
+        "id": "clock",
+        "title": "Clock",
+        "description": "The current time, in a format you choose.",
+        "category": "utility",
+        "defaultSize": { "width": 3, "height": 2 },
+        "minSize": { "width": 2, "height": 2 },
+        "maxSize": { "width": 6, "height": 3 },
+        "configSchemaVersion": 1,
+        "configSchema": {
+          "type": "object",
+          "properties": {
+            "hour12": { "type": "boolean", "default": true }
+          }
+        },
+        "requiredPermissions": [],
+        "requiredCapabilities": [],
+        "dataSource": "live",
+        "entry": "index.html"
+      }
+    }
+  ]
+}

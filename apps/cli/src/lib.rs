@@ -34,6 +34,7 @@ use senken_plugin_mexc::MexcPlugin;
 use senken_plugin_okx::OkxPlugin;
 use senken_plugin_phemex::PhemexPlugin;
 use senken_plugin_poloniex::PoloniexPlugin;
+use senken_plugin_simulator::SimulatorPlugin;
 use senken_plugin_upbit::UpbitPlugin;
 use senken_plugin_whitebit::WhitebitPlugin;
 use senken_runtime::Runtime;
@@ -128,7 +129,7 @@ pub enum Command {
 ///
 /// Returns an error if the runtime fails to start (see [`Runtime::builder`]).
 pub fn runtime_with_plugins(data_dir: &Path) -> anyhow::Result<Runtime> {
-    build_runtime(Runtime::builder().data_dir(data_dir))
+    build_runtime(Runtime::builder().data_dir(data_dir), data_dir)
 }
 
 /// Builds the full venue runtime and reconciles plugin permissions against
@@ -144,11 +145,19 @@ pub fn runtime_with_plugins_and_identity(
         Runtime::builder()
             .data_dir(data_dir)
             .identity_store(identity),
+        data_dir,
     )
 }
 
-fn build_runtime(builder: senken_runtime::RuntimeBuilder) -> anyhow::Result<Runtime> {
+fn build_runtime(
+    builder: senken_runtime::RuntimeBuilder,
+    data_dir: &Path,
+) -> anyhow::Result<Runtime> {
     builder
+        // The paper broker keeps its books on disk, so unlike every venue
+        // plugin below it is constructed with the data directory rather
+        // than as a unit struct.
+        .plugin(SimulatorPlugin::new(senken_storage::Storage::new(data_dir)))
         .plugin(BinancePlugin)
         .plugin(UpbitPlugin)
         .plugin(PhemexPlugin)

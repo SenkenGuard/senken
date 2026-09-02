@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The right panel's NOTES tab, replacing the old hardcoded single-string
 	// placeholder (`+page.svelte`'s former `notes` branch, `ACTIVE_NOTE`/
-	// `NOTE_TAGS` in `terminal/trade-demo.ts`). Notes are global per user
+	// the former `NOTE_TAGS` fixture). Notes are global per user
 	// (`senken_notes::NoteStore`, `$lib/api/client.ts`'s own doc); which of
 	// them show *in this workspace* is local, stored the same way the
 	// WATCHLIST tab's shown groups are — in the workspace's own `settings`

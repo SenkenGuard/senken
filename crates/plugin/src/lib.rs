@@ -7,15 +7,20 @@
 //! context also provisions shared infrastructure — today one HTTP client —
 //! so plugins do not each build their own.
 //!
-//! Four capabilities exist today: [`MarketDataSource`] (instruments),
-//! [`BarSource`] (bars), [`BookSource`] (order-book depth) and
-//! [`FeedSource`] (a live price/quote stream). A plugin registering them
-//! for one venue
-//! must share a single [`LimitGroup`] between them (obtain it once from an
-//! [`HttpActivationContext`]) — instrument and
-//! bar traffic drawing independent budgets against one real venue quota is
-//! not safe. The context caches each named handle so the two sources use the
-//! same budget.
+//! Five capabilities exist today: [`MarketDataSource`] (instruments),
+//! [`BarSource`] (bars), [`BookSource`] (order-book depth),
+//! [`FeedSource`] (a live price/quote stream) and [`TradeAdapter`]
+//! (trading). A plugin registering more than one of them for a single venue
+//! must share one [`LimitGroup`] across all of them (obtain it once from an
+//! [`HttpActivationContext`]) — instrument, bar and order traffic drawing
+//! independent budgets against one real venue quota is not safe. The
+//! context caches each named handle so every source built from it spends
+//! the same budget.
+//!
+//! Registering a trade adapter is deliberately a separate act from
+//! registering a market data source, even for one venue: an installation
+//! may well want a venue's prices without its order routing, and the
+//! plugin that offers both should not force the pair.
 //!
 //! Library consumers who only want, say, a market data source do not need
 //! this crate: every capability a plugin registers is an ordinary type from
@@ -24,7 +29,8 @@
 //! # Design: the context is concrete on purpose
 //!
 //! [`ActivationContext`] names each capability as a typed field and method
-//! (today only [`register_marketdata_source`]) instead of hiding them behind
+//! ([`register_marketdata_source`] and its two siblings) instead of hiding
+//! them behind
 //! a type-erased map. The cost is a dependency from this crate on every
 //! domain crate it can register, and it is paid deliberately: registration
 //! is discoverable in rustdoc, checked at compile time, and all Senken
@@ -57,6 +63,7 @@ use senken_acl::{PluginNamespace, PluginPermissionError, PluginPermissionName};
 use senken_marketdata::book::BookSource;
 use senken_marketdata::source::MarketDataSource;
 use senken_subscription::FeedSource;
+use senken_trade::TradeAdapter;
 #[cfg(feature = "http")]
 use senken_venue::{LimitGroup, VenueClient};
 
@@ -71,6 +78,9 @@ pub mod error;
 pub mod live;
 /// Reconciling a plugin's permissions across activations.
 pub mod permissions;
+/// The dynamic widget UI package contract — a different shape of plugin
+/// entirely from [`Plugin`] below. See that module's own docs.
+pub mod widget_package;
 
 pub use crate::bar_source::BarSource;
 pub use crate::clock::SystemClock;
@@ -156,6 +166,7 @@ pub struct ActivationContext {
     bar_sources: Vec<Arc<dyn BarSource>>,
     book_sources: Vec<Arc<dyn BookSource>>,
     feed_sources: Vec<Arc<dyn FeedSource>>,
+    trade_adapters: Vec<Arc<dyn TradeAdapter>>,
     #[cfg(feature = "http")]
     http_client: Option<reqwest::Client>,
     /// Groups already handed out this context's lifetime, keyed by the name
@@ -235,6 +246,11 @@ impl HttpActivationContext<'_> {
     /// Contributes a live-feed source.
     pub fn register_feed_source(&mut self, source: Arc<dyn FeedSource>) {
         self.inner.register_feed_source(source);
+    }
+
+    /// Contributes a trade adapter.
+    pub fn register_trade_adapter(&mut self, adapter: Arc<dyn TradeAdapter>) {
+        self.inner.register_trade_adapter(adapter);
     }
 
     /// Registers a permission in the namespace bound by the runtime.
@@ -323,6 +339,25 @@ impl ActivationContext {
     #[must_use]
     pub fn take_feed_sources(&mut self) -> Vec<Arc<dyn FeedSource>> {
         std::mem::take(&mut self.feed_sources)
+    }
+
+    /// Contributes a broker, exchange or simulator to trade through,
+    /// mirroring [`register_marketdata_source`](Self::register_marketdata_source)
+    /// exactly.
+    ///
+    /// Registering a trade adapter is a separate act from registering a
+    /// market data source, even for one venue: an installation may well
+    /// want Binance's prices without Binance's order routing, and the
+    /// plugin that offers both should not force the pair.
+    pub fn register_trade_adapter(&mut self, adapter: Arc<dyn TradeAdapter>) {
+        self.trade_adapters.push(adapter);
+    }
+
+    /// Takes the trade adapters registered since the last call, leaving the
+    /// context ready for the next plugin.
+    #[must_use]
+    pub fn take_trade_adapters(&mut self) -> Vec<Arc<dyn TradeAdapter>> {
+        std::mem::take(&mut self.trade_adapters)
     }
 
     /// Binds `namespace` as the only namespace
@@ -700,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn the_four_capabilities_drain_independently() {
+    fn the_five_capabilities_drain_independently() {
         // One plugin registering several must not have taking one of them
         // disturb the others — the runtime drains them separately, per
         // plugin, and a shared buffer would leak a venue's source into the
@@ -709,11 +744,102 @@ mod tests {
         context.register_marketdata_source(Arc::new(Stub));
         context.register_bar_source(Arc::new(StubBars));
         context.register_book_source(Arc::new(StubBook));
+        context.register_trade_adapter(Arc::new(StubAdapter));
 
         assert_eq!(context.take_book_sources().len(), 1);
         assert_eq!(context.take_bar_sources().len(), 1);
         assert_eq!(context.take_marketdata_sources().len(), 1);
+        assert_eq!(context.take_trade_adapters().len(), 1);
         assert!(context.take_feed_sources().is_empty());
+    }
+
+    struct StubAdapter;
+
+    #[async_trait::async_trait]
+    impl senken_trade::TradeAdapter for StubAdapter {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        fn name(&self) -> &'static str {
+            "Stub"
+        }
+        fn kind(&self) -> senken_trade::AdapterKind {
+            senken_trade::AdapterKind::Simulation
+        }
+        fn capabilities(&self) -> senken_trade::AdapterCapabilities {
+            senken_trade::AdapterCapabilities::market_only()
+        }
+        fn coverage(&self) -> senken_trade::InstrumentCoverage {
+            senken_trade::InstrumentCoverage::Universal
+        }
+        fn settings_schema(&self) -> senken_trade::SettingsSchema {
+            senken_trade::SettingsSchema::default()
+        }
+        async fn open_account(
+            &self,
+            _ctx: &senken_trade::TradeContext<'_>,
+            _account: senken_trade::AccountRef<'_>,
+        ) -> Result<(), senken_trade::TradeError> {
+            Ok(())
+        }
+        async fn health(
+            &self,
+            _ctx: &senken_trade::TradeContext<'_>,
+            _account: senken_trade::AccountRef<'_>,
+        ) -> Result<senken_trade::AdapterHealth, senken_trade::TradeError> {
+            Ok(senken_trade::AdapterHealth::Connected)
+        }
+        async fn balances(
+            &self,
+            _ctx: &senken_trade::TradeContext<'_>,
+            account: senken_trade::AccountRef<'_>,
+        ) -> Result<senken_trade::AccountBalances, senken_trade::TradeError> {
+            Ok(senken_trade::AccountBalances {
+                account_id: account.id,
+                currency: "USD".to_owned(),
+                balance: senken_core::decimal::Scaled::new(2, 0),
+                equity: senken_core::decimal::Scaled::new(2, 0),
+                unrealized_pnl: senken_core::decimal::Scaled::new(2, 0),
+                margin_used: None,
+                margin_available: None,
+                assets: Vec::new(),
+            })
+        }
+        async fn positions(
+            &self,
+            _ctx: &senken_trade::TradeContext<'_>,
+            _account: senken_trade::AccountRef<'_>,
+        ) -> Result<Vec<senken_trade::Position>, senken_trade::TradeError> {
+            Ok(Vec::new())
+        }
+        async fn orders(
+            &self,
+            _ctx: &senken_trade::TradeContext<'_>,
+            _account: senken_trade::AccountRef<'_>,
+            _filter: senken_trade::OrderFilter,
+        ) -> Result<Vec<senken_trade::Order>, senken_trade::TradeError> {
+            Ok(Vec::new())
+        }
+        async fn place_order(
+            &self,
+            _ctx: &senken_trade::TradeContext<'_>,
+            _account: senken_trade::AccountRef<'_>,
+            _request: senken_trade::OrderRequest,
+        ) -> Result<senken_trade::Order, senken_trade::TradeError> {
+            Err(senken_trade::TradeError::unsupported("stub", "trading"))
+        }
+    }
+
+    #[test]
+    fn taking_trade_adapters_drains_the_context() {
+        let mut context = ActivationContext::new();
+        context.register_trade_adapter(Arc::new(StubAdapter));
+
+        assert_eq!(context.take_trade_adapters().len(), 1);
+        assert!(
+            context.take_trade_adapters().is_empty(),
+            "a drained context must not hand the same adapter to the next plugin"
+        );
     }
 
     #[test]

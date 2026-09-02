@@ -47,6 +47,8 @@ what keeps the two modes from diverging.
 | `POST` | `/api/logout` | session |
 | `POST` | `/api/set-password` | session, **except** while the target account is fenced |
 | `GET` | `/api/me` | session — also reports the caller's role names and effective grants, for cosmetic UI use only |
+| `GET` | `/api/me/zone` | session — the caller's own stored display (timezone) zone, or `null` if never chosen |
+| `PUT` | `/api/me/zone` | session — sets the caller's own display zone; `IdentityStore::get_zone`/`set_zone` take the target `user_id` straight from the resolved session, never from the request, so there is no way to name a different account here |
 | `POST` | `/api/ws/ticket` | session — mints a single-use, ~30s ticket |
 | `GET` | `/api/ws` | the ticket from `/api/ws/ticket`, presented in the query string |
 | `GET` | `/api/users` | session — scoped by `IdentityStore::list_users` itself |
@@ -121,7 +123,12 @@ Every route below is mounted at plain `EndpointPermission::Authenticated`:
 own `AuthenticatedUser::authorize` check on every read and write (the same
 pattern Q9.3/Q10.1 established for `senken-identity`), and bars/indicators
 have no per-row owner to scope against at all — a valid, unfenced session is
-the whole permission story for those two.
+the whole permission story for those two. The three `/api/indicators/plugins*`
+routes, plus `/api/indicators/compile`, are the exception in this section:
+each handler calls `AuthenticatedUser::authorize` on `Resource::Indicator`
+itself, the same shape `/api/storage` uses, since an uploaded or compiled
+`.wasm` component runs for every user of this server rather than belonging
+to the account that uploaded or compiled it.
 
 `senken-chart` stores a pane's items (computed indicators, referenced
 overlay instruments, anchored drawings) in one table now, but the wire API
@@ -146,8 +153,12 @@ keeps `layers`/`drawings` as two shapes on purpose — see
 | `GET` | `/api/bars/range` | `SeriesLoader::resolve` — cache → store → aggregate from a finer stored spec, never a fetch; what a chart actually renders bars from |
 | `POST` | `/api/bars/ensure` | `SeriesLoader::ensure` — enqueues the fetch and returns immediately with a job reference; never blocks |
 | `GET` | `/api/bars/jobs/{job_id}` | polls the job `ensure` started |
-| `GET` | `/api/indicators` | the catalogue of `senken-indicators`' ten built-ins |
-| `POST` | `/api/indicators/compute` | replays already-resolvable bars through the named indicator (`senken_alerts::ConcreteIndicator`, reused rather than a second factory), one point per bar once `initialized()` |
+| `GET` | `/api/indicators` | the catalogue of `senken-indicators`' ten built-ins, plus every currently-enabled indicator loaded from an uploaded `.wasm` component (`senken_runtime::DynamicIndicators`) |
+| `POST` | `/api/indicators/compute` | replays already-resolvable bars through the named indicator — a built-in via `senken_alerts::ConcreteIndicator` (reused rather than a second factory), or a dynamic one via `DynamicIndicators::spawn` — one point per bar once `initialized()` |
+| `POST` | `/api/indicators/compile` | compiles indicator-lang source (`senken_indicator_lang::compile`) and registers the result the same way an upload does; a mistake in the source comes back as `line`/`column`/`message` verbatim, never folded into the crate-wide `{error}` shape; `Action::Create` on `Resource::Indicator` at `Scope::All` |
+| `POST` | `/api/indicators/plugins` | registers a compiled `wasm32-wasip2` component (raw bytes, `Content-Type: application/wasm`) as a dynamic indicator; `Action::Create` on `Resource::Indicator` at `Scope::All`, the same "not owned by any one account" shape `/api/storage` uses |
+| `GET` | `/api/indicators/plugins` | every registered dynamic indicator, including one that never finished loading — unlike `/api/indicators`, which only ever lists what a chart may place right now. Each entry carries its own `origin` (`built_in`/`uploaded`/`data_directory`), `state` (`active`/`disabled`/`incompatible`/`failed_to_load`/`auto_disabled`, the last from its own circuit breaker tripping), runtime `health` and ring `logs` — this is the one HTTP surface for diagnosing a broken plugin, not only listing the working ones; `Action::View` at `Scope::All` |
+| `POST` | `/api/indicators/plugins/{name}/enabled` | flips whether `/api/indicators` currently offers this dynamic indicator, without discarding the loaded component; `enabled: true` also resets this plugin's circuit breaker if it had tripped (`auto_disabled`) — the breaker never clears itself on its own, since a guest trap's cause is a deterministic bug rather than a transient venue failure (see `senken_plugin_host::circuit`'s own docs); `Action::Edit` at `Scope::All` |
 | `GET` | `/api/alerts` | scoped by `AlertStore::list_alerts` itself |
 | `POST` | `/api/alerts` | refuses an indicator that cannot even be built before it is ever persisted |
 | `GET` | `/api/alerts/{alert_id}` | includes fired-state: `last_fired_at`/`last_fired_value`/`fire_count` |
@@ -166,6 +177,92 @@ the first call has written it.
 `AlertStore::all_enabled_for_engine`/`record_fire` are deliberately **not**
 mounted anywhere in this crate (see that store's own docs) — they answer
 "what does the server need to keep running", never a caller's own request.
+
+## Dashboard workspaces and grid
+
+A dashboard workspace is its own aggregate, separate from a chart workspace
+— see `senken_dashboard`'s own module docs for why. Every route but the
+widget catalog is mounted at plain `EndpointPermission::Authenticated`:
+`senken_dashboard::DashboardWorkspaceStore` performs its own
+`AuthenticatedUser::authorize` check on every read and write, the same
+pattern `senken-chart`'s own workspace routes use.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/dashboard/workspaces` | scoped by `DashboardWorkspaceStore::list_workspaces` itself |
+| `POST` | `/api/dashboard/workspaces` | |
+| `GET` | `/api/dashboard/workspaces/default` | creates the caller's default dashboard workspace on the first call, returns the same one on every later one |
+| `PATCH` | `/api/dashboard/workspaces/{workspace_id}` | rename |
+| `DELETE` | `/api/dashboard/workspaces/{workspace_id}` | cascades to its widgets; healed by the next `.../default` open, the same way a chart workspace is |
+| `GET` | `/api/dashboard/workspaces/{workspace_id}/layout` | the workspace's full widget grid |
+| `PUT` | `/api/dashboard/workspaces/{workspace_id}/layout` | replaces the whole grid in one transaction — add, move, resize and delete are all just different snapshots through this one call, guarded by `expected_revision` (`409` on a stale one) |
+| `GET` | `/api/dashboard/widgets/catalog` | every widget type this build's server knows how to serve — pure, in-memory data with no owner, so any authenticated caller sees the same catalog |
+
+A placed widget stores a provider id and a widget type id, never a
+component — see `senken_dashboard::WidgetRecord`'s own docs for why that is
+what makes a placeholder possible when a widget's provider is no longer
+available. Every geometry field is grid columns and rows, never pixels.
+
+## Indicator registry
+
+Publish, search, install and revoke indicator-lang source — see
+`senken_indicator_registry`'s own module docs for why the registry
+publishes source rather than a compiled binary. Publishing, listing one's
+own entries, revoking one, and reading/setting one's own handle need a
+session (`senken_indicator_registry::RegistryStore` performs its own
+guarded check on each); searching, reading and installing a published
+indicator need no account at all — a published indicator is public and
+installable by design.
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/registry/indicators` | publishes into the caller's own namespace — the request body carries no `namespace` field, so it can never be steered into another account's |
+| `GET` | `/api/registry/indicators` | public search across every namespace; `?query=&limit=&offset=` |
+| `GET` | `/api/registry/indicators/mine` | the caller's own published entries |
+| `GET` | `/api/registry/indicators/{namespace}/{name}` | public; `{namespace}` accepts a raw account id or a claimed handle (`@alice` or `alice`) |
+| `POST` | `/api/registry/indicators/{namespace}/{name}/install` | public; compiles the published source **on the installing machine** and returns the compiled `wasm32-wasip2` component (`Content-Type: application/wasm`), with the language version it compiled against in `X-Indicator-Language-Version` |
+| `DELETE` | `/api/registry/indicators/{name}` | revokes the caller's own entry — always the caller's own namespace, never named in the request |
+| `PUT` | `/api/registry/handle` | claims (or replaces) the caller's own human-readable registry handle; publishing refuses to run until this has succeeded at least once |
+| `GET` | `/api/registry/handle` | the caller's own claimed handle, or `null` |
+
+## Dynamic widget UI packages
+
+A widget UI package is a self-contained bundle (`manifest.json` plus a
+`web/` directory of static assets) built entirely outside this
+repository — no Rust, no compilation on this host — served into a
+sandboxed iframe. See `senken_plugin::widget_package`'s own module docs.
+Every route below is `EndpointPermission::Authenticated`, with each handler
+calling `AuthenticatedUser::authorize` on `Resource::WidgetPlugin` at
+`Scope::All` itself: installing code this server will run (even sandboxed)
+is an admin action, distinct from `Resource::Storage` (a different
+administrative concern than disk usage) and from `Resource::Indicator` (a
+different kind of plugin entirely).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/widget-plugins/catalog` | every widget every currently active package contributes — merge with `/api/dashboard/widgets/catalog` for the full effective catalog |
+| `GET` | `/api/widget-plugins` | every installed package, enabled or not |
+| `POST` | `/api/widget-plugins` | installs a package from the raw bytes of a zip archive (`Content-Type: application/zip`) |
+| `POST` | `/api/widget-plugins/{id}/enabled` | flips whether this package's widgets are in the effective catalog, without touching its files or any placed instance's stored config |
+| `DELETE` | `/api/widget-plugins/{id}` | removes a package's files entirely |
+| `POST` | `/api/widget-plugins/refresh` | an explicit rescan of the data directory — refresh is always explicit, never a filesystem watcher, since a watcher can fire mid-copy and read a half-written file |
+| `GET` | `/widget-plugin-assets/{id}/{*path}` | **public**, and deliberately outside `/api` (meant to eventually move to a genuinely separate origin) — streams one static file out of a package's own `web/` directory into the sandboxed iframe. Answers with plain HTTP status codes, not the crate's usual `{error}` JSON envelope: a missing asset 404s the way any static file server does |
+
+A package dropped by hand under `<data_dir>/widget-plugins/packages/<id>/`
+is picked up the moment anything calls `list`/`refresh` — this store
+re-reads its directory from disk on every call rather than caching an
+in-memory catalog, so there is nothing to explicitly "scan" the way dynamic
+indicators are (see the next section).
+
+## Dynamic indicators from the data directory
+
+Besides an upload through `POST /api/indicators/plugins` or a compile
+through `POST /api/indicators/compile`, a `.wasm` component dropped by hand
+under `<data_dir>/indicator-plugins/*.wasm` is registered automatically —
+with `origin: data_directory` — when `senken_runtime::Runtime` starts. One
+broken file there never aborts startup: it becomes a `failed_to_load` (or
+`incompatible`) entry, visible through `GET /api/indicators/plugins`, and
+every other file still loads.
 
 ## The `web` feature
 

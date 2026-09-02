@@ -6,17 +6,40 @@
 	// they are two different pieces of chrome and two different components
 	// here.
 	import { cn } from '$lib/utils.js';
-	import { HUD_WIDGETS, DEFAULT_HUD_KEYS } from '$lib/mock/shell';
+	import { tradeStore } from '$lib/state/trade.svelte';
+	import { DEFAULT_HUD_KEYS, hudStats, type Tone } from '$lib/trade/view';
 	import { StatCell } from '$lib/components/ui/stat-cell/index.js';
 	import * as Popover from '$lib/components/ui/popover/index.js';
 	import * as Avatar from '$lib/components/ui/avatar/index.js';
 	import { Switch } from '$lib/components/ui/switch/index.js';
 	import ConnectionStatus from './connection-status.svelte';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
+	import { formatInstant } from '$lib/time';
+	import { userZoneStore } from '$lib/state/user-zone.svelte';
 
 	let navPickerOpen = $state(false);
 	let visibleHudKeys = $state<string[]>([...DEFAULT_HUD_KEYS]);
-	const visibleHud = $derived(HUD_WIDGETS.filter((w) => visibleHudKeys.includes(w.key)));
+	// Read out of the shared trade store on every run, never captured once:
+	// this bar sits above every route, so it must show what the store holds
+	// now — including a fill that happened on a screen the user is not
+	// looking at. It starts no polling of its own; whichever route is
+	// mounted decides through `watchTrade` what is kept fresh, and this
+	// simply renders whatever that leaves in the store.
+	const hud = $derived(hudStats(tradeStore.accounts, tradeStore.portfolios));
+	const visibleHud = $derived(hud.filter((w) => visibleHudKeys.includes(w.key)));
+
+	/** `StatCell` has four tones; the trade view models have seven. The two
+	 * that carry meaning — gain and loss — map across unchanged, and the
+	 * rest collapse to prominent or muted. */
+	const CELL_TONE: Record<Tone, 'bright' | 'gain' | 'loss' | 'dim'> = {
+		fg: 'bright',
+		fg2: 'dim',
+		dim: 'dim',
+		dim2: 'dim',
+		gain: 'gain',
+		loss: 'loss',
+		inv: 'bright'
+	};
 
 	function toggleHud(key: string) {
 		visibleHudKeys = visibleHudKeys.includes(key)
@@ -24,13 +47,15 @@
 			: [...visibleHudKeys, key];
 	}
 
+	// "Now", in the viewer's chosen display zone rather than the machine's
+	// own — the same door every other on-screen instant in this app renders
+	// through (`$lib/time`'s `formatInstant`), so this clock and a chart's
+	// time axis never disagree about what zone "now" is in.
 	let clock = $state('00:00:00');
 	$effect(() => {
+		const zoneId = userZoneStore.zone;
 		const update = () => {
-			const d = new Date();
-			clock = [d.getHours(), d.getMinutes(), d.getSeconds()]
-				.map((n) => String(n).padStart(2, '0'))
-				.join(':');
+			clock = formatInstant(Date.now() * 1_000_000, zoneId).text.slice(11);
 		};
 		update();
 		const id = setInterval(update, 1000);
@@ -71,7 +96,7 @@
 			<div
 				class="flex min-w-0 flex-none items-center overflow-hidden border-r border-ink/6 px-4 whitespace-nowrap"
 			>
-				<StatCell label={w.label} value={w.value} tone={w.tone} />
+				<StatCell label={w.label} value={w.value} tone={CELL_TONE[w.tone]} />
 			</div>
 		{/each}
 	</div>
@@ -91,7 +116,7 @@
 				<div class="border-b border-ink/7 px-3 py-2.5 font-mono text-[8px] tracking-[0.24em] text-dim">
 					NAVBAR WIDGETS
 				</div>
-				{#each HUD_WIDGETS as w (w.key)}
+				{#each hud as w (w.key)}
 					{@const on = visibleHudKeys.includes(w.key)}
 					<div class="flex items-center justify-between border-b border-ink/[4.5%] px-3 py-2">
 						<span

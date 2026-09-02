@@ -1,0 +1,14 @@
+# See `../panics/Cargo.toml` for why this is its own tiny workspace.
+[workspace]
+
+[package]
+name = "fixture-deterministic"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+senken-plugin-api = { path = "../../../../plugin-api" }

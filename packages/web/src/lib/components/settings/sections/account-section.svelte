@@ -9,6 +9,12 @@
 			rowDescription: 'The address this account signs in with.'
 		},
 		{
+			groupHeading: 'Profile',
+			rowId: 'profile-time-zone',
+			rowLabel: 'Time zone',
+			rowDescription: 'Controls how times are displayed on charts and everywhere else in the app.'
+		},
+		{
 			groupHeading: 'Security',
 			rowId: 'change-password',
 			rowLabel: 'Password',
@@ -30,13 +36,16 @@
 	// for signing out. There is no "edit display name" endpoint anywhere in
 	// `crates/api` (only `email`/`display_name`/`disabled`/`password_set`
 	// are *read* by `MeResponse` — nothing writes them beyond the seed
-	// migration and the password itself), so this section shows the
-	// profile fields read-only rather than rendering editable inputs that
-	// would silently do nothing on submit.
+	// migration and the password itself), so this section shows those two
+	// fields read-only rather than rendering editable inputs that would
+	// silently do nothing on submit. The time zone row below is the one
+	// exception: `GET`/`PUT /api/me/zone` make it a real, persisted
+	// preference, not a decoration.
 	import { onMount } from 'svelte';
 	import SettingsGroup from '../settings-group.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import * as NativeSelect from '$lib/components/ui/native-select/index.js';
 	import { ForbiddenError, UnauthorizedError } from '$lib/api/errors';
 	import { activeServer } from '$lib/api/servers.svelte';
 	import { endSession } from '$lib/api/session.svelte';
@@ -44,6 +53,8 @@
 	import { apiClient } from '$lib/api/client';
 	import { MIN_PASSWORD_LENGTH } from '$lib/api/constants';
 	import type { MeResponse } from '$lib/api/types';
+	import { detectBrowserZone } from '$lib/time';
+	import { setUserZone } from '$lib/state/user-zone.svelte';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import CircleCheckIcon from '@lucide/svelte/icons/circle-check';
 
@@ -60,6 +71,64 @@
 	let logoutBusy = $state(false);
 	let logoutError = $state<string | null>(null);
 
+	// Time zone. `hasStoredZone` distinguishes "this account chose a zone"
+	// from "the dropdown happens to show a value" — `selectedZone` is
+	// pre-filled with the browser's own zone the moment this account has
+	// never chosen one (per this app's own rule: the browser's zone is only
+	// ever a first-login *suggestion*, never silently saved on the caller's
+	// behalf and never consulted again once a real value exists), and that
+	// pre-fill must not be mistaken for an already-persisted choice.
+	const zoneOptions: string[] =
+		typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
+	let selectedZone = $state('');
+	let hasStoredZone = $state(false);
+	let zoneBusy = $state(false);
+	let zoneError = $state<string | null>(null);
+	let zoneSaved = $state(false);
+
+	async function loadZone() {
+		try {
+			const response = await apiClient.getZone();
+			if (response.zone) {
+				selectedZone = response.zone;
+				hasStoredZone = true;
+			} else {
+				// Not chosen yet — propose the browser's own zone as a
+				// starting point only; nothing is saved until the caller
+				// actually picks something.
+				selectedZone = detectBrowserZone();
+				hasStoredZone = false;
+			}
+		} catch (error) {
+			// Non-fatal: the picker still renders, just without a
+			// pre-filled value. The main profile load surfaces the more
+			// important errors (an expired session, in particular).
+			zoneError = error instanceof Error ? error.message : 'Could not load your time zone.';
+		}
+	}
+
+	async function submitZone(event: Event) {
+		const zone = (event.currentTarget as HTMLSelectElement).value;
+		selectedZone = zone;
+		zoneBusy = true;
+		zoneError = null;
+		zoneSaved = false;
+		try {
+			await apiClient.setZone(zone);
+			hasStoredZone = true;
+			zoneSaved = true;
+			// Every open chart re-renders its axis and crosshair labels in the
+			// new zone immediately — the whole point of picking one — instead
+			// of waiting for the next `loadUserZone` (a fresh login, or a
+			// reload of this page).
+			setUserZone(zone);
+		} catch (error) {
+			zoneError = error instanceof Error ? error.message : 'Could not save your time zone.';
+		} finally {
+			zoneBusy = false;
+		}
+	}
+
 	async function load() {
 		loading = true;
 		loadError = null;
@@ -73,6 +142,7 @@
 	}
 
 	onMount(load);
+	onMount(loadZone);
 
 	const passwordMismatch = $derived(
 		confirmPassword.length > 0 && newPassword !== confirmPassword
@@ -166,6 +236,14 @@
 	<span class="font-mono text-[12px] text-secondary-foreground">{profile?.display_name ?? '—'}</span>
 {/snippet}
 
+{#snippet timeZoneControl()}
+	<NativeSelect.Root value={selectedZone} onchange={submitZone} disabled={zoneBusy} class="w-[240px]">
+		{#each zoneOptions as zoneId (zoneId)}
+			<NativeSelect.Option value={zoneId}>{zoneId}</NativeSelect.Option>
+		{/each}
+	</NativeSelect.Root>
+{/snippet}
+
 <div class="flex flex-col gap-6">
 	{#if loading}
 		<p class="text-[12px] text-dim2">Loading your profile…</p>
@@ -179,7 +257,7 @@
 			group={{
 				id: 'profile',
 				heading: 'Profile',
-				description: 'Read-only — there is no self-service profile editor yet.',
+				description: 'Email and display name are read-only for now; your time zone is yours to set.',
 				rows: [
 					{
 						id: 'profile-email',
@@ -192,10 +270,26 @@
 						label: 'Display name',
 						description: 'How your account is shown around the app.',
 						control: displayNameControl
+					},
+					{
+						id: 'profile-time-zone',
+						label: 'Time zone',
+						description: hasStoredZone
+							? 'Controls how times are displayed on charts and everywhere else in the app.'
+							: 'Not set yet — defaulted to your browser’s own zone below. Pick one to save it.',
+						control: timeZoneControl
 					}
 				]
 			}}
 		/>
+		{#if zoneError}
+			<p class="-mt-4 text-[11.5px] text-destructive">{zoneError}</p>
+		{:else if zoneSaved}
+			<p class="-mt-4 flex items-center gap-1.5 text-[11.5px] text-gain">
+				<CircleCheckIcon class="size-3.5" /> Time zone saved. Every device you sign in on will show
+				times this way.
+			</p>
+		{/if}
 
 		<section class="flex flex-col">
 			<header class="mb-1">

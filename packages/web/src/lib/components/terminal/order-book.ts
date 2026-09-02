@@ -1,5 +1,5 @@
 // Real order-book rows for `order-book.svelte`'s depth ladder — replaces
-// `trade-demo.ts`'s former `genOrderBook`, which built a synthetic ladder
+// the former `genOrderBook`, which built a synthetic ladder
 // around a real last-close price with a seeded PRNG. There is no synthetic
 // fallback left: a venue without `book.supported` never reaches this module
 // at all (`order-book.svelte` shows a disabled control with its reason

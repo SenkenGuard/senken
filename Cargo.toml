@@ -3,7 +3,7 @@ resolver = "3"
 members = ["apps/*", "crates/*", "plugins/*"]
 
 [workspace.package]
-version = "0.0.4"
+version = "0.0.5"
 edition = "2024"
 rust-version = "1.97.0"
 license = "LGPL-3.0-only"
@@ -23,55 +23,70 @@ keywords = [
 [workspace.dependencies]
 # Internal crates. `crates/*` are usable on their own; `plugins/*` and
 # `crates/runtime` exist to assemble them into the Senken application.
-senken-acl = { path = "crates/acl", version = "0.0.4" }
-senken-alerts = { path = "crates/alerts", version = "0.0.4" }
-senken-core = { path = "crates/core", version = "0.0.4" }
-senken-identity = { path = "crates/identity", version = "0.0.4" }
-senken-indicators = { path = "crates/indicators", version = "0.0.4" }
-senken-marketdata = { path = "crates/marketdata", version = "0.0.4" }
-senken-notes = { path = "crates/notes", version = "0.0.4" }
+senken-acl = { path = "crates/acl", version = "0.0.5" }
+senken-alerts = { path = "crates/alerts", version = "0.0.5" }
+senken-core = { path = "crates/core", version = "0.0.5" }
+senken-dashboard = { path = "crates/dashboard", version = "0.0.5" }
+senken-identity = { path = "crates/identity", version = "0.0.5" }
+senken-indicators = { path = "crates/indicators", version = "0.0.5" }
+senken-indicator-lang = { path = "crates/indicator-lang", version = "0.0.5" }
+senken-indicator-registry = { path = "crates/indicator-registry", version = "0.0.5" }
+senken-marketdata = { path = "crates/marketdata", version = "0.0.5" }
+senken-notes = { path = "crates/notes", version = "0.0.5" }
 # Lean by default inside this workspace: only the venue plugins ask for
 # `features = ["http"]`. External users get the HTTP client by default.
-senken-plugin = { path = "crates/plugin", version = "0.0.4", default-features = false }
-senken-plugin-bingx = { path = "plugins/bingx", version = "0.0.4" }
-senken-plugin-bitfinex = { path = "plugins/bitfinex", version = "0.0.4" }
-senken-plugin-bitmart = { path = "plugins/bitmart", version = "0.0.4" }
-senken-plugin-htx = { path = "plugins/htx", version = "0.0.4" }
-senken-plugin-phemex = { path = "plugins/phemex", version = "0.0.4" }
-senken-plugin-upbit = { path = "plugins/upbit", version = "0.0.4" }
-senken-plugin-binance = { path = "plugins/binance", version = "0.0.4" }
-senken-plugin-bitget = { path = "plugins/bitget", version = "0.0.4" }
-senken-plugin-bitmex = { path = "plugins/bitmex", version = "0.0.4" }
-senken-plugin-bitstamp = { path = "plugins/bitstamp", version = "0.0.4" }
-senken-plugin-bybit = { path = "plugins/bybit", version = "0.0.4" }
-senken-plugin-coinbase = { path = "plugins/coinbase", version = "0.0.4" }
-senken-plugin-cryptocom = { path = "plugins/cryptocom", version = "0.0.4" }
-senken-plugin-deribit = { path = "plugins/deribit", version = "0.0.4" }
-senken-plugin-gate = { path = "plugins/gate", version = "0.0.4" }
-senken-plugin-gemini = { path = "plugins/gemini", version = "0.0.4" }
-senken-plugin-kraken = { path = "plugins/kraken", version = "0.0.4" }
-senken-plugin-kucoin = { path = "plugins/kucoin", version = "0.0.4" }
-senken-plugin-mexc = { path = "plugins/mexc", version = "0.0.4" }
-senken-plugin-okx = { path = "plugins/okx", version = "0.0.4" }
-senken-plugin-poloniex = { path = "plugins/poloniex", version = "0.0.4" }
-senken-plugin-whitebit = { path = "plugins/whitebit", version = "0.0.4" }
-senken-loader = { path = "crates/loader", version = "0.0.4" }
-senken-runtime = { path = "crates/runtime", version = "0.0.4" }
-senken-series = { path = "crates/series", version = "0.0.4" }
-senken-storage = { path = "crates/storage", version = "0.0.4" }
-senken-store = { path = "crates/store", version = "0.0.4" }
-senken-subscription = { path = "crates/subscription", version = "0.0.4" }
-senken-watchlist = { path = "crates/watchlist", version = "0.0.4" }
+senken-plugin = { path = "crates/plugin", version = "0.0.5", default-features = false }
+# Versioned on its own (see that crate's `Cargo.toml`): this is the public
+# SDK a compiled plugin links against, not part of the application's own
+# release cadence.
+senken-plugin-api = { path = "crates/plugin-api", version = "0.1.0" }
+# Loads and confines compiled plugin components (wasmtime, capability-zero
+# WASI). Part of the application's own release cadence, unlike
+# `senken-plugin-api` above.
+senken-plugin-host = { path = "crates/plugin-host", version = "0.0.5" }
+senken-plugin-bingx = { path = "plugins/bingx", version = "0.0.5" }
+senken-plugin-bitfinex = { path = "plugins/bitfinex", version = "0.0.5" }
+senken-plugin-bitmart = { path = "plugins/bitmart", version = "0.0.5" }
+senken-plugin-htx = { path = "plugins/htx", version = "0.0.5" }
+senken-plugin-phemex = { path = "plugins/phemex", version = "0.0.5" }
+senken-plugin-upbit = { path = "plugins/upbit", version = "0.0.5" }
+senken-plugin-binance = { path = "plugins/binance", version = "0.0.5" }
+# The built-in paper broker. Not a venue plugin: it registers a
+# `TradeAdapter`, not a market data source, and reaches no network.
+senken-plugin-simulator = { path = "plugins/simulator", version = "0.0.5" }
+senken-plugin-bitget = { path = "plugins/bitget", version = "0.0.5" }
+senken-plugin-bitmex = { path = "plugins/bitmex", version = "0.0.5" }
+senken-plugin-bitstamp = { path = "plugins/bitstamp", version = "0.0.5" }
+senken-plugin-bybit = { path = "plugins/bybit", version = "0.0.5" }
+senken-plugin-coinbase = { path = "plugins/coinbase", version = "0.0.5" }
+senken-plugin-cryptocom = { path = "plugins/cryptocom", version = "0.0.5" }
+senken-plugin-deribit = { path = "plugins/deribit", version = "0.0.5" }
+senken-plugin-gate = { path = "plugins/gate", version = "0.0.5" }
+senken-plugin-gemini = { path = "plugins/gemini", version = "0.0.5" }
+senken-plugin-kraken = { path = "plugins/kraken", version = "0.0.5" }
+senken-plugin-kucoin = { path = "plugins/kucoin", version = "0.0.5" }
+senken-plugin-mexc = { path = "plugins/mexc", version = "0.0.5" }
+senken-plugin-okx = { path = "plugins/okx", version = "0.0.5" }
+senken-plugin-poloniex = { path = "plugins/poloniex", version = "0.0.5" }
+senken-plugin-whitebit = { path = "plugins/whitebit", version = "0.0.5" }
+senken-loader = { path = "crates/loader", version = "0.0.5" }
+senken-runtime = { path = "crates/runtime", version = "0.0.5" }
+senken-series = { path = "crates/series", version = "0.0.5" }
+senken-storage = { path = "crates/storage", version = "0.0.5" }
+senken-store = { path = "crates/store", version = "0.0.5" }
+senken-trade = { path = "crates/trade", version = "0.0.5" }
+senken-subscription = { path = "crates/subscription", version = "0.0.5" }
+senken-watchlist = { path = "crates/watchlist", version = "0.0.5" }
 # The venue half of implements `senken-subscription`'s
 # `VenueConnection`/`VenueConnector` ports against a real venue WebSocket.
-senken-feed = { path = "crates/feed", version = "0.0.4" }
-senken-venue = { path = "crates/venue", version = "0.0.4" }
-senken-chart = { path = "crates/chart", version = "0.0.4" }
+senken-feed = { path = "crates/feed", version = "0.0.5" }
+senken-venue = { path = "crates/venue", version = "0.0.5" }
+senken-chart = { path = "crates/chart", version = "0.0.5" }
 # `apps/senken` is the single binary; `apps/cli` holds the market-data
 # subcommands as a library so it can be reused without duplicating them
 #.
-senken-cli = { path = "apps/cli", version = "0.0.4" }
-senken-api = { path = "crates/api", version = "0.0.4" }
+senken-cli = { path = "apps/cli", version = "0.0.5" }
+senken-api = { path = "crates/api", version = "0.0.5" }
 
 # External. Features are kept minimal here; each crate enables what it needs
 # so a library consumer never inherits a runtime it did not ask for.
@@ -106,6 +121,15 @@ divan = "0.1.21"
 # `gzip` feature does not help — it decodes HTTP bodies, not WS frames.
 flate2 = "1.1.5"
 futures = { version = "0.3.34", default-features = false, features = ["std"] }
+# `senken-core`: civil-datetime-plus-zone to instant conversion at the API's
+# typed input boundary, and DST disambiguation. `tzdb-bundle-always` embeds
+# the full IANA database in the binary so that conversion is reproducible on
+# every machine regardless of the host OS's own tzdb version — the same
+# determinism argument as `arrow`'s pin below, applied to time zones instead
+# of columnar layout. `tzdb-zoneinfo` and `tz-system` are left off the
+# feature list (both are on by default) so the host machine's own time zone
+# is never even reachable, let alone read.
+jiff = { version = "0.2.35", default-features = false, features = ["std", "serde", "tzdb-bundle-always"] }
 # Byte-bounded caches in `senken-loader`: verified available and
 # MSRV-compatible so a hand-rolled LRU is not reinvented.
 lru = "0.18.3"
@@ -176,6 +200,12 @@ utoipa = "5.5.0"
 # `senken-identity`: user, role and session ids.
 uuid = { version = "1.26.0", features = ["v4"] }
 wiremock = "0.6"
+# `senken-plugin`: unpacking an uploaded dynamic widget UI package (manifest
+# + static bundle) into the data directory. `deflate` is the only
+# compression method enabled — the one every common zip writer produces —
+# so this stays a small, well-trodden dependency rather than pulling in
+# every codec the format supports.
+zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

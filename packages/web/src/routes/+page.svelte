@@ -1,19 +1,19 @@
 <script lang="ts">
-	// Dashboard route: the workspace
-	// switcher, and a 12-column grid of configurable widgets rendered from
-	// `$lib/mock/dashboard`. All state here is local component state
-	// (`$state`), mirroring the reference's own `this.state.workspaces` /
-	// `this.setState` — this page is UI-only, so nothing here is persisted.
+	// Dashboard route: the workspace switcher, and a 12-column grid of
+	// configurable widgets. The layout scaffolding (workspaces, span, the
+	// widget catalog) is still local component state — nothing about which
+	// widgets are placed where is persisted. The `equity`, `positions` and
+	// `risk` widgets are not: they read the shared trade store like the
+	// engine page does, through `watchTrade('all')`, because this page shows
+	// every account the user owns rather than one at a time.
+	import { onMount } from 'svelte';
 	import {
 		INITIAL_WORKSPACES,
 		SPAN_STEPS,
 		SPAN_CLASS,
 		CATALOG,
 		catalogEntry,
-		EQUITY,
 		WATCHLIST,
-		POSITIONS,
-		RISK_BARS,
 		HEAT_CELLS,
 		SIGNALS,
 		FLOW_BARS,
@@ -22,6 +22,8 @@
 		type WidgetType
 	} from '$lib/mock/dashboard';
 	import { openCommand, closeCommand } from '$lib/state/command-palette.svelte';
+	import { loadTrade, refreshPortfolios, tradeStore, watchTrade } from '$lib/state/trade.svelte';
+	import { dashboardEquity, dashboardPositions, dashboardRisk } from '$lib/trade/view';
 	import WorkspaceBar from '$lib/components/terminal/workspace-bar.svelte';
 	import DashboardWidget from '$lib/components/terminal/dashboard-widget.svelte';
 	import EquityCard from '$lib/components/terminal/equity-card.svelte';
@@ -40,6 +42,28 @@
 	const nextId = () => `w${seq++}`;
 
 	const active = $derived(workspaces[activeWs] ?? workspaces[0]);
+
+	// The account widgets' view models, rebuilt from whatever
+	// `tradeStore.portfolios` currently holds rather than a snapshot taken
+	// once on mount — `watchTrade('all')` below keeps that store current, and
+	// `tradeStore.ownAccounts` is read fresh on every recompute so an account
+	// attached or removed elsewhere is reflected without this page doing
+	// anything special.
+	const equityData = $derived(dashboardEquity(tradeStore.ownAccounts, tradeStore.portfolios));
+	const positionsTable = $derived(dashboardPositions(tradeStore.ownAccounts, tradeStore.portfolios));
+	const riskData = $derived(dashboardRisk(tradeStore.ownAccounts, tradeStore.portfolios));
+
+	async function reload() {
+		await loadTrade();
+		await refreshPortfolios();
+	}
+
+	onMount(() => {
+		void reload();
+		// 'all': this page totals every owned account, so it is a broad
+		// watcher exactly like the engine page's own OVERVIEW.
+		return watchTrade('all');
+	});
 
 	function mutateActive(fn: (w: Workspace) => Workspace) {
 		workspaces = workspaces.map((w, i) => (i === activeWs ? fn(w) : w));
@@ -162,13 +186,13 @@
 					onRemove={() => removeWidget(w.id)}
 				>
 					{#if w.type === 'equity'}
-						<EquityCard equity={EQUITY} />
+						<EquityCard data={equityData} />
 					{:else if w.type === 'watchlist'}
 						<WatchlistPanel rows={WATCHLIST} />
 					{:else if w.type === 'positions'}
-						<PositionsPanel rows={POSITIONS} />
+						<PositionsPanel table={positionsTable} />
 					{:else if w.type === 'risk'}
-						<RiskPanel bars={RISK_BARS} />
+						<RiskPanel data={riskData} />
 					{:else if w.type === 'heatmap'}
 						<HeatPanel cells={HEAT_CELLS} />
 					{:else if w.type === 'signals'}

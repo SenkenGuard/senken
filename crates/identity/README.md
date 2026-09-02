@@ -67,6 +67,15 @@ impossible to express.
   this way, `senken-api`'s router-level `EndpointPermission::Acl` variant
   had nothing left to check that the store did not already check itself,
   so it was removed rather than left as a second, always-redundant gate.
+- **`get_zone`/`set_zone`** round out the self-service surface the same way
+  `get_own_profile`/`set_password_for` do: no `senken_acl` grant required,
+  by `UserId` only. `get_zone` returns `None`, never an error, for an
+  account that has not chosen a display zone yet; `set_zone` takes an
+  already-validated `senken_core::IanaZone` rather than a raw string, so
+  this crate never re-implements the bundled-database check that type
+  already performs. Unlike a privilege change, setting a display zone does
+  not invalidate the account's other sessions — it is not a security
+  boundary.
 
 ```rust
 use senken_identity::{DEFAULT_ADMIN_EMAIL, IdentityStore};

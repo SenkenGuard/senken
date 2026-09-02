@@ -15,5 +15,12 @@ homepage.workspace = true
 workspace = true
 
 [dependencies]
+# Civil-datetime-plus-zone to instant conversion (`zone`/`time` modules).
+# Configured workspace-wide with a bundled tzdb and no system time zone
+# access — see the workspace `Cargo.toml` entry for why.
+jiff = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

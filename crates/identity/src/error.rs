@@ -92,4 +92,13 @@ pub enum IdentityError {
     /// is not safe.
     #[error("accounts database contains an unrecognised grant: {0}")]
     CorruptGrant(String),
+
+    /// `users.display_zone` held a string the bundled time zone database no
+    /// longer recognises. This crate only ever writes a value that already
+    /// passed `senken_core::IanaZone::new`, so reaching this means the row
+    /// was written by an incompatible version of this crate or edited by
+    /// hand — the same "do not guess" reasoning as
+    /// [`CorruptGrant`](Self::CorruptGrant).
+    #[error("accounts database contains an unrecognised time zone: {0}")]
+    CorruptZone(String),
 }

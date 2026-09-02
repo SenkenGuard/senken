@@ -13,6 +13,8 @@ import type {
 	HealthResponse,
 	LoginResponse,
 	MeResponse,
+	UserZoneResponse,
+	SetZoneRequest,
 	UsersPage,
 	RolesPage,
 	CreateUserRequest,
@@ -38,6 +40,10 @@ import type {
 	IndicatorCatalogEntry,
 	ComputeIndicatorRequest,
 	ComputeIndicatorResponse,
+	IndicatorPluginDto,
+	SetIndicatorPluginEnabledRequest,
+	CompileIndicatorRequest,
+	CompileIndicatorErrorDto,
 	InstrumentsPage,
 	SourcesResponse,
 	WatchlistGroupsPage,
@@ -48,12 +54,42 @@ import type {
 	NoteDto,
 	CreateNoteRequest,
 	UpdateNoteRequest,
+	RegistryPage,
+	IndicatorEntryDto,
+	PublishIndicatorRequest,
 	StorageReportDto,
 	DeleteStorageRequest,
-	DeleteStorageResponse
+	DeleteStorageResponse,
+	AdaptersResponse,
+	TradeAccountsPage,
+	TradeAccountStateDto,
+	CreateTradeAccountRequest,
+	UpdateTradeAccountRequest,
+	TradeAccountSettingsDto,
+	ReplaceSettingsRequest,
+	BalancesDto,
+	PositionDto,
+	OrderDto,
+	FillDto,
+	PlaceOrderRequest,
+	CloseRequest,
+	AmendOrderRequest,
+	HealthDto,
+	RunActionRequest,
+	ActionOutcomeDto
 } from './types';
 
 export type SessionExpiredHandler = () => void;
+
+/** `installIndicator`'s result — the compiled `wasm32-wasip2` component's
+ * raw bytes plus the language version they were compiled against. Not a
+ * generated DTO: `install_indicator`'s success body is
+ * `application/wasm`, not JSON, so there is no `serde` struct for
+ * `openapi-typescript` to have derived this shape from. */
+export interface InstalledIndicator {
+	wasm: ArrayBuffer;
+	languageVersion: string;
+}
 
 // B16 point 2: "route to login exactly once." Q5 plugs in the real
 // navigation with one call to `setSessionExpiredHandler` (`app-shell.svelte`,
@@ -172,6 +208,26 @@ class ApiClient {
 	 * `heartbeatTick`'s doc). */
 	async me(): Promise<MeResponse> {
 		return this.request<MeResponse>('/api/me');
+	}
+
+	/** `GET /api/me/zone` — the caller's own stored display (timezone) zone,
+	 * or `null` if this account has never chosen one. The browser's own
+	 * detected zone (`$lib/time/zone.ts`'s `detectBrowserZone`) is only ever
+	 * a client-side suggestion for that `null` case — never a substitute
+	 * server-side, and never used once a real value comes back here. */
+	async getZone(): Promise<UserZoneResponse> {
+		return this.request<UserZoneResponse>('/api/me/zone');
+	}
+
+	/** `PUT /api/me/zone` — sets the caller's own display zone. Rejected with
+	 * a typed `HttpError` (400) if `zone` is not an id the server's bundled
+	 * time zone database recognises. */
+	async setZone(zone: string): Promise<UserZoneResponse> {
+		const body: SetZoneRequest = { zone };
+		return this.request<UserZoneResponse>('/api/me/zone', {
+			method: 'PUT',
+			body: JSON.stringify(body)
+		});
 	}
 
 	/**
@@ -509,6 +565,62 @@ class ApiClient {
 		});
 	}
 
+	/** `POST /api/indicators/compile`: compiles indicator-lang source and
+	 * registers the result the same way `uploadIndicatorPlugin` registers a
+	 * compiled `.wasm` component. A `400` here carries a
+	 * `CompileIndicatorErrorDto` body (`line`/`column`/`message`), not the
+	 * crate-wide `{error}` shape — pass `HttpError.body` to
+	 * `readCompileIndicatorError` below rather than `getErrorMessage`, which
+	 * only ever looks for `error`. */
+	async compileIndicator(source: string): Promise<IndicatorCatalogEntry> {
+		const body: CompileIndicatorRequest = { source };
+		return this.request<IndicatorCatalogEntry>('/api/indicators/compile', {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `POST /api/indicators/plugins`: registers a compiled `wasm32-wasip2`
+	 * component (the raw component bytes, not JSON) as a dynamic indicator.
+	 * Requires the caller to hold `Action::Create` on `Resource::Indicator`
+	 * at `Scope::All` — an ordinary account gets a 403, the same as any
+	 * other storage-wide administrative call. */
+	async uploadIndicatorPlugin(wasm: Uint8Array | ArrayBuffer): Promise<IndicatorCatalogEntry> {
+		return this.request<IndicatorCatalogEntry>('/api/indicators/plugins', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/wasm' },
+			body: wasm instanceof ArrayBuffer ? wasm : new Uint8Array(wasm)
+		});
+	}
+
+	/** `GET /api/indicators/plugins`: every dynamic indicator ever
+	 * registered, enabled or not — unlike `listIndicators`, which only ever
+	 * reports what a chart may place right now. */
+	async listIndicatorPlugins(): Promise<IndicatorPluginDto[]> {
+		return this.request<IndicatorPluginDto[]>('/api/indicators/plugins');
+	}
+
+	/** `POST /api/indicators/plugins/{id}/enabled`: flips whether
+	 * `listIndicators` currently offers this dynamic indicator, without
+	 * discarding the loaded component. A chart layer already plotting it
+	 * keeps its own stored parameters regardless — disabling only removes
+	 * it from the catalogue, so a client shows a placeholder rather than
+	 * dropping the layer, and enabling restores the real plot.
+	 *
+	 * `id` is `IndicatorPluginDto.id` — present for every entry regardless
+	 * of state, unlike its flattened catalogue fields (`name`, `title`, …)
+	 * which are only there once a descriptor has actually been read.
+	 * Passing `enabled: true` also closes this plugin's circuit breaker, so
+	 * this same call re-enables one the runtime auto-disabled after
+	 * repeated traps. */
+	async setIndicatorPluginEnabled(id: string, enabled: boolean): Promise<void> {
+		const body: SetIndicatorPluginEnabledRequest = { enabled };
+		await this.request<void>(`/api/indicators/plugins/${encodeURIComponent(id)}/enabled`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
 	// ------------------------------------------------------------------
 	// Watchlists: a user-owned group of watched instruments and its
 	// membership. `senken_watchlist::WatchlistStore` performs its own
@@ -609,6 +721,95 @@ class ApiClient {
 	}
 
 	// ------------------------------------------------------------------
+	// The indicator registry: publish, search, install indicator-lang
+	// source. `senken_indicator_registry::RegistryStore` performs its own
+	// guarded check on `publish`/`listMyIndicators`; `searchIndicators` and
+	// `getRegistryIndicator` need no session — a published indicator is
+	// public by design (`crates/api/src/registry_handlers.rs`'s own doc).
+	// ------------------------------------------------------------------
+
+	/** `POST /api/registry/indicators`: publishes `source` under `name` in
+	 * the caller's own namespace, replacing an earlier publish of the same
+	 * name. */
+	async publishIndicator(name: string, source: string): Promise<IdResponse> {
+		const body: PublishIndicatorRequest = { name, source };
+		return this.request<IdResponse>('/api/registry/indicators', { method: 'POST', body: JSON.stringify(body) });
+	}
+
+	/** `GET /api/registry/indicators`: the public catalog, across every
+	 * namespace — no session required. `query` matches on indicator name;
+	 * an empty string lists everything published, newest first. */
+	async searchIndicators(query: string, limit = 50, offset = 0): Promise<RegistryPage> {
+		const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+		if (query) params.set('query', query);
+		return this.request<RegistryPage>(`/api/registry/indicators?${params.toString()}`);
+	}
+
+	/** `GET /api/registry/indicators/mine`: every indicator the caller has
+	 * published. */
+	async listMyIndicators(limit: number, offset: number): Promise<RegistryPage> {
+		return this.request<RegistryPage>(`/api/registry/indicators/mine?limit=${limit}&offset=${offset}`);
+	}
+
+	/** `GET /api/registry/indicators/{namespace}/{name}`: the full published
+	 * entry, source included. */
+	async getRegistryIndicator(namespace: string, name: string): Promise<IndicatorEntryDto> {
+		return this.request<IndicatorEntryDto>(
+			`/api/registry/indicators/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+		);
+	}
+
+	/**
+	 * `POST /api/registry/indicators/{namespace}/{name}/install`: fetches
+	 * the published source and compiles it right here on this host, the
+	 * same "what you read is what you run" guarantee
+	 * `registry_handlers.rs`'s own doc describes. No session required — see
+	 * that same doc for why install, like search and get, is public.
+	 *
+	 * This cannot go through `request` above: a successful response body is
+	 * the compiled `application/wasm` component's raw bytes, not JSON, so
+	 * `safeJson` would misparse it. Everything else — attaching a
+	 * credential when one exists, the network/401/403/other-error
+	 * classification — mirrors `request` exactly.
+	 */
+	async installIndicator(namespace: string, name: string): Promise<InstalledIndicator> {
+		const server = activeServer();
+		const base = resolveBaseUrl(server);
+		const token = credentialReader.get(server.id);
+		const path = `/api/registry/indicators/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/install`;
+		const headers = new Headers();
+		if (token) headers.set('Authorization', `Bearer ${token}`);
+
+		let response: Response;
+		try {
+			response = await fetch(`${base}${path}`, { method: 'POST', headers });
+		} catch (cause) {
+			throw new NetworkError(`Could not reach ${base}${path}.`, cause);
+		}
+
+		switch (classifyResponse(response)) {
+			case 'unauthorized': {
+				if (token) this.handleSessionExpired(server.id);
+				const body = await safeJson(response);
+				throw new UnauthorizedError(errorBodyMessage(body) ?? undefined);
+			}
+			case 'forbidden':
+				throw new ForbiddenError();
+			case 'http-error': {
+				const body = await safeJson(response);
+				throw new HttpError(`Request to ${path} failed with ${response.status}.`, response.status, body);
+			}
+			case 'no-content':
+				throw new HttpError(`Request to ${path} returned no body.`, response.status);
+			case 'ok':
+				return {
+					wasm: await response.arrayBuffer(),
+					languageVersion: response.headers.get('X-Indicator-Language-Version') ?? ''
+				};
+		}
+	}
+
+	// ------------------------------------------------------------------
 	// Storage: what this server is holding on disk, and reclaiming it.
 	// `senken_store::Store` has no notion of a user, so both endpoints check
 	// `Resource::Storage` at `Scope::All` themselves rather than delegating
@@ -628,6 +829,155 @@ class ApiClient {
 			method: 'POST',
 			body: JSON.stringify(body)
 		});
+	}
+
+	// ------------------------------------------------------------------
+	// Trade engine: the adapters a plugin registered, the accounts a user
+	// attached to them, and the orders, positions and balances read back
+	// through those adapters.
+	//
+	// Nothing here is cached. A broker is the system of record for its own
+	// account, so every figure on screen is what the adapter answered on
+	// this request — the server does not keep a copy, and neither does
+	// this client.
+	// ------------------------------------------------------------------
+
+	/** `GET /api/trade/adapters`. */
+	async listTradeAdapters(): Promise<AdaptersResponse> {
+		return this.request<AdaptersResponse>('/api/trade/adapters');
+	}
+
+	/** `GET /api/trade/accounts`. */
+	async listTradeAccounts(limit = 100, offset = 0): Promise<TradeAccountsPage> {
+		return this.request<TradeAccountsPage>(
+			`/api/trade/accounts?limit=${limit}&offset=${offset}`
+		);
+	}
+
+	/** `POST /api/trade/accounts`. */
+	async createTradeAccount(body: CreateTradeAccountRequest): Promise<IdResponse> {
+		return this.request<IdResponse>('/api/trade/accounts', {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `GET /api/trade/accounts/{id}`: the account, its resolved access and
+	 * its health, in one round trip. */
+	async tradeAccountState(id: string): Promise<TradeAccountStateDto> {
+		return this.request<TradeAccountStateDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}`
+		);
+	}
+
+	/** `PATCH /api/trade/accounts/{id}`: rename, or enable/disable. */
+	async updateTradeAccount(id: string, body: UpdateTradeAccountRequest): Promise<void> {
+		await this.request<void>(`/api/trade/accounts/${encodeURIComponent(id)}`, {
+			method: 'PATCH',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `DELETE /api/trade/accounts/{id}`. */
+	async deleteTradeAccount(id: string): Promise<void> {
+		await this.request<void>(`/api/trade/accounts/${encodeURIComponent(id)}`, {
+			method: 'DELETE'
+		});
+	}
+
+	/** `GET /api/trade/accounts/{id}/settings`. Credentials come back as
+	 * `null`; `secrets_set` says which of them actually hold one. */
+	async tradeAccountSettings(id: string): Promise<TradeAccountSettingsDto> {
+		return this.request<TradeAccountSettingsDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/settings`
+		);
+	}
+
+	/** `PUT /api/trade/accounts/{id}/settings`. A secret left blank keeps
+	 * whatever is stored — the server applies that before validating, so a
+	 * required credential already on file does not have to be re-typed. */
+	async replaceTradeAccountSettings(
+		id: string,
+		body: ReplaceSettingsRequest
+	): Promise<TradeAccountSettingsDto> {
+		return this.request<TradeAccountSettingsDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/settings`,
+			{ method: 'PUT', body: JSON.stringify(body) }
+		);
+	}
+
+	/** `GET /api/trade/accounts/{id}/health`. */
+	async tradeAccountHealth(id: string): Promise<HealthDto> {
+		return this.request<HealthDto>(`/api/trade/accounts/${encodeURIComponent(id)}/health`);
+	}
+
+	/** `GET /api/trade/accounts/{id}/balances`. */
+	async tradeAccountBalances(id: string): Promise<BalancesDto> {
+		return this.request<BalancesDto>(`/api/trade/accounts/${encodeURIComponent(id)}/balances`);
+	}
+
+	/** `GET /api/trade/accounts/{id}/positions`. */
+	async tradeAccountPositions(id: string): Promise<PositionDto[]> {
+		return this.request<PositionDto[]>(`/api/trade/accounts/${encodeURIComponent(id)}/positions`);
+	}
+
+	/** `GET /api/trade/accounts/{id}/orders`. */
+	async tradeAccountOrders(id: string, status: 'open' | 'all' = 'open'): Promise<OrderDto[]> {
+		return this.request<OrderDto[]>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/orders?status=${status}`
+		);
+	}
+
+	/** `GET /api/trade/accounts/{id}/fills`. */
+	async tradeAccountFills(id: string): Promise<FillDto[]> {
+		return this.request<FillDto[]>(`/api/trade/accounts/${encodeURIComponent(id)}/fills`);
+	}
+
+	/** `POST /api/trade/accounts/{id}/orders`. */
+	async placeOrder(id: string, body: PlaceOrderRequest): Promise<OrderDto> {
+		return this.request<OrderDto>(`/api/trade/accounts/${encodeURIComponent(id)}/orders`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `DELETE /api/trade/accounts/{id}/orders/{orderId}`. */
+	async cancelOrder(id: string, orderId: string): Promise<OrderDto> {
+		return this.request<OrderDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/orders/${encodeURIComponent(orderId)}`,
+			{ method: 'DELETE' }
+		);
+	}
+
+	/** `PATCH /api/trade/accounts/{id}/orders/{orderId}`: amends a resting
+	 * order's size, limit price or trigger price in place. */
+	async amendOrder(id: string, orderId: string, body: AmendOrderRequest): Promise<OrderDto> {
+		return this.request<OrderDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/orders/${encodeURIComponent(orderId)}`,
+			{ method: 'PATCH', body: JSON.stringify(body) }
+		);
+	}
+
+	/** `POST /api/trade/accounts/{id}/close`: closes an open position by
+	 * sending an opposite market order for exactly the size the adapter
+	 * reports held right now — never a size this client chose. */
+	async closePosition(id: string, body: CloseRequest): Promise<OrderDto> {
+		return this.request<OrderDto>(`/api/trade/accounts/${encodeURIComponent(id)}/close`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		});
+	}
+
+	/** `POST /api/trade/accounts/{id}/actions/{actionId}`. */
+	async runAdapterAction(
+		id: string,
+		actionId: string,
+		body: RunActionRequest
+	): Promise<ActionOutcomeDto> {
+		return this.request<ActionOutcomeDto>(
+			`/api/trade/accounts/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`,
+			{ method: 'POST', body: JSON.stringify(body) }
+		);
 	}
 
 	/**
@@ -718,6 +1068,22 @@ async function safeJson(response: Response): Promise<unknown> {
 }
 
 export const apiClient = new ApiClient();
+
+/** Narrows an `HttpError.body` from `compileIndicator` into its
+ * `CompileIndicatorErrorDto` shape, or `null` if the body is the crate-wide
+ * `{error}` shape instead (a registration failure past the compiler, or an
+ * unrelated error) — the two are deliberately different shapes so a caller
+ * can tell "highlight this line" apart from "show this message" without
+ * guessing from field presence alone. */
+export function readCompileIndicatorError(body: unknown): CompileIndicatorErrorDto | null {
+	if (!body || typeof body !== 'object') return null;
+	const candidate = body as Partial<CompileIndicatorErrorDto>;
+	return typeof candidate.line === 'number' &&
+		typeof candidate.column === 'number' &&
+		typeof candidate.message === 'string'
+		? (candidate as CompileIndicatorErrorDto)
+		: null;
+}
 
 /** Switch the active server and restart the heartbeat against it — the
  * pairing its done-criterion asks for ("point at a different server and

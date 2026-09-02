@@ -20,6 +20,7 @@ mod assets;
 mod auth;
 mod bars_handlers;
 mod cors;
+mod dashboard_handlers;
 mod dto;
 mod error;
 mod feed;
@@ -31,11 +32,15 @@ mod live_feed_tests;
 mod notes_handlers;
 mod openapi;
 mod pagination;
+mod registry_handlers;
 mod source_handlers;
 mod storage_handlers;
 #[cfg(test)]
 mod test_support;
+mod trade_context;
+mod trade_handlers;
 mod watchlist_handlers;
+mod widget_plugin_handlers;
 mod workspace_handlers;
 mod ws;
 
@@ -43,6 +48,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::Json;
 use axum::Router;
 use axum::extract::{Request, State};
@@ -58,10 +64,13 @@ use utoipa::ToSchema;
 
 use senken_alerts::{AlertEngine, AlertStore};
 use senken_chart::ChartWorkspaceStore;
+use senken_dashboard::DashboardWorkspaceStore;
 use senken_identity::{DEFAULT_ADMIN_EMAIL, IdentityStore};
+use senken_indicator_registry::RegistryStore;
 use senken_notes::NoteStore;
 use senken_runtime::Runtime;
 use senken_subscription::{BookSessionRegistry, IndicatorSessionRegistry, SubscriptionPool};
+use senken_trade::TradeAccountStore;
 use senken_watchlist::WatchlistStore;
 
 use crate::auth::{EndpointPermission, mount};
@@ -75,10 +84,10 @@ pub struct ServeOptions {
     pub host: IpAddr,
     /// Port to bind. `0` asks the OS to pick a free one.
     pub port: u16,
-    /// Extra origins allowed to make cross-origin browser requests (plan
-    /// 004 B15: CORS denies by default, allowing only the server's own
-    /// origin; anything beyond that is this explicit, never-a-wildcard
-    /// list). The server's own origin needs no entry — browsers do not
+    /// Extra origins allowed to make cross-origin browser requests. CORS
+    /// denies by default, allowing only the server's own origin; anything
+    /// beyond that is this explicit, never-a-wildcard
+    /// list. The server's own origin needs no entry — browsers do not
     /// apply CORS to same-origin requests at all.
     pub allowed_origins: Vec<String>,
 }
@@ -139,6 +148,9 @@ pub(crate) struct AppState {
     /// `identity`'s own SQLite connection (see `ChartWorkspaceStore::new`'s own
     /// docs) rather than opening a second one.
     pub(crate) workspace: Arc<ChartWorkspaceStore>,
+    /// Dashboard workspace persistence: shares `identity`'s own SQLite
+    /// connection the same way `workspace` does.
+    pub(crate) dashboard: Arc<DashboardWorkspaceStore>,
     /// Standalone alerts, sharing `identity`'s
     /// connection the same way `workspace` does.
     pub(crate) alerts: Arc<AlertStore>,
@@ -148,6 +160,14 @@ pub(crate) struct AppState {
     /// Freeform notes, sharing `identity`'s connection the same way
     /// `watchlists` does.
     pub(crate) notes: Arc<NoteStore>,
+    /// The indicator registry: publish, search, install — sharing
+    /// `identity`'s connection the same way `notes` does.
+    pub(crate) registry: Arc<RegistryStore>,
+    /// The broker and exchange accounts users have attached, sharing
+    /// `identity`'s connection the same way `notes` does. The adapters
+    /// those accounts trade through live on `runtime`, not here: an
+    /// adapter is registered by a plugin, an account is a user's row.
+    pub(crate) trade_accounts: Arc<TradeAccountStore>,
     /// Storage, the instrument catalog and one `SeriesLoader` per
     /// registered bar source — everything `bars_handlers`
     /// and `indicator_handlers` resolve a request against.
@@ -251,9 +271,12 @@ pub(crate) async fn serve_with_feed_pools_and_book(
     let local_addr = listener.local_addr().map_err(ApiError::LocalAddr)?;
 
     let workspace = Arc::new(ChartWorkspaceStore::new(&identity));
+    let dashboard = Arc::new(DashboardWorkspaceStore::new(&identity));
     let alerts = Arc::new(AlertStore::new(&identity));
     let watchlists = Arc::new(WatchlistStore::new(&identity));
     let notes = Arc::new(NoteStore::new(&identity));
+    let registry = Arc::new(RegistryStore::new(&identity));
+    let trade_accounts = Arc::new(TradeAccountStore::new(&identity));
     let feed_pools = Arc::new(feed_pools);
     // reconciles every already-enabled alert against those
     // pools right now, and stays running for the life of this server —
@@ -265,9 +288,12 @@ pub(crate) async fn serve_with_feed_pools_and_book(
     let state = AppState {
         identity,
         workspace,
+        dashboard,
         alerts,
         watchlists,
         notes,
+        registry,
+        trade_accounts,
         runtime,
         feed_pools,
         alert_engine,
@@ -380,80 +406,68 @@ async fn warn_if_insecurely_bound(
     next.run(request).await
 }
 
+/// Builds the widget-plugin asset server's own tiny router (`GET
+/// /widget-plugin-assets/{id}/{*path}`, `EndpointPermission::Public`) and
+/// the store every widget-plugin route reads from — split out of [`router`]
+/// purely to keep that function's own line count down, the same reason
+/// every `mount_*_routes` helper exists.
+///
+/// The asset route lives outside `/api` — see
+/// `widget_plugin_handlers::widget_plugin_asset`'s own doc comment for why:
+/// a sandboxed iframe's own asset requests are not this crate's JSON API,
+/// and this is meant to eventually move to a genuinely separate origin.
+/// [`mount`] still applies here (`EndpointPermission::Public` is still
+/// declared at the one place a permission can be); the resulting router is
+/// merged onto the outer one in [`router`] rather than nested under `/api`.
+///
+/// `widget_plugin_handlers` deliberately takes
+/// `Extension<Arc<WidgetPackageStore>>` rather than `State<AppState>` (see
+/// that module's own doc comment) — cloning the store out of `state.runtime`
+/// here, for [`router`] to add as a router-wide `Extension` layer, is what
+/// lets every widget-plugin route (nested under `/api` or not) reach the
+/// same store without depending on `AppState` itself.
+fn widget_plugin_asset_layer(
+    state: &AppState,
+) -> (
+    Router,
+    Arc<senken_plugin::widget_package::WidgetPackageStore>,
+) {
+    let mut assets = Router::new();
+    assets = mount(
+        assets,
+        state,
+        "/widget-plugin-assets/{id}/{*path}",
+        get(widget_plugin_handlers::widget_plugin_asset),
+        EndpointPermission::Public,
+    );
+    let assets: Router = assets.with_state(state.clone());
+    (assets, Arc::new(state.runtime.widget_plugins().clone()))
+}
+
 /// Builds the whole router: the auth-guarded `/api/*` surface, CORS, the non-loopback warning, and — with the `web`
 /// feature — the embedded SPA. Every `/api` route is added through
 /// [`mount`], the sole place a permission can be (or fail to be) declared;
 /// see `auth`'s module docs.
 fn router(state: AppState, allowed_origins: &[String]) -> Router {
     let mut api = Router::new();
-    api = mount(
-        api,
-        &state,
-        "/health",
-        get(health),
-        EndpointPermission::Public,
-    );
-    api = mount(
-        api,
-        &state,
-        "/openapi.json",
-        get(openapi::openapi_json),
-        EndpointPermission::Public,
-    );
-    api = mount(
-        api,
-        &state,
-        "/login",
-        post(identity_handlers::login),
-        EndpointPermission::Public,
-    );
-    api = mount(
-        api,
-        &state,
-        "/logout",
-        post(identity_handlers::logout),
-        EndpointPermission::Authenticated,
-    );
-    api = mount(
-        api,
-        &state,
-        "/set-password",
-        post(identity_handlers::set_password),
-        EndpointPermission::AuthenticatedFenceExempt,
-    );
-    api = mount(
-        api,
-        &state,
-        "/me",
-        get(identity_handlers::me),
-        EndpointPermission::Authenticated,
-    );
-    api = mount(
-        api,
-        &state,
-        "/ws/ticket",
-        post(ws::issue_ticket),
-        EndpointPermission::Authenticated,
-    );
-    api = mount(
-        api,
-        &state,
-        "/ws",
-        get(ws::ws_handler),
-        EndpointPermission::Public,
-    );
+    api = mount_core_routes(api, &state);
     api = mount_admin_routes(api, &state);
     api = mount_workspace_routes(api, &state);
+    api = mount_dashboard_routes(api, &state);
     api = mount_bars_routes(api, &state);
     api = mount_indicator_routes(api, &state);
     api = mount_alert_routes(api, &state);
     api = mount_instrument_routes(api, &state);
     api = mount_watchlist_routes(api, &state);
     api = mount_notes_routes(api, &state);
+    api = mount_registry_routes(api, &state);
     api = mount_storage_routes(api, &state);
+    api = mount_widget_plugin_routes(api, &state);
+    api = mount_trade_routes(api, &state);
     let api: Router = api.fallback(api_not_found).with_state(state.clone());
 
-    let router = Router::new().nest("/api", api);
+    let (widget_asset_routes, widget_plugins) = widget_plugin_asset_layer(&state);
+    let router = Router::new().nest("/api", api).merge(widget_asset_routes);
 
     #[cfg(feature = "web")]
     let router = router.fallback(get(assets::fallback));
@@ -465,10 +479,183 @@ fn router(state: AppState, allowed_origins: &[String]) -> Router {
     router
         .layer(TraceLayer::new_for_http())
         .layer(cors::build(allowed_origins))
+        .layer(Extension(widget_plugins))
         .layer(middleware::from_fn_with_state(
             state,
             warn_if_insecurely_bound,
         ))
+}
+
+/// Mounts health, the `OpenAPI` document, and the authentication/session
+/// surface: login, logout, set-password, `me`, the display-zone endpoints,
+/// and the WebSocket ticket exchange plus the socket itself.
+fn mount_core_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/health",
+        get(health),
+        EndpointPermission::Public,
+    );
+    api = mount(
+        api,
+        state,
+        "/openapi.json",
+        get(openapi::openapi_json),
+        EndpointPermission::Public,
+    );
+    api = mount(
+        api,
+        state,
+        "/login",
+        post(identity_handlers::login),
+        EndpointPermission::Public,
+    );
+    api = mount(
+        api,
+        state,
+        "/logout",
+        post(identity_handlers::logout),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/set-password",
+        post(identity_handlers::set_password),
+        EndpointPermission::AuthenticatedFenceExempt,
+    );
+    api = mount(
+        api,
+        state,
+        "/me",
+        get(identity_handlers::me),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/me/zone",
+        get(identity_handlers::get_own_zone),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/me/zone",
+        put(identity_handlers::set_own_zone),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/ws/ticket",
+        post(ws::issue_ticket),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/ws",
+        get(ws::ws_handler),
+        EndpointPermission::Public,
+    )
+}
+
+/// Mounts the trade engine surface.
+///
+/// Every route sits at plain `Authenticated`: `senken_trade`'s own store
+/// performs the real check on each call, and it draws distinctions a
+/// router-level gate cannot — reading a portfolio is scope-limited, while
+/// placing an order is owner-only whatever scope a role grants. A second,
+/// all-or-nothing gate here could only ever be looser than that.
+fn mount_trade_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/trade/adapters",
+        get(trade_handlers::list_adapters),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts",
+        get(trade_handlers::list_accounts).post(trade_handlers::create_account),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}",
+        get(trade_handlers::account_state)
+            .patch(trade_handlers::update_account)
+            .delete(trade_handlers::delete_account),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/settings",
+        get(trade_handlers::get_settings).put(trade_handlers::replace_settings),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/health",
+        get(trade_handlers::account_health),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/balances",
+        get(trade_handlers::account_balances),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/positions",
+        get(trade_handlers::account_positions),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/orders",
+        get(trade_handlers::account_orders).post(trade_handlers::place_order),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/orders/{order_id}",
+        delete(trade_handlers::cancel_order).patch(trade_handlers::amend_order),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/close",
+        post(trade_handlers::close_position),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/fills",
+        get(trade_handlers::account_fills),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/actions/{action_id}",
+        post(trade_handlers::run_action),
+        EndpointPermission::Authenticated,
+    )
 }
 
 /// Mounts the user/role/grant management surface, split out
@@ -668,6 +855,73 @@ fn mount_workspace_routes(mut api: Router<AppState>, state: &AppState) -> Router
     )
 }
 
+/// Mounts the dashboard workspace/grid surface, split out of [`router`] the
+/// same way [`mount_workspace_routes`] is. Every route but the widget
+/// catalog is mounted at plain `EndpointPermission::Authenticated`, for the
+/// same reason [`mount_workspace_routes`]'s routes are:
+/// `senken_dashboard::DashboardWorkspaceStore` performs its own
+/// `AuthenticatedUser::authorize` check on every read and write. The widget
+/// catalog itself needs nothing beyond a valid session — it is pure,
+/// in-memory data with no owner to scope against.
+fn mount_dashboard_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/dashboard/workspaces",
+        get(dashboard_handlers::list_dashboard_workspaces),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/dashboard/workspaces",
+        post(dashboard_handlers::create_dashboard_workspace),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/dashboard/workspaces/default",
+        get(dashboard_handlers::default_dashboard_workspace),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/dashboard/workspaces/{workspace_id}",
+        patch(dashboard_handlers::rename_dashboard_workspace),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/dashboard/workspaces/{workspace_id}",
+        delete(dashboard_handlers::delete_dashboard_workspace),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/dashboard/workspaces/{workspace_id}/layout",
+        get(dashboard_handlers::get_dashboard_layout),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/dashboard/workspaces/{workspace_id}/layout",
+        put(dashboard_handlers::replace_dashboard_layout),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/dashboard/widgets/catalog",
+        get(dashboard_handlers::dashboard_widget_catalog),
+        EndpointPermission::Authenticated,
+    )
+}
+
 /// Mounts the bars surface, split out of
 /// [`router`] the same way [`mount_admin_routes`] is. Bars are not owned by
 /// any one account — a chart's instrument/timeframe range is shared market
@@ -714,9 +968,18 @@ fn mount_bars_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppS
     )
 }
 
-/// Mounts the indicator catalogue and computation surface, for the same reason [`mount_bars_routes`] mounts
-/// plainly at `Authenticated`: an indicator's value over a public
-/// instrument's bars is not owned by any one account either.
+/// Mounts the indicator catalogue and computation surface, for the same
+/// reason [`mount_bars_routes`] mounts plainly at `Authenticated`: an
+/// indicator's value over a public instrument's bars is not owned by any
+/// one account either. The three `/indicators/plugins*` routes, plus `POST
+/// /indicators/compile` (which registers a compiled program the same way
+/// an upload does), are the exception, for the same reason
+/// [`mount_storage_routes`] states: an uploaded or compiled `.wasm`
+/// component is a property of this server's whole plugin population, so
+/// each of those four handlers calls
+/// `senken_identity::AuthenticatedUser::authorize` on
+/// `senken_acl::Resource::Indicator` itself rather than relying on the
+/// router-level guard alone.
 fn mount_indicator_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
     api = mount(
         api,
@@ -725,11 +988,50 @@ fn mount_indicator_routes(mut api: Router<AppState>, state: &AppState) -> Router
         get(indicator_handlers::list_indicators),
         EndpointPermission::Authenticated,
     );
-    mount(
+    api = mount(
         api,
         state,
         "/indicators/compute",
         post(indicator_handlers::compute_indicator),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/indicators/compile",
+        post(indicator_handlers::compile_indicator),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/indicators/plugins",
+        // The router-wide default body limit (2 MiB) is sized for a JSON
+        // request; a compiled `wasm32-wasip2` component — every plugin
+        // upload this route ever sees — is a real binary artifact that
+        // legitimately exceeds it (WASI's own component adapter code alone
+        // is several hundred kilobytes before a plugin author's code
+        // starts). `INDICATOR_PLUGIN_MAX_BYTES` is a generous but still
+        // bounded ceiling: large enough for a real plugin, small enough
+        // that an upload cannot exhaust memory by claiming an unbounded
+        // `Content-Length`.
+        post(indicator_handlers::upload_indicator_plugin).layer(
+            axum::extract::DefaultBodyLimit::max(indicator_handlers::INDICATOR_PLUGIN_MAX_BYTES),
+        ),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/indicators/plugins",
+        get(indicator_handlers::list_indicator_plugins),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/indicators/plugins/{name}/enabled",
+        post(indicator_handlers::set_indicator_plugin_enabled),
         EndpointPermission::Authenticated,
     )
 }
@@ -894,6 +1196,73 @@ fn mount_notes_routes(mut api: Router<AppState>, state: &AppState) -> Router<App
     )
 }
 
+/// Mounts the indicator registry surface. Unlike [`mount_notes_routes`],
+/// permission is not uniform across it: publishing, listing one's own
+/// entries, revoking one, and reading/setting one's own handle need a
+/// session (`senken_indicator_registry::RegistryStore` performs its own
+/// guarded check on each), while searching, reading and installing a
+/// published indicator are `EndpointPermission::Public` — a published
+/// indicator is public and installable with no account, by design (see
+/// `registry_handlers`' own module docs).
+fn mount_registry_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/registry/indicators",
+        post(registry_handlers::publish_indicator),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/registry/indicators",
+        get(registry_handlers::search_indicators),
+        EndpointPermission::Public,
+    );
+    api = mount(
+        api,
+        state,
+        "/registry/indicators/mine",
+        get(registry_handlers::list_my_indicators),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/registry/indicators/{namespace}/{name}",
+        get(registry_handlers::get_indicator),
+        EndpointPermission::Public,
+    );
+    api = mount(
+        api,
+        state,
+        "/registry/indicators/{namespace}/{name}/install",
+        post(registry_handlers::install_indicator),
+        EndpointPermission::Public,
+    );
+    api = mount(
+        api,
+        state,
+        "/registry/indicators/{name}",
+        delete(registry_handlers::delete_indicator),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/registry/handle",
+        put(registry_handlers::set_my_handle),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/registry/handle",
+        get(registry_handlers::get_my_handle),
+        EndpointPermission::Authenticated,
+    )
+}
+
 /// Mounts instrument search (the catalog-search gap this closes —
 /// see `instrument_handlers`'s own docs). Market data is global and never
 /// tenanted, so `Authenticated` is the whole permission story, the same
@@ -937,6 +1306,71 @@ fn mount_storage_routes(mut api: Router<AppState>, state: &AppState) -> Router<A
         state,
         "/storage/delete",
         post(storage_handlers::delete_storage),
+        EndpointPermission::Authenticated,
+    )
+}
+
+/// Mounts the dynamic widget UI package surface (install/list/enable/
+/// disable/uninstall/refresh, plus the merged effective catalog) — every
+/// route here is `EndpointPermission::Authenticated`, with each handler
+/// itself calling `AuthenticatedUser::authorize` on
+/// `senken_acl::Resource::WidgetPlugin` at `Scope::All` (see
+/// `widget_plugin_handlers::require_widget_plugins_all`'s own docs), the
+/// same "router guard is only a valid session, the real check is inside the
+/// handler" shape [`mount_storage_routes`] already uses. The one route this
+/// module owns that is *not* mounted here is `GET
+/// /widget-plugin-assets/{id}/{*path}` — `EndpointPermission::Public`,
+/// mounted directly in [`router`] outside `/api` (see that handler's own
+/// doc comment for why).
+fn mount_widget_plugin_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/widget-plugins/catalog",
+        get(widget_plugin_handlers::widget_plugin_catalog),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/widget-plugins",
+        get(widget_plugin_handlers::list_widget_plugins),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/widget-plugins",
+        // The router-wide default body limit (2 MiB) is sized for a JSON
+        // request; an installed package's zip archive legitimately exceeds
+        // it — see `indicator_handlers::upload_indicator_plugin`'s own
+        // `mount()` call for the exact pattern this mirrors.
+        post(widget_plugin_handlers::install_widget_plugin).layer(
+            axum::extract::DefaultBodyLimit::max(
+                widget_plugin_handlers::WIDGET_PLUGIN_PACKAGE_MAX_BYTES,
+            ),
+        ),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/widget-plugins/{id}/enabled",
+        post(widget_plugin_handlers::set_widget_plugin_enabled),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/widget-plugins/{id}",
+        delete(widget_plugin_handlers::uninstall_widget_plugin),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/widget-plugins/refresh",
+        post(widget_plugin_handlers::refresh_widget_plugins),
         EndpointPermission::Authenticated,
     )
 }
@@ -1153,6 +1587,89 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+        handle.shutdown().await.unwrap();
+    }
+
+    /// The widget-plugin surface's own negative-permission proof, over the
+    /// real router (unlike `widget_plugin_handlers`'s own test module,
+    /// which bypasses `enforce_permission` entirely to test the handlers'
+    /// own `AuthenticatedUser::authorize` call in isolation — see that
+    /// module's `test_router` doc comment). No `Authorization` header at
+    /// all must be `401`, never `403`: a `403` means "authenticated but not
+    /// permitted", and there is no authentication here to speak of.
+    #[tokio::test]
+    async fn widget_plugin_routes_with_no_session_are_401_not_403() {
+        let (handle, _store) = serve_with_fresh_store().await;
+        let addr = handle.local_addr();
+
+        let response = reqwest::get(format!("http://{addr}/api/widget-plugins"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        handle.shutdown().await.unwrap();
+    }
+
+    /// An authenticated account with no `Resource::WidgetPlugin` grant is
+    /// refused with `403`, not silently allowed and not `401` — the account
+    /// is real and its session is valid, it merely lacks the permission.
+    /// Crucially, that `403` must never behave like a logout: the exact
+    /// same token is checked again afterwards against `GET /api/me` (a
+    /// route that needs nothing beyond a valid session) and must still
+    /// resolve, proving `enforce_permission` never invalidated or
+    /// otherwise disturbed the session merely because one handler's own
+    /// authorisation check failed.
+    #[tokio::test]
+    async fn widget_plugin_routes_are_403_without_the_grant_and_the_403_does_not_log_the_session_out()
+     {
+        let (handle, store) = serve_with_fresh_store().await;
+        let addr = handle.local_addr();
+
+        store
+            .set_password(DEFAULT_ADMIN_EMAIL, "correct horse battery staple", None)
+            .unwrap();
+        let (_uid, admin_token) = store
+            .login(DEFAULT_ADMIN_EMAIL, "correct horse battery staple")
+            .unwrap();
+        let admin = store
+            .resolve_session(admin_token.reveal())
+            .unwrap()
+            .unwrap();
+
+        let _powerless_id = store
+            .create_user(
+                &admin,
+                "powerless@example.com",
+                "Powerless",
+                Some("a very long password"),
+            )
+            .unwrap();
+        let (_uid, powerless_token) = store
+            .login("powerless@example.com", "a very long password")
+            .unwrap();
+        let token = powerless_token.reveal();
+
+        let forbidden = reqwest::Client::new()
+            .get(format!("http://{addr}/api/widget-plugins"))
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), reqwest::StatusCode::FORBIDDEN);
+
+        // The same token must still resolve — a 403 is not a logout.
+        let still_valid = reqwest::Client::new()
+            .get(format!("http://{addr}/api/me"))
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            still_valid.status(),
+            reqwest::StatusCode::OK,
+            "a 403 from one handler's own authorisation check must never invalidate the session"
+        );
 
         handle.shutdown().await.unwrap();
     }

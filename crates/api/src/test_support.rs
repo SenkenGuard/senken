@@ -16,8 +16,8 @@ use tempfile::TempDir;
 
 use crate::{ServeOptions, ServerHandle};
 
-/// A fresh accounts database, seeded with the default superadmin per plan
-/// 004 B4. The returned [`TempDir`] must be kept alive for as long as the
+/// A fresh accounts database, seeded with the default superadmin. The
+/// returned [`TempDir`] must be kept alive for as long as the
 /// store is used — dropping it deletes the database file.
 pub(crate) fn temp_identity_store() -> (TempDir, IdentityStore) {
     let dir = TempDir::new().expect("creating a tempdir cannot fail in a test");
@@ -168,6 +168,43 @@ pub(crate) async fn post_json_auth(
         .unwrap()
 }
 
+/// `PUT url` with a JSON body and `Authorization: Bearer <token>`.
+pub(crate) async fn put_json_auth(
+    url: impl reqwest::IntoUrl,
+    token: &str,
+    body: serde_json::Value,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .put(url)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(serde_json::to_vec(&body).unwrap())
+        .send()
+        .await
+        .unwrap()
+}
+
+/// `POST url` with a raw byte body (`content_type`, not JSON) and
+/// `Authorization: Bearer <token>` — for an endpoint that accepts a
+/// compiled artifact directly (`POST /api/indicators/plugins`'s `.wasm`
+/// bytes), where wrapping the payload in a JSON string would misrepresent
+/// what the wire actually carries.
+pub(crate) async fn post_bytes_auth(
+    url: impl reqwest::IntoUrl,
+    token: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(url)
+        .header("content-type", content_type)
+        .header("authorization", format!("Bearer {token}"))
+        .body(body)
+        .send()
+        .await
+        .unwrap()
+}
+
 /// `GET url` with `Authorization: Bearer <token>`.
 pub(crate) async fn get_auth(url: impl reqwest::IntoUrl, token: &str) -> reqwest::Response {
     reqwest::Client::new()
@@ -176,6 +213,21 @@ pub(crate) async fn get_auth(url: impl reqwest::IntoUrl, token: &str) -> reqwest
         .send()
         .await
         .unwrap()
+}
+
+/// `DELETE url` with `Authorization: Bearer <token>`, no body.
+pub(crate) async fn delete_auth(url: impl reqwest::IntoUrl, token: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .delete(url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// `DELETE url` with no `Authorization` header at all.
+pub(crate) async fn delete_no_auth(url: impl reqwest::IntoUrl) -> reqwest::Response {
+    reqwest::Client::new().delete(url).send().await.unwrap()
 }
 
 /// Parses a response body as JSON, tolerating an empty (`204`) body as

@@ -45,4 +45,10 @@ senken-plugin-mexc = { workspace = true }
 senken-plugin-okx = { workspace = true }
 senken-plugin-poloniex = { workspace = true }
 senken-plugin-whitebit = { workspace = true }
+# Not a venue: the built-in paper broker, which registers a trade adapter
+# rather than a market data source and reaches no network.
+senken-plugin-simulator = { workspace = true }
 senken-runtime = { workspace = true }
+# The simulator keeps its books through `Storage`, and this is where the
+# data directory is known.
+senken-storage = { workspace = true }

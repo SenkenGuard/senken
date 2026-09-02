@@ -53,26 +53,39 @@ describe('priceLineColorFor — library default vs. the explicit neutral token',
 });
 
 describe('overlayMessage — never shown together with a countdown', () => {
+	const UTC = 'UTC';
+
 	test('live has no overlay at all', () => {
-		expect(overlayMessage({ status: 'live' })).toBeNull();
+		expect(overlayMessage({ status: 'live' }, UTC)).toBeNull();
 	});
 
 	// Asserting the *claim* rather than its exact wording: display copy is
 	// allowed to be reworded, but it must always name the missing feed and
 	// must never imply a trading schedule this build does not have.
 	test('no-feed names the reason, not a fabricated schedule', () => {
-		const message = overlayMessage({ status: 'no-feed' });
+		const message = overlayMessage({ status: 'no-feed' }, UTC);
 		expect(message?.toLowerCase()).toContain('live feed');
 		expect(message).not.toMatch(/open|close[ds]? at \d/i);
 	});
 
 	test('closed names the real next-open time it was given, once reachable', () => {
 		const opensAt = Date.UTC(2026, 0, 2, 0, 0, 0) * 1_000_000; // nanoseconds
-		const message = overlayMessage({ status: 'closed', opensAt });
+		const message = overlayMessage({ status: 'closed', opensAt }, UTC);
 		expect(message?.toLowerCase()).toMatch(/reopen/);
 		// The instant it was handed, not a guess: the formatted date must
 		// carry the year it was given.
 		expect(message).toContain('2026');
+	});
+
+	// The zone changes the label, never the instant: same `opensAt`, two
+	// zones, two different clock times in the sentence.
+	test('the same reopen instant reads as a different wall-clock time in a different zone', () => {
+		const opensAt = Date.UTC(2026, 8, 1, 9, 0, 0) * 1_000_000; // 09:00Z
+		const utc = overlayMessage({ status: 'closed', opensAt }, 'UTC');
+		const jakarta = overlayMessage({ status: 'closed', opensAt }, 'Asia/Jakarta');
+		expect(utc).toContain('09:00:00');
+		expect(jakarta).toContain('16:00:00'); // Asia/Jakarta is UTC+7, no DST
+		expect(utc).not.toBe(jakarta);
 	});
 
 	// The property the whole union exists to guarantee: whenever there is a
@@ -85,7 +98,7 @@ describe('overlayMessage — never shown together with a countdown', () => {
 		];
 		for (const state of states) {
 			const hasCountdown = showCountdown(state);
-			const hasOverlay = overlayMessage(state) !== null;
+			const hasOverlay = overlayMessage(state, UTC) !== null;
 			expect(hasCountdown && hasOverlay).toBe(false);
 		}
 	});

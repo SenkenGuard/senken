@@ -1,0 +1,73 @@
+[package]
+name = "senken-plugin-host"
+description = "Loads, runs, and confines compiled plugin components: capability-free by default, memory-capped, and killable"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The runtime itself. `component-model` because the contract plugins compile
+# against is a WIT world, not a bare core module.
+wasmtime = { version = "48.0.1", features = ["component-model"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Not the giant `add_to_linker_sync` this crate offers (that would wire up
+# `wasi:filesystem` and `wasi:sockets` too, which the capability-zero
+# contract this crate exists for must never grant): only the individual
+# `wasi:cli`/`wasi:clocks`/`wasi:random` interfaces this workspace's own
+# `plugin-api` bindgen output actually needs are added to the linker, one
+# `add_to_linker` call per interface, in `src/wasi.rs`.
+wasmtime-wasi = { version = "48.0.1", default-features = false, features = ["p2"] }
+# `wasi:io/poll`, `wasi:io/error` and `wasi:io/streams` are implemented in
+# this sibling crate rather than re-exported by `wasmtime-wasi` under a
+# public name, so it is linked directly rather than reaching for it through
+# `wasmtime-wasi`'s own (private) internal alias.
+wasmtime-wasi-io = "48.0.1"
+# The byte type `wasmtime_wasi_io::streams::OutputStream::write` takes —
+# needed to implement that trait for this crate's own ring-buffer log sink.
+bytes = "1.12.1"
+# `OutputStream`'s `Pollable::ready` is `async fn` in a plain trait; this is
+# the same crate `wasmtime-wasi` itself re-exports for implementing its own
+# traits (`wasmtime_wasi::async_trait`), used directly here for the same
+# reason.
+async-trait = { workspace = true }
+# `wasmtime_wasi::cli::StdoutStream::async_stream` returns a boxed
+# `tokio::io::AsyncWrite`; `io-util` is the feature that type lives behind.
+tokio = { workspace = true, features = ["io-util"] }
+# Backs `wit/senken.wit`'s `builtins` import (see `src/builtins.rs`) with
+# the real, already-tested indicator state machines a plugin's `ema(close,
+# 20)` and its nine siblings call into. This crate — the layer that
+# actually mediates every call a plugin makes back into the host — is
+# where a domain dependency belongs; `senken-plugin-api` may never have
+# this dependency (see that crate's own `tests/no_domain_dependency.rs`).
+senken-indicators = { workspace = true }
+# `senken_indicators::Indicator::handle_bar` takes a `senken_series::Bar`;
+# built one per call from the plain `f64`s `builtins` carries.
+senken-series = { workspace = true }
+senken-core = { workspace = true }
+# A checked, non-`as` numeric conversion for turning a guest-supplied
+# `f64` back into the `i64` a `senken_series::Bar` field needs — see
+# `src/builtins.rs::bar_field_from_f64` for why a bare `as` cast is the
+# wrong tool here even though the underlying operation is the same.
+num-traits = "0.2"
+
+[dev-dependencies]
+# Proves this crate's `compiled-indicator` load path (`tests/
+# compiled_indicator.rs`) against a genuine compiled component rather than a
+# hand-encoded stand-in: `senken_indicator_lang::compile` produces one
+# in-process, with no `wasm32-wasip2` toolchain or subprocess build needed —
+# unlike this crate's own `indicator-plugin` fixtures under `tests/
+# fixtures/*`, which do need one because they are ordinary Rust crates
+# compiled to that target. `senken-indicators`/`senken-series`/`senken-core`
+# are already ordinary dependencies above and so need no dev-only entry.
+senken-indicator-lang = { workspace = true }

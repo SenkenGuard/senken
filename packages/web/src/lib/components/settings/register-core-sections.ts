@@ -65,6 +65,12 @@ registerSettingsSection({
 	icon: PuzzleIcon,
 	component: PluginsSection,
 	searchIndex: pluginsSearchIndex,
+	// Shown to an account granted indicator administration — the same
+	// resource `crates/api/src/indicator_handlers.rs` checks on every one
+	// of the three `/indicators/plugins*` routes. Hiding it is still only
+	// cosmetic; those endpoints check a real grant on every request
+	// regardless of what this list says.
+	requiresAnyResource: ['Indicator'],
 	order: 40
 });
 

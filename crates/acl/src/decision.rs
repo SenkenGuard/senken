@@ -87,16 +87,20 @@ pub fn decide(actor: &Actor, action: Action, resource: Resource) -> Decision {
     match resource {
         Resource::ChartWorkspace
         | Resource::ChartLayout
+        | Resource::DashboardWorkspace
         | Resource::Alert
         | Resource::Strategy
         | Resource::Account
+        | Resource::Order
         | Resource::Adapter
         | Resource::User
         | Resource::Role
         | Resource::Indicator
+        | Resource::IndicatorRegistry
         | Resource::Watchlist
         | Resource::Note
-        | Resource::Storage => decide_by_grant(actor, action, resource),
+        | Resource::Storage
+        | Resource::WidgetPlugin => decide_by_grant(actor, action, resource),
     }
 }
 
@@ -201,16 +205,20 @@ mod tests {
         let resources = [
             Resource::ChartWorkspace,
             Resource::ChartLayout,
+            Resource::DashboardWorkspace,
             Resource::Alert,
             Resource::Strategy,
             Resource::Account,
+            Resource::Order,
             Resource::Adapter,
             Resource::User,
             Resource::Role,
             Resource::Indicator,
+            Resource::IndicatorRegistry,
             Resource::Watchlist,
             Resource::Note,
             Resource::Storage,
+            Resource::WidgetPlugin,
         ];
         for resource in resources {
             let _ = decide(&Actor::new(), Action::View, resource);

@@ -17,6 +17,7 @@
 // a client-side reinvention of it.
 
 import type { Component } from 'svelte';
+import { zonedTimeParts } from '$lib/time';
 import MousePointer2Icon from '@lucide/svelte/icons/mouse-pointer-2';
 import CrosshairIcon from '@lucide/svelte/icons/crosshair';
 import SlashIcon from '@lucide/svelte/icons/slash';
@@ -257,7 +258,7 @@ export function scaledToDisplay(value: number, scale: number): string {
 /** Formats an already-decimal price/quantity the same way `scaledToDisplay`
  * formats a scaled integer, for values that never went through the
  * `price_scale` wire encoding in the first place (e.g. the trade-engine
- * demo's own derived prices — see `terminal/trade-demo.ts`). */
+ * demo's own derived prices). */
 export function fmtDecimal(decimal: number): string {
 	if (decimal >= 1000) return decimal.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 	if (decimal >= 10) return decimal.toFixed(2);
@@ -271,25 +272,77 @@ export function fmtDecimal(decimal: number): string {
  * its main chart, so an axis that labelled them differently would read as a
  * different series. `timeVisible` alone is not enough — the library's own
  * default formats an intraday tick as a bare day number.
+ *
+ * `zoneId` is the viewer's chosen display zone — every label goes through
+ * `$lib/time`'s `zonedTimeParts` rather than an unzoned `Date` method, so a
+ * reader in `Asia/Jakarta` and one in `America/New_York` read the same bar
+ * under two different clock times, not the browser's own guess. `time`
+ * itself (lightweight-charts' `UTCTimestamp`, Unix *seconds*) never changes
+ * with the zone — only the text this returns does.
  */
 export function timeAxisFormatter(
 	spec: string,
 	dayOfWeek: boolean,
-	timeFormat: '24H' | '12H'
+	timeFormat: '24H' | '12H',
+	zoneId: string
 ): (time: number) => string {
 	const intraday = isIntradaySpec(spec);
 	return (time: number) => {
-		const at = new Date(time * 1000);
-		const weekday = at.toLocaleDateString(undefined, { weekday: 'short' });
+		// Seconds -> nanoseconds, `$lib/time`'s own instant unit. The
+		// multiplication's float rounding noise tops out well under a
+		// microsecond at today's epoch magnitude — irrelevant once
+		// `zonedTimeParts` truncates back down to whole minutes.
+		const parts = zonedTimeParts(time * 1_000_000_000, zoneId);
 		if (!intraday) {
-			const date = at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-			return dayOfWeek ? `${weekday} ${date}` : date;
+			return dayOfWeek ? `${parts.weekday} ${parts.monthDay}` : parts.monthDay;
 		}
-		const clock = at.toLocaleTimeString(undefined, {
-			hour: '2-digit',
-			minute: '2-digit',
-			hour12: timeFormat === '12H'
-		});
-		return dayOfWeek ? `${weekday} ${clock}` : clock;
+		const clock = timeFormat === '12H' ? parts.clock12 : parts.clock24;
+		return dayOfWeek ? `${parts.weekday} ${clock}` : clock;
+	};
+}
+
+/** The chart options this app ever writes purely to change how a time *label*
+ * reads — the axis tick text and the crosshair's own time label, both driven
+ * by the same [`timeAxisFormatter`]. Closed to exactly these two fields on
+ * purpose: a zone change must only ever touch label text, never where the
+ * chart is scrolled to, and a type that could also carry `timeScale.rightOffset`
+ * or a visible-range field would let that slip in silently the next time
+ * this call site is edited. See `chart-pane.svelte`'s own history with
+ * `rightOffset` being re-applied somewhere it did not belong. */
+export interface TimeLabelOptions {
+	timeScale: { tickMarkFormatter: (time: number) => string };
+	localization: { timeFormatter: (time: number) => string };
+}
+
+/** A cheap, comparable summary of every input [`buildTimeLabelOptions`]
+ * actually varies with. A caller keeps the last signature it applied and
+ * skips re-building (and re-`applyOptions`-ing) when this has not changed —
+ * `time-*-formatter` closures never compare equal by identity, so this
+ * string is what lets that guard exist at all. */
+export function timeLabelOptionsSignature(
+	spec: string,
+	dayOfWeek: boolean,
+	timeFormat: '24H' | '12H',
+	zoneId: string
+): string {
+	return `${isIntradaySpec(spec)}|${dayOfWeek}|${timeFormat}|${zoneId}`;
+}
+
+/** Builds the options object for the one `chart.applyOptions` call this app
+ * makes when the axis/crosshair label format needs to change — including
+ * when it is the viewer's zone that changed, not `spec`/`dayOfWeek`/
+ * `timeFormat`. Both fields share one formatter instance: the axis and the
+ * crosshair must always agree on how a bar's time reads, or hovering a
+ * candle would show a different time than the tick above it. */
+export function buildTimeLabelOptions(
+	spec: string,
+	dayOfWeek: boolean,
+	timeFormat: '24H' | '12H',
+	zoneId: string
+): TimeLabelOptions {
+	const formatter = timeAxisFormatter(spec, dayOfWeek, timeFormat, zoneId);
+	return {
+		timeScale: { tickMarkFormatter: formatter },
+		localization: { timeFormatter: formatter }
 	};
 }

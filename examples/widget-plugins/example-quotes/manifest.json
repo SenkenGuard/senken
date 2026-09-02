@@ -1,0 +1,31 @@
+{
+  "id": "example-quotes",
+  "name": "Example Quotes Widget",
+  "version": "1.0.0",
+  "description": "A second, independently-built widget plugin — a rotating fixture quote, proving the mockup label is drawn by the host and cannot be suppressed by the widget itself.",
+  "contributes": [
+    {
+      "point": "dashboard.widget",
+      "widget": {
+        "apiVersion": "senken.widget/v1",
+        "id": "daily-quote",
+        "title": "Daily Quote",
+        "description": "A seeded rotation of quotes — not a real feed.",
+        "category": "utility",
+        "defaultSize": { "width": 4, "height": 2 },
+        "minSize": { "width": 3, "height": 2 },
+        "configSchemaVersion": 1,
+        "configSchema": {
+          "type": "object",
+          "properties": {
+            "index": { "type": "number", "default": 0 }
+          }
+        },
+        "requiredPermissions": [],
+        "requiredCapabilities": [],
+        "dataSource": "mock",
+        "entry": "index.html"
+      }
+    }
+  ]
+}

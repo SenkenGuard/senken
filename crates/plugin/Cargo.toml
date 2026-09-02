@@ -38,19 +38,35 @@ senken-acl = { workspace = true }
 senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
 senken-series = { workspace = true }
-# `SystemClock::sleep_until` — the concrete `Clock` every venue adapter needs
-# to tell a closed candle from a forming one.
-tokio = { workspace = true, features = ["time"] }
 # The live-feed ports (`FeedSource`, `VenueProtocol`, `SymbolMap`) live
 # beside the pool they feed. A plugin declaring it can stream is declaring
 # something about that domain, so depending on it is the honest direction —
 # and `senken-subscription` knows nothing about plugins, so nothing cycles.
 senken-subscription = { workspace = true }
+# The `TradeAdapter` contract. Taken at its default (no features): this
+# crate registers adapters, it does not run an engine or open a database,
+# so neither `senken-trade`'s `engine` nor its `accounts` feature is asked
+# for here — the runtime that assembles them turns `engine` on for itself.
+senken-trade = { workspace = true }
 senken-venue = { workspace = true, optional = true }
+# The dynamic widget UI package contract (`widget_package` module): its
+# manifest is JSON, and installed packages are unpacked and tracked (enabled
+# state, digest) under the data directory via `senken-storage`'s own
+# atomic, path-traversal-safe writer rather than a second one reinvented
+# here.
+serde = { workspace = true }
+serde_json = { workspace = true }
+senken-storage = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
+# `SystemClock::sleep_until` — the concrete `Clock` every venue adapter needs
+# to tell a closed candle from a forming one.
+tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 wiremock = { workspace = true }
 

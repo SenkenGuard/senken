@@ -11,7 +11,7 @@
 	// (8px label, 14-15px value) that stat-cell doesn't expose as a prop —
 	// see the P4 implementation report for the full reasoning.
 	import { cn } from '$lib/utils.js';
-	import type { StatItem, Tone } from '$lib/mock/engine';
+	import type { StatItem, Tone } from '$lib/trade/view';
 
 	let { stats, size = 'lg' }: { stats: StatItem[]; size?: 'lg' | 'md' } = $props();
 
@@ -48,6 +48,15 @@
 			>
 				{st.value}
 			</span>
+			{#if st.detail}
+				<div class="flex flex-col gap-px" data-stat-detail>
+					{#each st.detail as line (line)}
+						<span class="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[9px] text-dim2">
+							{line}
+						</span>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	{/each}
 </div>

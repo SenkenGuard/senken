@@ -1,0 +1,361 @@
+// The Senken plugin ABI, in WIT (the WebAssembly Interface Type language).
+//
+// This file is the single source of truth for what crosses the boundary
+// between the Senken host and a plugin compiled to a WASM component. Both
+// the guest bindings (generated for a plugin author's crate) and the host
+// bindings (generated for the runtime that loads a compiled plugin) come
+// from this same definition — never hand-write either side.
+//
+// The world defined here covers indicators first: a stateful, incremental
+// computation with no I/O of its own, which is what proves the ABI shape
+// before a venue adapter (which needs host-mediated network access) is
+// attempted. A later world for venue plugins is expected to live in this
+// same package, alongside this one, once that work starts.
+//
+// The package is versioned independently of the Senken application itself
+// — bumping this number is the only thing that may ever break a compiled
+// plugin, and the application's own version must never imply that it did.
+package senken:plugin-api@0.1.0;
+
+/// Data shapes shared by every world in this package.
+interface types {
+    /// Nanoseconds since `1970-01-01T00:00:00Z`, UTC. Always this unit —
+    /// never seconds, never milliseconds — for the same reason Senken's own
+    /// internal time type allows no other unit: a raw integer cannot be
+    /// rejected at a call site for carrying the wrong one.
+    type instant = s64;
+
+    /// A fixed-point quantity that carries its own scale: `value` is the
+    /// integer at `scale` decimal places. Every price and quantity crossing
+    /// this boundary takes this shape, in either direction, and never a
+    /// float — a venue's tick size and a plugin's order price must survive
+    /// the crossing exactly, and floating point cannot promise that once a
+    /// value exceeds 2^53.
+    record scaled {
+        scale: u8,
+        value: s64,
+    }
+
+    /// The unit a `bar-spec`'s `step` counts in.
+    enum bar-unit {
+        second,
+        minute,
+        hour,
+        day,
+        week,
+        month,
+    }
+
+    /// A bar timeframe: `step` repetitions of `unit`.
+    record bar-spec {
+        step: u32,
+        unit: bar-unit,
+    }
+
+    /// The volume carried by a bar, with its unit made explicit — a plugin
+    /// cannot mistake a tick count for a traded quantity, because the two
+    /// are different cases of this variant rather than the same field
+    /// under different circumstances.
+    variant volume {
+        /// Base-asset quantity actually traded.
+        real(scaled),
+        /// Number of price changes in the interval, not an asset quantity.
+        tick(u32),
+        /// The source did not report volume.
+        absent,
+    }
+
+    /// One OHLCV bar. Prices and volumes are `scaled`, not `f64`, and each
+    /// carries its own scale explicitly — unlike Senken's internal bar
+    /// type, which leans on scale recorded once for a whole series, a
+    /// guest has no other channel to learn it, so it travels with every
+    /// bar at this boundary.
+    record bar {
+        /// The start of the interval this bar covers.
+        ts-open: instant,
+        /// This bar's own timeframe. Senken's internal bar type leans on a
+        /// series' own metadata for this instead of repeating it per bar,
+        /// but a guest has no channel to that metadata at all, so it
+        /// travels with every bar here — the same reason `scaled` carries
+        /// its own scale at this boundary instead of assuming context.
+        spec: bar-spec,
+        open: scaled,
+        high: scaled,
+        low: scaled,
+        close: scaled,
+        volume: volume,
+        quote-volume: option<scaled>,
+        trade-count: option<u32>,
+        taker-buy-volume: option<scaled>,
+    }
+
+    /// A point in chart coordinates: an instant and a display value.
+    ///
+    /// `value` is `f64` deliberately — this is a plotted indicator or
+    /// annotation value, not an order price. The one exception to "never
+    /// `f64` for a price or quantity" is indicator output, and its boundary
+    /// is exactly this type: an order price derived from one of these must
+    /// be rounded back to the instrument's tick as a `scaled` before it
+    /// reaches anything that trades.
+    record plot-point {
+        time: instant,
+        value: f64,
+    }
+
+    /// A price coordinate used by a drawable — mirrors the same split
+    /// Senken's own indicator crate already draws between a value a human
+    /// looks at and one an order can be placed at, so a drawing tool cannot
+    /// hand back a float where an executable price is required.
+    variant price-coord {
+        /// A visual annotation chosen on a chart. Never an order price.
+        annotation(f64),
+        /// An exact, instrument-scaled price usable for execution.
+        executable(scaled),
+    }
+
+    /// How far a segment or level extends beyond its anchor(s).
+    enum extend {
+        %none,
+        forward,
+        backward,
+        both,
+    }
+
+    /// Where a label is positioned relative to its anchor.
+    enum label-anchor {
+        above,
+        below,
+        center,
+    }
+
+    /// How a computed series is drawn.
+    enum series-shape {
+        line,
+        histogram,
+        area,
+    }
+
+    /// A computed series belonging to one plot field.
+    record series-drawable {
+        field: string,
+        shape: series-shape,
+        points: list<plot-point>,
+    }
+
+    /// A line segment between two points.
+    record segment-drawable {
+        a: plot-point,
+        b: plot-point,
+        extend: extend,
+    }
+
+    /// A horizontal price level.
+    record level-drawable {
+        price: price-coord,
+        extend: extend,
+    }
+
+    /// A rectangular zone between two opposite corners.
+    record box-drawable {
+        a: plot-point,
+        b: plot-point,
+    }
+
+    /// Text anchored at one chart point.
+    record label-drawable {
+        at: plot-point,
+        text: string,
+        anchor: label-anchor,
+    }
+
+    /// One thing a chart renderer can draw, beyond the plain plot values a
+    /// bar handler returns every call.
+    variant drawable {
+        series(series-drawable),
+        segment(segment-drawable),
+        level(level-drawable),
+        %box(box-drawable),
+        label(label-drawable),
+    }
+
+    /// A configured parameter value, for both a descriptor's declared
+    /// default and the value a host passes to a new instance.
+    variant param-value {
+        integer(u64),
+        number(f64),
+    }
+
+    /// A configurable parameter's shape.
+    enum param-kind {
+        integer,
+        number,
+    }
+
+    /// One configurable parameter.
+    record param-spec {
+        name: string,
+        kind: param-kind,
+        default: param-value,
+        min: option<f64>,
+    }
+
+    /// Chart rendering shape for a plot field.
+    enum plot-shape {
+        line,
+        histogram,
+    }
+
+    /// One value an indicator emits per bar.
+    record plot-spec {
+        field: string,
+        label: string,
+        shape: plot-shape,
+        color: string,
+    }
+}
+
+/// The indicator contract: a stateful, incremental computation over bars,
+/// with no I/O of its own.
+interface indicator {
+    use types.{bar, param-spec, param-value, plot-spec, drawable};
+
+    /// One value an indicator emits for the bar it was just given.
+    record plot-value {
+        field: string,
+        value: f64,
+    }
+
+    /// What handling one bar produced.
+    record on-bar-result {
+        /// This bar's value for each plot field this indicator reports.
+        plots: list<plot-value>,
+        /// Any new display objects to add — a level, a label, and so on.
+        /// Emitted only when something changed; most bars return an empty
+        /// list.
+        drawables: list<drawable>,
+    }
+
+    /// Static metadata describing this indicator: its identity, its
+    /// configurable parameters, and the plot fields it emits. A host reads
+    /// this once, before constructing any `instance`.
+    record indicator-descriptor {
+        id: string,
+        title: string,
+        short-title: string,
+        legend: string,
+        params: list<param-spec>,
+        plots: list<plot-spec>,
+    }
+
+    /// Returns this indicator's descriptor.
+    descriptor: func() -> indicator-descriptor;
+
+    /// One incrementally-updated indicator instance.
+    ///
+    /// A host drops this resource to tear the instance down; there is no
+    /// separate "close" method, because there is nothing for one to do
+    /// beyond what dropping the resource already does.
+    resource instance {
+        /// Creates a new instance from parameters already validated by the
+        /// host against `descriptor`'s `params`.
+        constructor(params: list<param-value>);
+
+        /// Feeds one new bar into this instance, updating its internal
+        /// state, and returns what that bar produced.
+        ///
+        /// Bars must be handed to this in chronological order (oldest
+        /// first), for both live updates and history replay — this is the
+        /// only way data enters an instance.
+        handle-bar: func(bar: bar) -> on-bar-result;
+
+        /// Whether enough bars have been seen for this instance's output
+        /// to be meaningful. `false` during warm-up.
+        initialized: func() -> bool;
+
+        /// Returns this instance to the state it was in immediately after
+        /// construction.
+        reset: func();
+    }
+}
+
+/// The host's standard library: Senken's own ten built-in indicators,
+/// called back into from inside a plugin rather than reimplemented by one.
+///
+/// This is what makes `ema(close, 20)` mean "call the compiled, already
+/// tested `senken_indicators::Ema`" instead of "trust a second
+/// implementation of an EMA that some plugin author wrote themselves" — the
+/// same reasoning that keeps this workspace's own indicator language from
+/// having any standard library of its own beyond this interface.
+///
+/// Every value in and out is a plain `f64` or a fixed-size `tuple` of them,
+/// never a `bar` or a `scaled` — a caller that already holds a `bar` reads
+/// whichever field a built-in needs off it first. This keeps the interface
+/// itself free of records, lists and resources, which matters because a
+/// hand-encoded core module (this workspace's indicator-lang compiler
+/// being the reason that matters at all) can only speak that flat, scalar
+/// ABI directly.
+///
+/// `slot` identifies which call site owns one built-in's persistent state.
+/// A moving average, an RSI, a MACD are all incremental — every update
+/// depends on the one before it — so a caller that uses the same built-in
+/// in more than one place (two EMAs of different periods, say) must give
+/// each its own slot; a host constructs one instance per slot, lazily, on
+/// that slot's first call, and keeps it for as long as the caller that
+/// owns it runs.
+interface builtins {
+    /// `Sma::update_raw` / `Ema::update_raw` / `Wma::update_raw` — an
+    /// already-extracted price in, the moving average out.
+    sma-update: func(slot: u32, value: f64, period: u32) -> f64;
+    ema-update: func(slot: u32, value: f64, period: u32) -> f64;
+    wma-update: func(slot: u32, value: f64, period: u32) -> f64;
+
+    /// `Rsi::handle_bar` then `Rsi::value`.
+    rsi-update: func(slot: u32, period: u32, close: f64) -> f64;
+
+    /// `Atr::handle_bar` then `Atr::value`.
+    atr-update: func(slot: u32, period: u32, high: f64, low: f64, close: f64) -> f64;
+
+    /// `Vwap::handle_bar` then `Vwap::value`.
+    vwap-update: func(slot: u32, high: f64, low: f64, close: f64, volume: f64) -> f64;
+
+    /// `Volume::handle_bar` then `Volume::value`.
+    volume-update: func(slot: u32, volume: f64) -> f64;
+
+    /// `Stochastic::handle_bar` then `(Stochastic::k, Stochastic::d)`.
+    stochastic-update: func(slot: u32, k-period: u32, d-period: u32, high: f64, low: f64, close: f64) -> tuple<f64, f64>;
+
+    /// `Macd::handle_bar` then `(Macd::macd, Macd::signal, Macd::histogram)`.
+    macd-update: func(slot: u32, fast: u32, slow: u32, signal: u32, close: f64) -> tuple<f64, f64, f64>;
+
+    /// `BollingerBands::handle_bar` then
+    /// `(BollingerBands::upper, BollingerBands::middle, BollingerBands::lower)`.
+    bollinger-update: func(slot: u32, period: u32, k: f64, close: f64) -> tuple<f64, f64, f64>;
+}
+
+/// The world a compiled indicator plugin implements.
+world indicator-plugin {
+    export indicator;
+    import builtins;
+}
+
+/// The world a compiled indicator-lang program implements: it has no way to
+/// declare a title, a parameter, or anything else `indicator`'s descriptor
+/// and resource need, so it targets a leaner world than `indicator-plugin`
+/// rather than hand-writing the canonical-ABI glue (records, lists,
+/// strings, a resource) that bridging one into the other would take —
+/// glue that would be identical for every compiled program and unrelated
+/// to what that program actually computes. It shares this package's one
+/// `builtins` interface with `indicator-plugin` rather than declaring its
+/// own copy, so there is exactly one definition of what calling a built-in
+/// means, used by a compiled indicator-lang program and a Rust-authored
+/// plugin alike.
+world compiled-indicator {
+    import builtins;
+
+    /// Runs one bar through the compiled program's `plot` expression and
+    /// returns its value. Bars must arrive in chronological order — the
+    /// same requirement `senken_indicators::Indicator::handle_bar` states,
+    /// inherited here because this function's own implementation is built
+    /// entirely out of calls to `builtins`.
+    export on-bar: func(open: f64, high: f64, low: f64, close: f64, volume: f64) -> f64;
+}

@@ -503,6 +503,32 @@ pub(crate) mod test_support {
         (runtime, bar_source)
     }
 
+    /// A [`Runtime`] with the fake venue **and** the built-in simulator, so
+    /// a test can prove the whole trading path: bars land in the store, the
+    /// mark price is read back from them, and an order fills against it.
+    ///
+    /// Nothing here reaches a network — the venue is the same fake one
+    /// above, and the simulator has no network to reach.
+    pub(crate) fn runtime_with_fake_venue_and_simulator(
+        data_dir: &std::path::Path,
+    ) -> (Runtime, Arc<FakeBarSource>) {
+        let bar_source = Arc::new(FakeBarSource {
+            calls: AtomicU32::new(0),
+        });
+        let runtime = Runtime::builder()
+            .data_dir(data_dir)
+            .plugin(FakeVenuePlugin {
+                bar_source: bar_source.clone(),
+                book_source: None,
+            })
+            .plugin(senken_plugin_simulator::SimulatorPlugin::new(
+                senken_storage::Storage::new(data_dir),
+            ))
+            .build()
+            .expect("two well-behaved plugins always activate");
+        (runtime, bar_source)
+    }
+
     /// A source id whose only registered [`BarSource`] supports 5-minute
     /// bars and nothing finer — used to prove `POST /api/bars/m1-download`
     /// actually rejects a venue that cannot serve 1m natively, rather than
@@ -598,6 +624,21 @@ pub(crate) mod test_support {
             context.register_bar_source(Arc::new(FiveMinuteOnlyBarSource));
             Ok(())
         }
+    }
+
+    /// The same 5-minute-only venue as [`runtime_with_5m_only_venue`], plus
+    /// the simulator — a store whose only bars for an instrument are
+    /// coarser than one minute, which is what a mark price has to cope
+    /// with on any venue that serves its own coarse candles.
+    pub(crate) fn runtime_with_5m_only_venue_and_simulator(data_dir: &std::path::Path) -> Runtime {
+        Runtime::builder()
+            .data_dir(data_dir)
+            .plugin(FakeVenuePlugin5mOnly)
+            .plugin(senken_plugin_simulator::SimulatorPlugin::new(
+                senken_storage::Storage::new(data_dir),
+            ))
+            .build()
+            .expect("two well-behaved plugins always activate")
     }
 
     /// Builds a [`Runtime`] with one fake venue registered whose `BarSource`

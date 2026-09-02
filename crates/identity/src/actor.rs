@@ -297,16 +297,20 @@ pub(crate) fn resource_to_sql(resource: Resource) -> &'static str {
         // permissions.
         Resource::ChartWorkspace => "chart_workspace",
         Resource::ChartLayout => "chart_layout",
+        Resource::DashboardWorkspace => "dashboard_workspace",
         Resource::Alert => "alert",
         Resource::Strategy => "strategy",
         Resource::Account => "account",
+        Resource::Order => "order",
         Resource::Adapter => "adapter",
         Resource::User => "user",
         Resource::Role => "role",
         Resource::Indicator => "indicator",
+        Resource::IndicatorRegistry => "indicator_registry",
         Resource::Watchlist => "watchlist",
         Resource::Note => "note",
         Resource::Storage => "storage",
+        Resource::WidgetPlugin => "widget_plugin",
     }
 }
 
@@ -314,16 +318,20 @@ fn sql_to_resource(text: &str) -> Result<Resource, IdentityError> {
     Ok(match text {
         "chart_workspace" => Resource::ChartWorkspace,
         "chart_layout" => Resource::ChartLayout,
+        "dashboard_workspace" => Resource::DashboardWorkspace,
         "alert" => Resource::Alert,
         "strategy" => Resource::Strategy,
         "account" => Resource::Account,
+        "order" => Resource::Order,
         "adapter" => Resource::Adapter,
         "user" => Resource::User,
         "role" => Resource::Role,
         "indicator" => Resource::Indicator,
+        "indicator_registry" => Resource::IndicatorRegistry,
         "watchlist" => Resource::Watchlist,
         "note" => Resource::Note,
         "storage" => Resource::Storage,
+        "widget_plugin" => Resource::WidgetPlugin,
         other => {
             return Err(IdentityError::CorruptGrant(format!(
                 "unknown resource `{other}`"

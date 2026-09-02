@@ -1,0 +1,48 @@
+[package]
+name = "senken-plugin-api"
+description = "Public SDK for Senken plugins: the WIT-generated bindings a plugin compiles against, and the Rust wrapper around them"
+readme = "README.md"
+# Versioned on its own, not from `workspace.package.version`: this crate is
+# the public contract a compiled plugin links against, and the Senken
+# application's own release cadence must never imply that contract changed.
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+# The SDK ships under a permissive dual licence, independent of the
+# application's `LGPL-3.0-only`: this is the crate a plugin author's own
+# code links against, and `MIT OR Apache-2.0` is what the Rust ecosystem —
+# rustc included — expects from a crate in that position. Apache-2.0 carries
+# an explicit patent grant, not a minor detail for a financial SDK; MIT
+# remains available to anyone who does not want that grant's terms.
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The guest-side codegen macro (`wit_bindgen::generate!`) that turns
+# `wit/senken.wit` into the bindings a plugin's own crate compiles against
+# — the whole reason this crate exists, and light enough to compile
+# cleanly for `wasm32-wasip2` itself.
+wit-bindgen = "0.57"
+# `convert::BarFieldsError`'s `Error` impl. Not a `senken-*` crate, so it
+# does not touch the boundary this crate is not allowed to cross, and it
+# compiles for `wasm32-wasip2` the same as every other dependency here.
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Host-side bindings are generated the same way `crates/plugin-host` (the
+# runtime that actually loads a compiled plugin) will generate them —
+# `wasmtime::component::bindgen!` against this same `wit/senken.wit` — and
+# are exercised here only as a test that the WIT this crate publishes is
+# host-compilable, not guest-compilable alone. `wasmtime` stays a
+# dev-dependency (never a regular or optional one) so it never reaches a
+# consumer of the published crate: a `path` dev-dependency with no version
+# is dropped from what `cargo publish` ships, exactly like this workspace's
+# other crates already do for their own test-only path dependencies.
+wasmtime = { version = "48.0.1", features = ["component-model"] }

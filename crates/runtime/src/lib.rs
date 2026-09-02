@@ -24,30 +24,127 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use senken_identity::IdentityStore;
 use senken_marketdata::MarketData;
 use senken_marketdata::book::BookSource;
+use senken_plugin::widget_package::WidgetPackageStore;
 use senken_plugin::{
     ActivationContext, BarSource, Plugin, PluginError, PluginManifest, reconcile_plugin_permissions,
 };
 use senken_storage::Storage;
 use senken_store::Store;
 use senken_subscription::FeedSource;
+use senken_trade::TradeEngine;
 
 /// Error types.
 pub mod error;
+/// Bridges `senken_series::Bar` to the WIT wire shapes
+/// `senken-plugin-host` speaks, and the catalog of indicators loaded from
+/// uploaded `.wasm` components.
+pub mod plugin_host;
 /// Bar-fetching services: [`SeriesData`], `Runtime::series()`.
 mod series;
 
 pub use crate::error::RuntimeError;
+pub use crate::plugin_host::{
+    DYNAMIC_INDICATOR_MAX_DISPLAY_OBJECTS, DynamicIndicatorError, DynamicIndicatorInfo,
+    DynamicIndicatorInstance, DynamicIndicatorStatus, DynamicIndicators, DynamicOnBar,
+    DynamicParamSpec, DynamicPlotSpec, reject_if_over_display_cap,
+};
 pub use crate::series::SeriesData;
 
 /// Where data lives when the builder is given no other location.
 pub const DEFAULT_DATA_DIR: &str = ".data";
+
+/// Directory name under the data directory where a `.wasm` indicator
+/// component dropped in by hand (never through the upload or compile
+/// endpoints) is picked up at startup — see
+/// [`scan_indicator_plugin_directory`].
+const INDICATOR_PLUGINS_DIR: &str = "indicator-plugins";
+
+/// Registers every `.wasm` file directly under
+/// `<data_dir>/`[`INDICATOR_PLUGINS_DIR`] as a
+/// [`crate::plugin_host::PluginOrigin::DataDirectory`] dynamic indicator, so
+/// a plugin placed there by hand is picked up the moment the runtime
+/// starts, the same way an operator dropping a widget package under
+/// `<data_dir>/widget-plugins/packages/` is picked up the moment anything
+/// calls [`senken_plugin::widget_package::WidgetPackageStore::list`].
+///
+/// One plugin failing to load never aborts startup. `register_with_origin`
+/// already turns a load failure into a visible, named catalog entry (see
+/// that method's own docs) rather than only returning an error to its
+/// immediate caller — this function logs the failure for the operator and
+/// moves on to the next file regardless, so **the failed entry, not a
+/// crashed server, is the visible result**. The directory itself is created
+/// if it does not exist yet, so a fresh install has somewhere to drop a
+/// file into without creating the directory by hand first.
+fn scan_indicator_plugin_directory(
+    dynamic_indicators: &plugin_host::DynamicIndicators,
+    data_dir: &Path,
+) {
+    let dir = data_dir.join(INDICATOR_PLUGINS_DIR);
+    if let Err(source) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            %source,
+            path = %dir.display(),
+            "could not create the indicator-plugins data directory; skipping the startup scan"
+        );
+        return;
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(source) => {
+            tracing::warn!(
+                %source,
+                path = %dir.display(),
+                "could not read the indicator-plugins data directory; skipping the startup scan"
+            );
+            return;
+        }
+    };
+    // Sorted so a startup scan registers the same plugins in the same order
+    // on every run, regardless of what order the filesystem happens to
+    // return directory entries in.
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "wasm"))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(source) => {
+                tracing::warn!(
+                    %source,
+                    path = %path.display(),
+                    "could not read a data-directory indicator plugin file"
+                );
+                continue;
+            }
+        };
+        match dynamic_indicators
+            .register_with_origin(&bytes, plugin_host::PluginOrigin::DataDirectory)
+        {
+            Ok(info) => tracing::info!(
+                id = %info.id,
+                path = %path.display(),
+                "loaded a data-directory indicator plugin"
+            ),
+            Err(source) => tracing::warn!(
+                %source,
+                path = %path.display(),
+                "a data-directory indicator plugin failed to load; it is recorded as a \
+                 failed catalog entry rather than aborting startup"
+            ),
+        }
+    }
+}
 
 /// An activated plugin.
 #[derive(Debug)]
@@ -153,7 +250,10 @@ impl RuntimeBuilder {
 
         let mut records: Vec<PluginRecord> = Vec::with_capacity(self.plugins.len());
         let mut seen = HashSet::with_capacity(self.plugins.len());
-        let mut registered = Registrations::default();
+        let mut bar_sources: Vec<Arc<dyn BarSource>> = Vec::new();
+        let mut book_sources: Vec<Arc<dyn BookSource>> = Vec::new();
+        let mut feed_sources: Vec<Arc<dyn FeedSource>> = Vec::new();
+        let mut trade = TradeEngine::new();
         // One context for the whole run, so resources it caches (the shared
         // HTTP client) are shared by every plugin.
         let mut context = ActivationContext::new();
@@ -164,8 +264,13 @@ impl RuntimeBuilder {
                 &*plugin,
                 &manifest,
                 &mut context,
-                &mut marketdata,
-                &mut registered,
+                Registries {
+                    marketdata: &mut marketdata,
+                    bar_sources: &mut bar_sources,
+                    book_sources: &mut book_sources,
+                    feed_sources: &mut feed_sources,
+                    trade: &mut trade,
+                },
                 &mut seen,
                 self.identity.as_deref(),
             ) {
@@ -196,7 +301,14 @@ impl RuntimeBuilder {
         series_store
             .init()
             .map_err(|source| RuntimeError::SeriesStoreInit { source })?;
-        let series = SeriesData::build(&series_store, &marketdata, registered.bars);
+        let series = SeriesData::build(&series_store, &marketdata, bar_sources);
+
+        let dynamic_indicators = crate::plugin_host::DynamicIndicators::new()
+            .map_err(|source| RuntimeError::DynamicIndicatorHostInit { source })?;
+        scan_indicator_plugin_directory(&dynamic_indicators, storage.data_dir());
+
+        let widget_plugins = WidgetPackageStore::open(storage.data_dir())
+            .map_err(|source| RuntimeError::WidgetPluginStoreInit { source })?;
 
         Ok(Runtime {
             storage,
@@ -204,32 +316,34 @@ impl RuntimeBuilder {
             marketdata,
             series,
             series_store,
-            book_sources: registered
-                .book
+            book_sources: book_sources
                 .into_iter()
                 .map(|source| (source.source_id().to_owned(), source))
                 .collect(),
-            feed_sources: registered.feeds,
+            feed_sources,
+            dynamic_indicators,
+            widget_plugins,
+            trade: Arc::new(trade),
         })
     }
 }
 
-/// Everything one activation pass accumulates across plugins, bundled so
-/// [`activate`] takes one argument for it rather than one per capability —
-/// a count that grows every time the plugin contract does.
-#[derive(Default)]
-struct Registrations {
-    bars: Vec<Arc<dyn BarSource>>,
-    book: Vec<Arc<dyn BookSource>>,
-    feeds: Vec<Arc<dyn FeedSource>>,
+/// The registries a plugin's activation contributes into, passed as one so
+/// [`activate`]'s signature does not grow a parameter per capability — a
+/// count that grows every time the plugin contract does.
+struct Registries<'a> {
+    marketdata: &'a mut MarketData,
+    bar_sources: &'a mut Vec<Arc<dyn BarSource>>,
+    book_sources: &'a mut Vec<Arc<dyn BookSource>>,
+    feed_sources: &'a mut Vec<Arc<dyn FeedSource>>,
+    trade: &'a mut TradeEngine,
 }
 
 fn activate(
     plugin: &dyn Plugin,
     manifest: &PluginManifest,
     context: &mut ActivationContext,
-    marketdata: &mut MarketData,
-    registered: &mut Registrations,
+    registries: Registries<'_>,
     seen: &mut HashSet<String>,
     identity: Option<&IdentityStore>,
 ) -> Result<(), RuntimeError> {
@@ -258,6 +372,9 @@ fn activate(
         // first; it must not leak into the next plugin's activation.
         drop(context.take_marketdata_sources());
         drop(context.take_bar_sources());
+        drop(context.take_book_sources());
+        drop(context.take_feed_sources());
+        drop(context.take_trade_adapters());
         return Err(RuntimeError::PluginActivation {
             plugin: manifest.id.clone(),
             source,
@@ -284,6 +401,24 @@ fn activate(
             })?;
     }
 
+    drain_registrations(manifest, context, registries)
+}
+
+/// Moves what one plugin registered out of the shared context and into the
+/// runtime's own registries, leaving the context ready for the next plugin.
+fn drain_registrations(
+    manifest: &PluginManifest,
+    context: &mut ActivationContext,
+    registries: Registries<'_>,
+) -> Result<(), RuntimeError> {
+    let Registries {
+        marketdata,
+        bar_sources,
+        book_sources,
+        feed_sources,
+        trade,
+    } = registries;
+
     for source in context.take_marketdata_sources() {
         tracing::info!(
             plugin = manifest.id,
@@ -304,7 +439,7 @@ fn activate(
             source = source.source_id(),
             "registering bar source"
         );
-        registered.bars.push(source);
+        bar_sources.push(source);
     }
     for source in context.take_book_sources() {
         tracing::info!(
@@ -312,7 +447,7 @@ fn activate(
             source = source.source_id(),
             "registering book source"
         );
-        registered.book.push(source);
+        book_sources.push(source);
     }
     for source in context.take_feed_sources() {
         tracing::info!(
@@ -320,7 +455,21 @@ fn activate(
             sources = ?source.source_ids(),
             "registering live feed"
         );
-        registered.feeds.push(source);
+        feed_sources.push(source);
+    }
+
+    for adapter in context.take_trade_adapters() {
+        tracing::info!(
+            plugin = manifest.id,
+            adapter = adapter.id(),
+            "registering trade adapter"
+        );
+        trade
+            .register(adapter)
+            .map_err(|source| RuntimeError::TradeAdapterRegistration {
+                plugin: manifest.id.clone(),
+                source,
+            })?;
     }
     Ok(())
 }
@@ -374,6 +523,23 @@ pub struct Runtime {
     /// a [`FeedSource`] is the means to build a protocol once a catalog
     /// exists, and whoever runs live data decides when that happens.
     feed_sources: Vec<Arc<dyn FeedSource>>,
+    /// Indicators loaded from an uploaded `.wasm` component, alongside the
+    /// ten built-ins `senken-indicators` ships with.
+    dynamic_indicators: crate::plugin_host::DynamicIndicators,
+    /// Dynamic widget UI packages, rooted at the same data directory as
+    /// everything else. Unlike `dynamic_indicators`, this store needs no
+    /// startup scan of its own here: it re-reads its `packages/` directory
+    /// from disk on every `list`/`refresh` call rather than caching an
+    /// in-memory catalog (see that type's own docs), so a package dropped
+    /// in by hand is already visible the moment anything asks — opening it
+    /// here only has to happen once, at startup, so every caller shares one
+    /// instance instead of each opening (and re-preparing the directory
+    /// for) its own.
+    widget_plugins: WidgetPackageStore,
+    /// Every trade adapter the activated plugins registered. An `Arc` so
+    /// the HTTP layer can hold it for the process's lifetime, the same way
+    /// it holds [`marketdata`](Self::marketdata).
+    trade: Arc<TradeEngine>,
 }
 
 impl Runtime {
@@ -438,6 +604,34 @@ impl Runtime {
     #[must_use]
     pub fn store(&self) -> &Store {
         &self.series_store
+    }
+
+    /// Indicators loaded from an uploaded `.wasm` component, alongside the
+    /// ten built-ins `senken-indicators` ships with — what
+    /// `indicator_handlers` merges into `GET /api/indicators`'s catalogue
+    /// and dispatches `POST /api/indicators/compute` against when a
+    /// request names something other than a built-in.
+    #[must_use]
+    pub fn dynamic_indicators(&self) -> &crate::plugin_host::DynamicIndicators {
+        &self.dynamic_indicators
+    }
+
+    /// Dynamic widget UI packages: install, discovery, enable/disable, and
+    /// the effective widget catalog every currently active package
+    /// contributes — what `widget_plugin_handlers` exposes over HTTP.
+    #[must_use]
+    pub fn widget_plugins(&self) -> &WidgetPackageStore {
+        &self.widget_plugins
+    }
+
+    /// Every registered trade adapter, as one registry.
+    ///
+    /// Empty when no activated plugin registered one, which is a normal
+    /// state: an installation that only reads market data has no adapters
+    /// and needs none.
+    #[must_use]
+    pub fn trade(&self) -> &Arc<TradeEngine> {
+        &self.trade
     }
 
     /// Deactivates every plugin in reverse order and consumes the runtime.

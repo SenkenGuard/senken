@@ -1,5 +1,4 @@
 //! The `OpenAPI` document.
-//! 006 S1 for workspaces/bars/indicators/alerts).
 //!
 //! `utoipa` derives this from the same `serde` structs and handler
 //! signatures the router actually uses (`crate::dto` plus every handler
@@ -14,30 +13,52 @@
 use utoipa::OpenApi;
 
 use crate::dto::{
-    AddWatchlistMemberRequest, AlertDto, AlertsPage, AssignRoleRequest, BarDto, BarJobDto,
-    BarRangeResponse, BarsRequirementDto, BookCapabilityDto, ComputeIndicatorRequest,
-    ComputeIndicatorResponse, ConditionDto, CreateAlertRequest, CreateNoteRequest,
-    CreateRoleRequest, CreateUserRequest, CreateWatchlistGroupRequest, CreateWorkspaceRequest,
+    AccountAccessDto, ActionOutcomeDto, AdapterDto, AdaptersResponse, AddWatchlistMemberRequest,
+    AlertDto, AlertsPage, AmendOrderRequest, AssetBalanceDto, AssignRoleRequest, BalancesDto,
+    BarDto, BarJobDto, BarRangeResponse, BarsRequirementDto, BookCapabilityDto, CloseRequest,
+    CompileIndicatorErrorDto, CompileIndicatorRequest, ComputeIndicatorRequest,
+    ComputeIndicatorResponse, ConditionDto, CreateAlertRequest, CreateDashboardWorkspaceRequest,
+    CreateNoteRequest, CreateRoleRequest, CreateTradeAccountRequest, CreateUserRequest,
+    CreateWatchlistGroupRequest, CreateWorkspaceRequest, DashboardDataSourceDto,
+    DashboardGridSizeDto, DashboardLayoutDto, DashboardWidgetCatalogResponse,
+    DashboardWidgetDefinitionDto, DashboardWidgetDto, DashboardWidgetPlacementRequest,
+    DashboardWorkspaceDto, DashboardWorkspacesPage, DefaultDashboardWorkspaceResponse,
     DefaultWorkspaceResponse, DeleteStorageRequest, DeleteStorageResponse, DownloadM1Request,
     DrawingDto, DrawingInputDto, DrawingKindDto, DrawingLineStyleDto, DrawingPointDto,
-    EnsureBarsRequest, EnsureBarsResponse, ErrorBody, GrantDto, IdResponse, IndicatorCatalogEntry,
-    IndicatorDrawableDto, IndicatorDrawablePointDto, IndicatorExtendDto, IndicatorLabelAnchorDto,
-    IndicatorParamDefaultDto, IndicatorParamDto, IndicatorPlacementDto, IndicatorPlotDto,
+    EnsureBarsRequest, EnsureBarsResponse, ErrorBody, FillDto, GrantDto, HealthDto, IdResponse,
+    IndicatorCatalogEntry, IndicatorDrawableDto, IndicatorDrawablePointDto, IndicatorExtendDto,
+    IndicatorLabelAnchorDto, IndicatorParamDefaultDto, IndicatorParamDto, IndicatorPlacementDto,
+    IndicatorPlotDto, IndicatorPluginDto, IndicatorPluginOriginDto, IndicatorPluginStateDto,
     IndicatorPointDto, IndicatorPriceCoordDto, IndicatorScaleDto, IndicatorScaledPriceDto,
     IndicatorSpecDto, InstrumentSummaryDto, InstrumentsPage, LayerDto, LayerInputDto, LayerKindDto,
     LayoutDetailDto, LayoutSummaryDto, LoginRequest, LoginResponse, MarketDataUsageDto, MeResponse,
-    NoteDto, NoteSummaryDto, NotesPage, PaneDto, PaneInputDto, PluginGrantRequest,
-    ProvisionalBarDto, RenameWatchlistGroupRequest, RenameWorkspaceRequest,
-    ReorderWatchlistGroupsRequest, ReorderWatchlistMembersRequest, ReplaceLayoutRequest,
-    RoleSummaryDto, RolesPage, SetPasswordRequest, SourceCapabilityDto, SourcesResponse,
-    StorageDatabaseDto, StorageInstrumentDto, StorageReportDto, StorageSeriesDto,
-    StorageSeriesKindDto, StorageSourceDto, TimeRangeDto, UpdateNoteRequest,
-    UpdateWorkspaceSettingsRequest, UserSummaryDto, UsersPage, WatchlistGroupDto,
-    WatchlistGroupsPage, WatchlistMemberDto, WorkspaceDto, WorkspacesPage, WsTicketResponse,
+    NoteDto, NoteSummaryDto, NotesPage, OrderDto, PaneDto, PaneInputDto, PlaceOrderRequest,
+    PluginCircuitStateDto, PluginGrantRequest, PluginHealthDto, PluginLogLineDto,
+    PluginLogSeverityDto, PositionDto, ProvisionalBarDto, RenameDashboardWorkspaceRequest,
+    RenameWatchlistGroupRequest, RenameWorkspaceRequest, ReorderWatchlistGroupsRequest,
+    ReorderWatchlistMembersRequest, ReplaceDashboardLayoutRequest, ReplaceLayoutRequest,
+    ReplaceSettingsRequest, RoleSummaryDto, RolesPage, RunActionRequest, ScaledDto,
+    SetIndicatorPluginEnabledRequest, SetPasswordRequest, SetZoneRequest, SourceCapabilityDto,
+    SourcesResponse, StorageDatabaseDto, StorageInstrumentDto, StorageReportDto, StorageSeriesDto,
+    StorageSeriesKindDto, StorageSourceDto, TimeRangeDto, TradeAccountDto, TradeAccountSettingsDto,
+    TradeAccountStateDto, TradeAccountsPage, UpdateNoteRequest, UpdateTradeAccountRequest,
+    UpdateWorkspaceSettingsRequest, UserSummaryDto, UserZoneResponse, UsersPage, WatchlistGroupDto,
+    WatchlistGroupsPage, WatchlistMemberDto, WireInt, WorkspaceDto, WorkspacesPage,
+    WsTicketResponse,
+};
+use crate::registry_handlers::{
+    HandleResponse, IndicatorEntryDto, IndicatorSummaryDto, PublishIndicatorRequest, RegistryPage,
+    SetHandleRequest,
+};
+use crate::widget_plugin_handlers::{
+    InstallWidgetPluginResponse, SetWidgetPluginEnabledRequest, WidgetPluginCatalogResponse,
+    WidgetPluginDataSourceDto, WidgetPluginDefinitionDto, WidgetPluginGridSizeDto,
+    WidgetPluginListResponse, WidgetPluginPackageDto, WidgetPluginStatusDto,
 };
 use crate::{
-    Health, admin_handlers, alert_handlers, bars_handlers, identity_handlers, indicator_handlers,
-    instrument_handlers, notes_handlers, source_handlers, storage_handlers, watchlist_handlers,
+    Health, admin_handlers, alert_handlers, bars_handlers, dashboard_handlers, identity_handlers,
+    indicator_handlers, instrument_handlers, notes_handlers, registry_handlers, source_handlers,
+    storage_handlers, trade_handlers, watchlist_handlers, widget_plugin_handlers,
     workspace_handlers, ws,
 };
 
@@ -53,6 +74,8 @@ use crate::{
         identity_handlers::logout,
         identity_handlers::set_password,
         identity_handlers::me,
+        identity_handlers::get_own_zone,
+        identity_handlers::set_own_zone,
         ws::issue_ticket,
         admin_handlers::list_users,
         admin_handlers::create_user,
@@ -78,6 +101,14 @@ use crate::{
         workspace_handlers::delete_layer,
         workspace_handlers::update_drawing,
         workspace_handlers::delete_drawing,
+        dashboard_handlers::list_dashboard_workspaces,
+        dashboard_handlers::create_dashboard_workspace,
+        dashboard_handlers::default_dashboard_workspace,
+        dashboard_handlers::rename_dashboard_workspace,
+        dashboard_handlers::delete_dashboard_workspace,
+        dashboard_handlers::get_dashboard_layout,
+        dashboard_handlers::replace_dashboard_layout,
+        dashboard_handlers::dashboard_widget_catalog,
         bars_handlers::plan_bars,
         bars_handlers::range_bars,
         bars_handlers::ensure_bars,
@@ -85,6 +116,10 @@ use crate::{
         bars_handlers::bar_job_status,
         indicator_handlers::list_indicators,
         indicator_handlers::compute_indicator,
+        indicator_handlers::compile_indicator,
+        indicator_handlers::upload_indicator_plugin,
+        indicator_handlers::list_indicator_plugins,
+        indicator_handlers::set_indicator_plugin_enabled,
         alert_handlers::list_alerts,
         alert_handlers::get_alert,
         alert_handlers::create_alert,
@@ -105,15 +140,72 @@ use crate::{
         notes_handlers::get_note,
         notes_handlers::update_note,
         notes_handlers::delete_note,
+        registry_handlers::publish_indicator,
+        registry_handlers::search_indicators,
+        registry_handlers::list_my_indicators,
+        registry_handlers::get_indicator,
+        registry_handlers::install_indicator,
+        registry_handlers::delete_indicator,
+        registry_handlers::set_my_handle,
+        registry_handlers::get_my_handle,
         storage_handlers::storage_report,
         storage_handlers::delete_storage,
+        widget_plugin_handlers::widget_plugin_catalog,
+        widget_plugin_handlers::list_widget_plugins,
+        widget_plugin_handlers::install_widget_plugin,
+        widget_plugin_handlers::set_widget_plugin_enabled,
+        widget_plugin_handlers::uninstall_widget_plugin,
+        widget_plugin_handlers::refresh_widget_plugins,
+        trade_handlers::list_adapters,
+        trade_handlers::list_accounts,
+        trade_handlers::create_account,
+        trade_handlers::account_state,
+        trade_handlers::update_account,
+        trade_handlers::delete_account,
+        trade_handlers::get_settings,
+        trade_handlers::replace_settings,
+        trade_handlers::account_health,
+        trade_handlers::account_balances,
+        trade_handlers::account_positions,
+        trade_handlers::account_orders,
+        trade_handlers::account_fills,
+        trade_handlers::place_order,
+        trade_handlers::cancel_order,
+        trade_handlers::amend_order,
+        trade_handlers::close_position,
+        trade_handlers::run_action,
     ),
     components(schemas(
         Health,
+        ScaledDto,
+        WireInt,
+        AdapterDto,
+        AdaptersResponse,
+        TradeAccountDto,
+        TradeAccountsPage,
+        CreateTradeAccountRequest,
+        AccountAccessDto,
+        TradeAccountStateDto,
+        UpdateTradeAccountRequest,
+        TradeAccountSettingsDto,
+        ReplaceSettingsRequest,
+        AssetBalanceDto,
+        BalancesDto,
+        PositionDto,
+        OrderDto,
+        FillDto,
+        PlaceOrderRequest,
+        AmendOrderRequest,
+        CloseRequest,
+        HealthDto,
+        RunActionRequest,
+        ActionOutcomeDto,
         LoginRequest,
         LoginResponse,
         SetPasswordRequest,
         MeResponse,
+        UserZoneResponse,
+        SetZoneRequest,
         WsTicketResponse,
         ErrorBody,
         GrantDto,
@@ -145,6 +237,19 @@ use crate::{
         DrawingPointDto,
         DrawingLineStyleDto,
         ReplaceLayoutRequest,
+        DashboardWorkspaceDto,
+        DashboardWorkspacesPage,
+        CreateDashboardWorkspaceRequest,
+        DefaultDashboardWorkspaceResponse,
+        RenameDashboardWorkspaceRequest,
+        DashboardWidgetDto,
+        DashboardLayoutDto,
+        DashboardWidgetPlacementRequest,
+        ReplaceDashboardLayoutRequest,
+        DashboardDataSourceDto,
+        DashboardGridSizeDto,
+        DashboardWidgetDefinitionDto,
+        DashboardWidgetCatalogResponse,
         TimeRangeDto,
         BarsRequirementDto,
         BarDto,
@@ -161,6 +266,8 @@ use crate::{
         IndicatorPlacementDto,
         IndicatorSpecDto,
         ComputeIndicatorRequest,
+        CompileIndicatorRequest,
+        CompileIndicatorErrorDto,
         IndicatorDrawableDto,
         IndicatorDrawablePointDto,
         IndicatorPointDto,
@@ -169,6 +276,14 @@ use crate::{
         IndicatorScaledPriceDto,
         IndicatorPriceCoordDto,
         ComputeIndicatorResponse,
+        IndicatorPluginDto,
+        IndicatorPluginOriginDto,
+        IndicatorPluginStateDto,
+        PluginHealthDto,
+        PluginCircuitStateDto,
+        PluginLogLineDto,
+        PluginLogSeverityDto,
+        SetIndicatorPluginEnabledRequest,
         ConditionDto,
         AlertDto,
         AlertsPage,
@@ -192,6 +307,12 @@ use crate::{
         NoteDto,
         CreateNoteRequest,
         UpdateNoteRequest,
+        IndicatorSummaryDto,
+        RegistryPage,
+        IndicatorEntryDto,
+        PublishIndicatorRequest,
+        SetHandleRequest,
+        HandleResponse,
         StorageReportDto,
         MarketDataUsageDto,
         StorageSourceDto,
@@ -201,6 +322,15 @@ use crate::{
         StorageDatabaseDto,
         DeleteStorageRequest,
         DeleteStorageResponse,
+        WidgetPluginGridSizeDto,
+        WidgetPluginDataSourceDto,
+        WidgetPluginDefinitionDto,
+        WidgetPluginCatalogResponse,
+        WidgetPluginStatusDto,
+        WidgetPluginPackageDto,
+        WidgetPluginListResponse,
+        InstallWidgetPluginResponse,
+        SetWidgetPluginEnabledRequest,
     ))
 )]
 pub(crate) struct ApiDoc;
@@ -208,4 +338,27 @@ pub(crate) struct ApiDoc;
 /// `GET /api/openapi.json`.
 pub(crate) async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
     axum::Json(ApiDoc::openapi())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiDoc;
+    use utoipa::OpenApi;
+
+    /// Writes the document to `SENKEN_OPENAPI_OUT` when that variable is
+    /// set, so `openapi-typescript` can regenerate the browser's types
+    /// without a server to point at.
+    ///
+    /// Silent otherwise, so an ordinary `cargo test` neither writes a file
+    /// nor needs a network port. This is a maintenance tool that lives in
+    /// the test binary because that is the only place `ApiDoc` — a private
+    /// item — can be reached from.
+    #[test]
+    fn the_document_serialises_and_can_be_dumped_for_type_generation() {
+        let json = serde_json::to_string_pretty(&ApiDoc::openapi()).unwrap();
+        assert!(json.contains("/api/trade/adapters"));
+        if let Ok(path) = std::env::var("SENKEN_OPENAPI_OUT") {
+            std::fs::write(path, json).unwrap();
+        }
+    }
 }

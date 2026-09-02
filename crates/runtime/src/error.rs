@@ -48,11 +48,38 @@ pub enum RuntimeError {
         source: MarketDataError,
     },
 
+    /// A plugin contributed a trade adapter the engine rejected — a
+    /// duplicate id, or one that is not a valid slug.
+    #[error("plugin `{plugin}` contributed an unusable trade adapter")]
+    TradeAdapterRegistration {
+        /// The plugin's manifest id.
+        plugin: String,
+        /// Why the engine refused it.
+        #[source]
+        source: senken_trade::TradeError,
+    },
+
     /// The bar-series store directory could not be prepared.
     #[error("series store initialisation failed")]
     SeriesStoreInit {
         /// The store failure.
         #[source]
         source: senken_store::StoreError,
+    },
+
+    /// The dynamic-indicator plugin host could not be built.
+    #[error("dynamic indicator host initialisation failed")]
+    DynamicIndicatorHostInit {
+        /// The underlying failure.
+        #[source]
+        source: crate::plugin_host::DynamicIndicatorError,
+    },
+
+    /// The widget UI package store's directory could not be prepared.
+    #[error("widget plugin store initialisation failed")]
+    WidgetPluginStoreInit {
+        /// The underlying failure.
+        #[source]
+        source: senken_plugin::widget_package::WidgetPackageError,
     },
 }
