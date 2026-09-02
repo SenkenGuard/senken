@@ -40,9 +40,12 @@ memory of a broker's page.
 
 Implemented and tested: the margin formulas, the four account figures
 (balance, equity, margin used, free margin), the margin level percentage,
-the ticket book, and the stop-out selection rule.
+the ticket book, the stop-out selection rule, swap accrual with per-broker
+rollover and triple-swap day, and volume validation against the symbol's
+minimum, maximum, step and total limit.
 
-Not yet implemented: swap accrual on rollover, commission, partial close
-and close-by, the order lifecycle, and the `TradeAdapter` implementation
-that joins them. Those are the next passes, and this file will say so
-until they land.
+Not yet implemented: commission, partial close and close-by, the order
+lifecycle, and the `TradeAdapter` implementation that joins them into a
+registrable adapter. Until those land this crate is a set of correct
+calculations, not an account anyone can trade — and this file will keep
+saying so.

@@ -29,5 +29,9 @@
 
 /// MT5's margin formulas and the four figures a terminal shows.
 pub mod margin;
+/// Swap, charged per position per rollover day.
+pub mod swap;
 /// The hedging book: one ticket per deal.
 pub mod ticket;
+/// Volume in lots, and the limits an order is checked against.
+pub mod volume;
