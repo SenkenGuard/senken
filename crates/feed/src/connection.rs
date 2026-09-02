@@ -68,9 +68,10 @@ fn proxy_target(url: &str) -> Option<(HttpProxy, String, u16)> {
     let authority = rest.split(['/', '?']).next()?;
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => (host.to_owned(), port.parse().ok()?),
-        // `wss` is TLS and `ws` is not, so their default ports differ — and
-        // OKX's own public feed is on neither (it is 8443), which is why the
-        // explicit form above has to work at all.
+        // `wss` is TLS and `ws` is not, so their default ports differ. The
+        // explicit form above still has to work: a venue is free to serve
+        // its stream on another port (OKX documents 8443 for its public
+        // feed), and a proxy must be asked for the port the URL names.
         None => (
             authority.to_owned(),
             if url.starts_with("wss://") { 443 } else { 80 },

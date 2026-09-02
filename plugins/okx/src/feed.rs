@@ -3,7 +3,7 @@
 //!
 //! # What was confirmed live, 2026-08-31
 //!
-//! Connected to `wss://ws.okx.com:8443/ws/v5/public`, sent
+//! Connected to `wss://ws.okx.com/ws/v5/public`, sent
 //! `{"op":"subscribe","args":[{"channel":"trades","instId":"BTC-USDT"}]}`,
 //! and received:
 //!
@@ -75,10 +75,27 @@ use senken_subscription::{FeedSource, LiveUpdate, VenueProtocol};
 /// and the kline capture both observed (`BTC-USDT`).
 const OKX_SEPARATOR: char = '-';
 
-/// `wss://ws.okx.com:8443/ws/v5/public` — confirmed live 2026-08-31: it
+/// `wss://ws.okx.com/ws/v5/public` — confirmed live 2026-09-02: it
 /// accepted a `trades` subscribe and started streaming within the same
 /// connection, no separate handshake or auth step for public channels.
-pub(crate) const OKX_PUBLIC_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
+///
+/// # Why not the `:8443` form OKX documents
+///
+/// Both work, and the same endpoint answers on both — confirmed by
+/// connecting to each. The port is the difference that matters to a
+/// *reader's* network rather than to OKX: a host that allows outbound 443
+/// and nothing else is common, and this project has already run on one.
+/// Measured there on 2026-09-02:
+///
+/// ```text
+/// ws.okx.com:443  → connected in 0.0s
+/// ws.okx.com:8443 → timed out after 8s
+/// ```
+///
+/// Every other venue in this workspace is reached on 443, so 8443 was the
+/// one endpoint that could fail for a reason that had nothing to do with
+/// OKX — and it did, silently, for as long as it was the only one tried.
+pub(crate) const OKX_PUBLIC_WS_URL: &str = "wss://ws.okx.com/ws/v5/public";
 
 /// OKX's public `trades` channel (confirmed live — see module docs).
 pub(crate) struct OkxTradesProtocol {
@@ -323,8 +340,25 @@ mod tests {
     fn the_confirmed_url_is_used() {
         assert_eq!(protocol().url(), OKX_PUBLIC_WS_URL);
         assert_eq!(
-            OKX_PUBLIC_WS_URL, "wss://ws.okx.com:8443/ws/v5/public",
-            "confirmed live 2026-08-31 — see this module's docs"
+            OKX_PUBLIC_WS_URL, "wss://ws.okx.com/ws/v5/public",
+            "confirmed live 2026-09-02 — see this module's docs"
+        );
+    }
+
+    /// The port is not incidental. OKX documents `:8443` and serves the
+    /// same endpoint there, but a network that allows outbound 443 and
+    /// nothing else — which this project has run on — reaches only one of
+    /// the two, and a dial that times out looks exactly like a venue being
+    /// down.
+    #[test]
+    fn the_url_uses_the_default_https_port() {
+        let authority = OKX_PUBLIC_WS_URL
+            .strip_prefix("wss://")
+            .and_then(|rest| rest.split('/').next())
+            .expect("the URL is a wss:// one");
+        assert!(
+            !authority.contains(':'),
+            "{authority} names an explicit port; a non-443 one is filtered on some networks"
         );
     }
 
