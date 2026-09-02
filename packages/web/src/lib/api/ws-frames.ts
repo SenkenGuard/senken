@@ -120,11 +120,14 @@ export interface WsBookLevel {
 }
 
 /** `crates/api/src/ws.rs`'s `ServerFrame::Book` — a fixed-depth snapshot for
- * `topic` (`book:<source>:<symbol>`), sent once per `subscribe`. There is no
- * continuous stream to fold into: a caller that wants a fresher snapshot
- * sends `unsubscribe` then `subscribe` again, the same "one request, one
- * frame" contract the server's own doc states. `bids`/`asks` arrive best
- * price first, exactly as the venue reported them. */
+ * `topic` (`book:<source>:<symbol>`).
+ *
+ * Frames keep arriving for as long as the topic is subscribed: the server
+ * refreshes the book on a cadence and republishes it. Each one is a whole
+ * snapshot, never a delta — there is nothing to fold a frame into, and the
+ * newest one replaces the last outright. `bids`/`asks` arrive best price
+ * first, exactly as the venue reported them, and `ts` is the venue's own
+ * time for that instant, in milliseconds. */
 export interface WsBookPayload {
 	topic: string;
 	bids: WsBookLevel[];

@@ -5,7 +5,7 @@
 	// out of `chart-pane.svelte`, so a test can render it directly and read
 	// real `data-*` attributes off the output (`order-book-body.test.ts`).
 	//
-	// Five distinct states, never collapsed into one another: a source that
+	// Six distinct states, never collapsed into one another: a source that
 	// does not report `book.supported` is not the same fact as a snapshot
 	// that has not arrived yet, and neither is the same as a snapshot that
 	// arrived and is genuinely empty. One indistinguishable blank list for
@@ -31,13 +31,17 @@
 		/** `null` until this topic's first `book` frame has arrived; `[]` for a
 		 * snapshot that arrived and is genuinely empty on both sides. */
 		rows,
-		onRefresh
+		/** The venue's own timestamp on the snapshot `rows` came from, already
+		 * formatted (`formatBookTime`) — `null` when there is none to show. */
+		updatedAt,
+		onRetry
 	}: {
 		capability: boolean | undefined;
 		unsupportedTopic: boolean;
 		failedTopic: boolean;
 		rows: BookRow[] | null;
-		onRefresh: () => void;
+		updatedAt: string | null;
+		onRetry: () => void;
 	} = $props();
 
 	const state = $derived.by(
@@ -69,7 +73,7 @@
 			<span class="text-center font-mono text-[9px] tracking-[0.14em] text-dim">COULD NOT LOAD ORDER-BOOK DEPTH</span>
 			<button
 				type="button"
-				onclick={onRefresh}
+				onclick={onRetry}
 				class="flex cursor-pointer items-center gap-1 font-mono text-[8px] tracking-[0.18em] text-dim2 hover:text-foreground"
 				aria-label="Retry order book"
 			>
@@ -78,16 +82,16 @@
 			</button>
 		</div>
 	{:else}
+		<!-- No refresh control: depth refreshes itself, and a button offering
+		     to do what is already happening tells the reader the opposite.
+		     What replaces it is the one thing they cannot otherwise know —
+		     when this ladder was reported. A time that stops advancing is the
+		     honest signal that the stream has stopped; a "LIVE" badge would
+		     go on claiming otherwise. -->
 		<div class="flex items-center justify-end border-b border-ink/6 px-3 py-1">
-			<button
-				type="button"
-				onclick={onRefresh}
-				class="flex cursor-pointer items-center gap-1 font-mono text-[8px] tracking-[0.18em] text-dim2 hover:text-foreground"
-				aria-label="Refresh order book"
-			>
-				<RotateCcwIcon class="size-2.5" />
-				REFRESH
-			</button>
+			<span data-book-updated-at={updatedAt} class="font-mono text-[8px] tracking-[0.18em] text-dim2">
+				{updatedAt ? `UPDATED ${updatedAt}` : 'UPDATED —'}
+			</span>
 		</div>
 		{#if state === 'empty'}
 			<div class="px-3 py-6 text-center font-mono text-[9px] tracking-[0.14em] text-dim">ORDER BOOK IS EMPTY</div>
