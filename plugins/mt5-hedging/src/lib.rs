@@ -37,6 +37,8 @@ pub mod close;
 pub mod commission;
 /// MT5's margin formulas and the four figures a terminal shows.
 pub mod margin;
+/// The hedging account as a `SettlementModel`.
+pub mod model;
 /// The broker's own numbers, as account settings.
 pub mod settings;
 /// Swap, charged per position per rollover day.

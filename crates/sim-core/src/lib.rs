@@ -32,4 +32,4 @@ pub use crate::money::{
 };
 pub use crate::pricing::{Terms, apply_amendment, is_triggered, market_fill_price};
 pub use crate::risk::{ForcedClose, RiskBreach, RiskState};
-pub use crate::settlement::{FillContext, Settled, SettlementModel};
+pub use crate::settlement::{FillContext, Marks, Settled, SettlementModel};

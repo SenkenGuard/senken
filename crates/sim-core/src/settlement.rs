@@ -1,7 +1,20 @@
 //! The one thing four simulated trading systems genuinely disagree about.
 
+use std::collections::BTreeMap;
+
 use senken_core::Scaled;
+use senken_core::time::UnixNanos;
 use senken_trade::{OrderSide, TradeError};
+
+use crate::risk::{ForcedClose, RiskState};
+
+/// The marks a settlement model measures against, keyed by instrument.
+///
+/// Handed in rather than fetched, because a model must measure every
+/// position against **one** set of prices: asking per position mid-loop
+/// would let a stop out close the second ticket against a price the first
+/// was never judged by.
+pub type Marks = BTreeMap<String, Scaled>;
 
 /// What applying one fill did to a book.
 ///
@@ -59,6 +72,67 @@ pub trait SettlementModel {
     /// [`TradeError`] when the arithmetic overflows or two scales cannot
     /// be reconciled.
     fn settle(&self, book: &mut Self::Book, fill: &FillContext<'_>) -> Result<Settled, TradeError>;
+
+    /// The account's risk right now, as this system measures it.
+    ///
+    /// Every system measures something; what differs is what. MetaTrader
+    /// has one margin level for the whole account, a futures venue has a
+    /// liquidation price per isolated position, and a spot account has no
+    /// risk state at all because nothing is borrowed — which is why the
+    /// default is "no margin, no breach" rather than a required method
+    /// spot would have to write an empty answer for.
+    ///
+    /// # Errors
+    /// [`TradeError`] when the arithmetic does not fit.
+    fn risk(&self, book: &Self::Book, marks: &Marks) -> Result<RiskState, TradeError> {
+        let _ = (book, marks);
+        Ok(RiskState {
+            balance: 0,
+            equity: 0,
+            margin_used: 0,
+            margin_level: None,
+            breach: None,
+        })
+    }
+
+    /// Closes whatever this system closes when risk is breached.
+    ///
+    /// MetaTrader's stop out closes the biggest loser and repeats; a
+    /// futures venue liquidates the position whose maintenance margin is
+    /// gone. A system with nothing to force closes nothing, which is the
+    /// default.
+    ///
+    /// # Errors
+    /// [`TradeError`] when the arithmetic does not fit.
+    fn enforce(
+        &self,
+        book: &mut Self::Book,
+        marks: &Marks,
+        now: UnixNanos,
+    ) -> Result<Vec<ForcedClose>, TradeError> {
+        let _ = (book, marks, now);
+        Ok(Vec::new())
+    }
+
+    /// Charges what time itself costs: MetaTrader's swap, a perpetual's
+    /// funding.
+    ///
+    /// Takes a range rather than an instant, so a book that has not been
+    /// read for a week accrues the week rather than one night. Returns
+    /// what was charged, at the book's own cash scale.
+    ///
+    /// # Errors
+    /// [`TradeError`] when the arithmetic does not fit.
+    fn accrue(
+        &self,
+        book: &mut Self::Book,
+        marks: &Marks,
+        from: UnixNanos,
+        to: UnixNanos,
+    ) -> Result<i64, TradeError> {
+        let _ = (book, marks, from, to);
+        Ok(0)
+    }
 }
 
 #[cfg(test)]

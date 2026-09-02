@@ -43,6 +43,29 @@ its capability declaration and its tests — with no edit to this crate. If a
 fifth system cannot be added without changing the kernel, the seam is
 wrong.
 
+## What the seam covers
+
+`SettlementModel` carries four things, because those are the four a
+trading system genuinely decides for itself:
+
+- **`settle`** — what a fill does to the book. A hedging book opens a
+  ticket, a netting book merges and reverses, a spot book moves two asset
+  balances.
+- **`risk`** — what the account's danger is measured in. MetaTrader has
+  one margin level for the whole account; a futures venue has a
+  liquidation price per isolated position; spot has none, because nothing
+  is borrowed.
+- **`enforce`** — what the system does about a breach. A stop out closes
+  the biggest loser and repeats; a liquidation takes the position whose
+  maintenance margin is gone; spot closes nothing, ever.
+- **`accrue`** — what time itself costs. Swap, funding, or nothing. It
+  takes a *range*, so a book left unread for a week accrues the week
+  rather than one night.
+
+The last three default to "nothing happens", so a system with no risk to
+measure does not have to write an empty answer for one — which is what
+keeps spot from carrying margin vocabulary it has no use for.
+
 ## Money
 
 Nothing here touches a float. Every function works in `i128` and lands back
