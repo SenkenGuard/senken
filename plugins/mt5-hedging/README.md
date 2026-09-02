@@ -47,8 +47,13 @@ call that blocks opening and closes nothing, and a stop-out loop that
 closes the biggest loser, looks again, and stops as soon as the level
 recovers.
 
-Not yet implemented: commission, partial close and close-by, the order
-lifecycle, and the `TradeAdapter` implementation that joins them into a
-registrable adapter. Until those land this crate is a set of correct
-calculations, not an account anyone can trade — and this file will keep
-saying so.
+Also implemented: a configurable commission model kept separate from swap
+and market profit, partial close that leaves the ticket's number, open
+price and accrued swap intact, and `close_by` for settling a locked pair
+in one operation.
+
+Not yet implemented: the order lifecycle (order types, deviation, stops
+level, the order/deal/position history) and the `TradeAdapter`
+implementation that joins all of this into a registrable adapter. Until
+those land this crate is a set of correct calculations, not an account
+anyone can trade — and this file will keep saying so.

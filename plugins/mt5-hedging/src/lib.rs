@@ -29,6 +29,10 @@
 
 /// One account: its cash, its tickets, and its two risk events.
 pub mod account;
+/// Closing a ticket: in part, in full, or against an opposite one.
+pub mod close;
+/// Commission, kept separate from swap and from market profit.
+pub mod commission;
 /// MT5's margin formulas and the four figures a terminal shows.
 pub mod margin;
 /// Swap, charged per position per rollover day.
