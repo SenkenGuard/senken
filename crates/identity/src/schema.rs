@@ -105,7 +105,7 @@ use crate::error::IdentityError;
 /// this and extend the schema (or add a migration step) when the shape
 /// changes — there is deliberately no migration crate, not schema
 /// evolution itself.
-const SCHEMA_VERSION: i32 = 9;
+const SCHEMA_VERSION: i32 = 10;
 
 /// `CREATE TABLE` statements for every table assigned to this
 /// milestone: users, roles and the grants attached to either, plus
@@ -539,6 +539,45 @@ CREATE INDEX notes_owner_id ON notes(owner_id);
 COMMIT;
 ";
 
+/// Statements added in schema v10: `trade_accounts`, one row per broker or
+/// exchange account a user has attached to the trade engine.
+///
+/// The engine itself is not the system of record for orders, positions or
+/// balances — the adapter behind the account is, because a real broker
+/// already holds that state and a second copy here could only ever
+/// disagree with it. What this table holds is the *attachment*: which
+/// adapter, whose account, under what label, and the settings that adapter
+/// declared a schema for.
+///
+/// `settings` is an opaque JSON object, the same non-interpretation rule
+/// `chart_panes.settings` follows: this crate never reads inside it. It is
+/// validated against the owning adapter's own schema by `senken-trade`
+/// before it is written, and secret-typed fields are stored here and never
+/// read back out to a client.
+///
+/// `(owner_id, adapter_id, label)` is unique so one user cannot end up with
+/// two identically named accounts on one adapter, which would make every
+/// account picker ambiguous; two different users may of course both call
+/// theirs "Main".
+const SCHEMA_SQL_V10: &str = r"
+BEGIN IMMEDIATE;
+
+CREATE TABLE trade_accounts (
+    id          TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    adapter_id  TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    settings    TEXT NOT NULL DEFAULT '{}',
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE (owner_id, adapter_id, label)
+) STRICT;
+CREATE INDEX trade_accounts_owner_id ON trade_accounts(owner_id);
+
+COMMIT;
+";
+
 /// Opens (creating if absent) the SQLite database at `path`, applies the
 /// the pragmas this database requires, and creates or checks the schema.
 ///
@@ -579,7 +618,8 @@ pub(crate) fn open(path: &Path) -> Result<Connection, IdentityError> {
 /// `layers.style` column, v7 merges `layers`/`drawings` into
 /// `chart_pane_items` and renames the chart tables to `chart_*`, v8 adds
 /// v9's `chart_workspaces.settings` column plus the watchlist and notes
-/// tables), since there is no migration crate but not migrating by hand.
+/// tables, v9 adds v10's `trade_accounts` table), since there is no
+/// migration crate but not migrating by hand.
 /// A database newer than this crate knows about is reported, never guessed
 /// at.
 fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
@@ -631,6 +671,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
         conn.execute_batch(SCHEMA_SQL_V9)?;
         version = 9;
     }
+    if version == 9 {
+        conn.execute_batch(SCHEMA_SQL_V10)?;
+        version = 10;
+    }
     debug_assert_eq!(
         version, SCHEMA_VERSION,
         "every step from `found` to SCHEMA_VERSION must be applied above"
@@ -679,6 +723,7 @@ mod tests {
             "watchlist_groups",
             "watchlist_members",
             "notes",
+            "trade_accounts",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -1278,8 +1323,11 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
-        assert_eq!(version, super::SCHEMA_VERSION);
+        assert_eq!(
+            version,
+            super::SCHEMA_VERSION,
+            "a v8 database must migrate all the way up, not stop at v9"
+        );
 
         for table in ["watchlist_groups", "watchlist_members", "notes"] {
             let exists: bool = conn
@@ -1367,6 +1415,76 @@ mod tests {
         assert_eq!(
             member_count, 0,
             "a watchlist member must be cascade-deleted with its group"
+        );
+    }
+
+    #[test]
+    fn a_v9_database_migrates_to_v10_keeping_its_v9_rows_and_gaining_trade_accounts() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        {
+            // A database written by the v9 schema: every step up to v9
+            // applied, one user and one note in it, `user_version` at 9.
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", true).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V2).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V3).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V4).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V5).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V6).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V7).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V8).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V9).unwrap();
+            conn.execute(
+                "INSERT INTO users (id, email, display_name, created_at) VALUES ('user-v9', 'v9@example.com', 'V9 User', 0)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO notes (id, owner_id, title, body, created_at, updated_at) VALUES ('note-v9', 'user-v9', 'Kept', 'Body', 0, 0)",
+                [],
+            ).unwrap();
+            conn.pragma_update(None, "user_version", 9).unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        let title: String = conn
+            .query_row("SELECT title FROM notes WHERE id = 'note-v9'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(title, "Kept", "the migration must not touch v9 rows");
+
+        conn.execute(
+            "INSERT INTO trade_accounts (id, owner_id, adapter_id, label, settings, enabled, created_at, updated_at)
+             VALUES ('acct-1', 'user-v9', 'simulator', 'Main', '{}', 1, 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        // A second account under the same label on the same adapter is the
+        // ambiguity every account picker would inherit — the unique index
+        // is what stops it existing at all.
+        let duplicate = conn.execute(
+            "INSERT INTO trade_accounts (id, owner_id, adapter_id, label, settings, enabled, created_at, updated_at)
+             VALUES ('acct-2', 'user-v9', 'simulator', 'Main', '{}', 1, 0, 0)",
+            [],
+        );
+        assert!(duplicate.is_err(), "(owner, adapter, label) must be unique");
+
+        conn.execute("DELETE FROM users WHERE id = 'user-v9'", [])
+            .unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM trade_accounts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "a trade account must be cascade-deleted with its owner"
         );
     }
 

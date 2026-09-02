@@ -13,11 +13,11 @@
 	// `senken-api` (through `$lib/charts/workspace-store.svelte.ts` and
 	// `$lib/charts/bars.ts`), never `$lib/mock/charts.ts` (deleted along
 	// with `$lib/indicators/browser-compute.ts` —). What is
-	// still local-only, and why, is documented at each such spot below and
-	// in the current report: chart settings (no server field yet),
-	// per-plot style (same), and the trade-engine furniture (`terminal/
-	// trade-demo.ts` — a real trade engine is out of
-	// scope for the whole plan, not just this stage).
+	// still local-only, and why, is documented at each such spot below:
+	// chart settings (no server field yet) and per-plot style (same). The
+	// trade panel is no longer among them — it places real orders through
+	// `/api/trade`, against whichever account is active in
+	// `$lib/state/trade.svelte`.
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import { cn } from '$lib/utils.js';
 	import {
@@ -35,6 +35,7 @@
 		tfLabel
 	} from '$lib/components/terminal/chart-config';
 	import { apiClient } from '$lib/api/client';
+	import { describeError } from '$lib/api/errors';
 	import type { InstrumentSummaryDto } from '$lib/api/types';
 	import type { MarketStatus } from '$lib/charts/live-state';
 	import { setIndicatorDescriptors, type IndicatorDescriptorClient } from '$lib/charts/layer-style';
@@ -85,14 +86,10 @@
 	import DateJumpDialog from '$lib/components/terminal/date-jump-dialog.svelte';
 	import DrawingToolbar from '$lib/components/terminal/drawing-toolbar.svelte';
 	import AlertsPanel from '$lib/components/terminal/alerts-panel.svelte';
-	import {
-		DEFAULT_ACCOUNT,
-		ACCOUNT_ICON,
-		ENGINE_DEMO_NOTICE,
-		type OrderRow,
-		type OrderSide,
-		type OrderType
-	} from '$lib/components/terminal/trade-demo';
+	import { loadTrade, selectAccount, tradeStore } from '$lib/state/trade.svelte';
+	import { iconForKind, isWorking, modeOf, formatTime } from '$lib/trade/view';
+	import { formatScaledForDisplay } from '$lib/trade/scaled';
+	import type { OrderDto, PlaceOrderRequest } from '$lib/api/types';
 	import WatchlistTab from '$lib/components/terminal/watchlist-tab.svelte';
 	import NotesTab from '$lib/components/terminal/notes-tab.svelte';
 	import * as Popover from '$lib/components/ui/popover/index.js';
@@ -132,6 +129,10 @@
 			indicatorCatalog = items as unknown as IndicatorDescriptorClient[];
 			setIndicatorDescriptors(indicatorCatalog);
 		});
+		// The trade panel needs the adapter catalogue before it can draw a
+		// ticket at all — which controls exist is read from the active
+		// account's adapter, not assumed.
+		void loadTrade().then(() => refreshOrders());
 	});
 
 	const layout = $derived(chartWorkspaceStore.layout);
@@ -220,7 +221,14 @@
 	// else. Clicking a rail tab opens that panel, same as it always has.
 	let panelOpen = $state(false);
 	let chartPanel = $state<ChartPanelKey>('engine');
-	let orders = $state<OrderRow[]>([]);
+
+	// The trade panel's own state. Orders are whatever the account's adapter
+	// last reported — never a local list this page appends to, because the
+	// adapter is the system of record and a resting order it filled while
+	// nobody was looking would otherwise still read as working here.
+	let orders = $state<OrderDto[]>([]);
+	let placing = $state(false);
+	let orderError = $state<string | null>(null);
 
 	let wsMenuOpen = $state(false);
 	let layoutMenuOpen = $state(false);
@@ -422,8 +430,11 @@
 		void clearPaneDrawings(activePaneIndex);
 	}
 
-	// The last real close per pane (`chart-pane.svelte`'s `onLastClose`),
-	// used by the trade-engine demo ticket/book (a real number, even though that widget itself stays out of scope — see `terminal/trade-demo.ts`'s header comment).
+	// The last real close per pane (`chart-pane.svelte`'s `onLastClose`).
+	// The order ticket uses it to prefill a limit price and the depth panel
+	// to centre its ladder; neither treats it as a price to trade at — what
+	// trades is what the user leaves in the box, and the server marks a
+	// market order from its own price source.
 	let lastClose = $state<Record<number, number>>({});
 
 	// `defaultBarWindow`'s own default bar count (`chart-config.ts`) — kept
@@ -544,22 +555,79 @@
 		}
 	}
 
-	function placeOrder(order: { side: OrderSide; type: OrderType; qty: number; price: number }) {
-		const d = new Date();
-		const ts = [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
-		orders = [
-			{
-				id: 'O-' + (1042 + orders.length),
-				ts,
-				instrument: activePane?.instrument ?? '',
-				side: order.side,
-				type: order.type,
-				qty: order.qty,
-				price: order.price,
-				status: order.type === 'MARKET' ? 'FILLED' : 'WORKING'
-			},
-			...orders
-		];
+	const tradeAccount = $derived(tradeStore.active ?? null);
+	const tradeAdapter = $derived(
+		tradeAccount ? (tradeStore.adapter(tradeAccount.adapter_id) ?? null) : null
+	);
+
+	/** Re-reads the order list from whichever account is active **now**,
+	 * rather than from the one this panel opened with. */
+	async function refreshOrders() {
+		const account = tradeStore.active;
+		if (!account) {
+			orders = [];
+			return;
+		}
+		try {
+			orders = await apiClient.tradeAccountOrders(account.id, 'all');
+		} catch (error) {
+			orderError = describeError(error);
+		}
+	}
+
+	async function placeOrder(request: PlaceOrderRequest) {
+		const account = tradeStore.active;
+		if (!account) return;
+		placing = true;
+		orderError = null;
+		try {
+			await apiClient.placeOrder(account.id, request);
+			await refreshOrders();
+		} catch (error) {
+			orderError = describeError(error);
+		} finally {
+			placing = false;
+		}
+	}
+
+	async function cancelOrder(orderId: string) {
+		const account = tradeStore.active;
+		if (!account) return;
+		orderError = null;
+		try {
+			await apiClient.cancelOrder(account.id, orderId);
+			await refreshOrders();
+		} catch (error) {
+			orderError = describeError(error);
+		}
+	}
+
+	function openTradeAccountPicker() {
+		openCommand({
+			mode: 'account',
+			placeholder: 'Search accounts…',
+			footer: 'ACTIVE TRADING ACCOUNT',
+			rows: (query) => {
+				const q = query.trim().toLowerCase();
+				return tradeStore.accounts
+					.filter((account) => !q || account.label.toLowerCase().includes(q))
+					.map((account) => {
+						const adapter = tradeStore.adapter(account.adapter_id);
+						return {
+							icon: iconForKind(adapter?.kind ?? 'exchange'),
+							title: account.label,
+							sub: `${adapter?.name ?? account.adapter_id} · ${modeOf(adapter)}`,
+							meta: account.owned ? modeOf(adapter) : 'NOT YOURS',
+							metaTone: adapter?.trades_real_money ? 'loss' : 'gain',
+							onPick: () => {
+								selectAccount(account.id);
+								void refreshOrders();
+								closeCommand();
+							}
+						};
+					});
+			}
+		});
 	}
 
 	// Real instrument search, replacing the former fixed
@@ -766,7 +834,6 @@
 	const mid = $derived(lastClose[activePaneIndex] ?? 0);
 
 	const syncToggleKeys = ['symbol', 'interval', 'crosshair', 'time'] as const;
-	const AccountIcon = ACCOUNT_ICON;
 
 	const dialogLayer = $derived.by(() => {
 		const dlg = layerDlg;
@@ -1235,33 +1302,113 @@
 
 					{#if chartPanel === 'engine'}
 						<div class="flex min-h-0 flex-1 flex-col">
-							<div class="flex-none border-b border-ink/7 px-3 py-2">
-								<span class="font-mono text-[8.5px] tracking-[0.1em] text-dim">{ENGINE_DEMO_NOTICE}</span>
-							</div>
-
-							<div class="flex items-center justify-between gap-2 border-b border-ink/7 px-3 py-2.5">
-								<div class="flex min-w-0 items-center gap-2">
-									<AccountIcon class="size-[13px] flex-none text-dim2" />
-									<span class="font-mono text-[10px] tracking-[0.04em] whitespace-nowrap text-foreground">{DEFAULT_ACCOUNT.label}</span>
+							{#if tradeAdapter && !tradeAdapter.trades_real_money}
+								<div class="flex-none border-b border-ink/7 px-3 py-2">
+									<span class="font-mono text-[8.5px] tracking-[0.1em] text-dim">
+										Simulated account — no order placed here leaves this machine.
+									</span>
 								</div>
-								<span class="flex-none border border-ink/12 px-1 font-mono text-[7.5px] tracking-[0.14em] text-dim2">{DEFAULT_ACCOUNT.mode}</span>
-							</div>
+							{:else if tradeAdapter}
+								<div class="flex-none border-b border-ink/7 bg-loss/8 px-3 py-2">
+									<span class="font-mono text-[8.5px] tracking-[0.1em] text-loss">
+										Live account — orders placed here reach {tradeAdapter.name} and move real
+										money.
+									</span>
+								</div>
+							{/if}
 
-							<OrderTicket instrument={activePane?.instrument ?? ''} {mid} ccy={DEFAULT_ACCOUNT.ccy} leverage={DEFAULT_ACCOUNT.leverage} onPlace={placeOrder} />
+							<button
+								type="button"
+								class="flex flex-none items-center justify-between gap-2 border-b border-ink/7 px-3 py-2.5 text-left"
+								onclick={openTradeAccountPicker}
+							>
+								<div class="flex min-w-0 items-center gap-2">
+									{#if tradeAdapter}
+										{@const AccountIcon = iconForKind(tradeAdapter.kind)}
+										<AccountIcon class="size-[13px] flex-none text-dim2" />
+									{/if}
+									<span
+										class="overflow-hidden font-mono text-[10px] tracking-[0.04em] whitespace-nowrap text-foreground"
+									>
+										{tradeAccount?.label ?? 'NO ACCOUNT ATTACHED'}
+									</span>
+								</div>
+								<span
+									class="flex-none border border-ink/12 px-1 font-mono text-[7.5px] tracking-[0.14em] text-dim2"
+								>
+									{modeOf(tradeAdapter ?? undefined)}
+								</span>
+							</button>
+
+							<OrderTicket
+								instrument={activePane?.instrument ?? ''}
+								account={tradeAccount}
+								adapter={tradeAdapter}
+								{mid}
+								submitting={placing}
+								onPlace={(request) => void placeOrder(request)}
+							/>
+
+							{#if orderError}
+								<div class="flex-none border-b border-ink/7 bg-loss/8 px-3 py-2">
+									<span class="font-mono text-[9px] text-loss" data-order-error>{orderError}</span>
+								</div>
+							{/if}
 
 							<div class="min-h-0 flex-1 overflow-auto">
 								{#if orders.length === 0}
-									<div class="py-5.5 text-center font-mono text-[9px] tracking-[0.16em] text-dim">NO ORDERS ON THIS ACCOUNT</div>
+									<div class="py-5.5 text-center font-mono text-[9px] tracking-[0.16em] text-dim">
+										NO ORDERS ON THIS ACCOUNT
+									</div>
 								{:else}
 									{#each orders as o (o.id)}
 										<div class="flex flex-col gap-0.5 border-b border-ink/5 px-3 py-2">
 											<div class="flex items-center justify-between gap-2">
-												<span class={cn('font-mono text-[10px] tracking-[0.1em]', o.side === 'BUY' ? 'text-gain' : 'text-loss')}>{o.side} {o.type}</span>
-												<span class={cn('font-mono text-[8.5px] tracking-[0.14em]', o.status === 'WORKING' ? 'text-secondary-foreground' : o.status === 'FILLED' ? 'text-gain' : 'text-dim')}>{o.status}</span>
+												<span
+													class={cn(
+														'font-mono text-[10px] tracking-[0.1em]',
+														o.side === 'buy' ? 'text-gain' : 'text-loss'
+													)}
+												>
+													{o.side.toUpperCase()}
+													{o.kind.replace('_', '-').toUpperCase()}
+												</span>
+												<div class="flex items-center gap-2">
+													<span
+														class={cn(
+															'font-mono text-[8.5px] tracking-[0.14em]',
+															o.status === 'filled'
+																? 'text-gain'
+																: isWorking(o)
+																	? 'text-secondary-foreground'
+																	: 'text-dim'
+														)}
+													>
+														{o.status.replace('_', ' ').toUpperCase()}
+													</span>
+													{#if isWorking(o) && tradeAccount?.owned}
+														<button
+															type="button"
+															class="cursor-pointer font-mono text-[8.5px] tracking-[0.14em] text-dim hover:text-loss"
+															onclick={() => void cancelOrder(o.id)}
+														>
+															CANCEL
+														</button>
+													{/if}
+												</div>
 											</div>
 											<div class="flex items-center justify-between gap-2">
-												<span class="overflow-hidden font-mono text-[9px] text-ellipsis whitespace-nowrap text-dim">{o.ts} · {parseInstrumentId(o.instrument).ticker}</span>
-												<span class="font-mono text-[9.5px] text-secondary-foreground">{o.qty} @ {fmtDecimal(o.price)}</span>
+												<span
+													class="overflow-hidden font-mono text-[9px] text-ellipsis whitespace-nowrap text-dim"
+												>
+													{formatTime(o.submitted_at)} · {parseInstrumentId(o.instrument).ticker}
+												</span>
+												<span class="font-mono text-[9.5px] text-secondary-foreground">
+													{formatScaledForDisplay(o.quantity, 8)} @ {formatScaledForDisplay(
+														o.limit_price ?? o.trigger_price ?? o.average_price,
+														8
+													)}
+												</span>
 											</div>
 										</div>
 									{/each}

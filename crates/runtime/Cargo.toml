@@ -32,6 +32,11 @@ senken-plugin = { workspace = true }
 senken-series = { workspace = true }
 senken-storage = { workspace = true }
 senken-store = { workspace = true }
+# The registry half: the runtime is where plugin-registered adapters are
+# assembled into one `TradeEngine`, so it asks for that feature. `accounts`
+# stays off — the attached-accounts database belongs to the HTTP layer that
+# already holds an `IdentityStore`, not here.
+senken-trade = { workspace = true, features = ["engine"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

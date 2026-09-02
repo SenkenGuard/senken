@@ -1,0 +1,36 @@
+[package]
+name = "senken-plugin-simulator"
+description = "Senken's built-in paper-trading adapter: a simulated broker that trades every instrument the platform has a catalog for"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+senken-core = { workspace = true }
+senken-marketdata = { workspace = true }
+# No `http`: this adapter reaches no network at all. It fills against
+# prices the engine hands it and keeps its books on local disk.
+senken-plugin = { workspace = true }
+# Atomic, versioned JSON snapshots for the simulated books — the same
+# storage every other on-disk state in Senken uses, rather than a second
+# persistence mechanism for one plugin.
+senken-storage = { workspace = true }
+senken-trade = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

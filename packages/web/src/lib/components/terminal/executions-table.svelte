@@ -10,7 +10,7 @@
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import * as Table from '$lib/components/ui/table/index.js';
 	import { cn } from '$lib/utils.js';
-	import type { EngineTable, EngineTableTab, TableTabDef, Tone } from '$lib/mock/engine';
+	import type { EngineTable, EngineTableTab, TableTabDef, Tone } from '$lib/trade/view';
 
 	let {
 		tabs,

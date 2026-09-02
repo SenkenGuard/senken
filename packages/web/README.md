@@ -19,11 +19,20 @@ built from the Claude Design reference.
   `layer-dialog.svelte` — reachable only from that route, so
   they keep their open/closed state locally rather than in `src/lib/state/`.
 - `src/lib/state/` — module-level rune stores for state shared across
-  routes (the command palette and AI panel's open/closed state, and the
-  trade engine's reactive account list).
-- `src/lib/mock/` — local fixtures for every page and overlay. This app
-  makes no `fetch`/`/api` calls; every value on screen is a mock until a
-  later plan wires up the runtime.
+  routes (the command palette and AI panel's open/closed state, and
+  `trade.svelte.ts`: the registered trade adapters, the accounts this user
+  has attached, and which one the order ticket sends to).
+- `src/lib/trade/` — the trade engine's client half: `scaled.ts` (formatting
+  and parsing the `{ scale, value }` pairs the API speaks, as strings —
+  never through a `Number`), `form.ts` (an adapter's declared settings
+  schema turned into form state and back), and `view.ts` (the engine page's
+  view models).
+- `src/lib/components/trade/` — the dynamic form builder a plugin's declared
+  settings and actions are rendered through. A plugin ships data, never
+  markup.
+- `src/lib/mock/` — what is left of the local fixtures. Most pages read the
+  real API now; each remaining fixture documents at its own definition why
+  it has no server field yet.
 - Icons are **lucide** (`@lucide/svelte`) throughout, not the reference's
   Phosphor — shadcn is already configured for lucide (`components.json`) and
   it was already installed, so this avoids mixing two icon sets.

@@ -90,6 +90,7 @@ pub fn decide(actor: &Actor, action: Action, resource: Resource) -> Decision {
         | Resource::Alert
         | Resource::Strategy
         | Resource::Account
+        | Resource::Order
         | Resource::Adapter
         | Resource::User
         | Resource::Role
@@ -204,6 +205,7 @@ mod tests {
             Resource::Alert,
             Resource::Strategy,
             Resource::Account,
+            Resource::Order,
             Resource::Adapter,
             Resource::User,
             Resource::Role,

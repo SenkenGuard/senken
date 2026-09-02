@@ -35,6 +35,8 @@ mod source_handlers;
 mod storage_handlers;
 #[cfg(test)]
 mod test_support;
+mod trade_context;
+mod trade_handlers;
 mod watchlist_handlers;
 mod workspace_handlers;
 mod ws;
@@ -62,6 +64,7 @@ use senken_identity::{DEFAULT_ADMIN_EMAIL, IdentityStore};
 use senken_notes::NoteStore;
 use senken_runtime::Runtime;
 use senken_subscription::{BookSource, IndicatorSessionRegistry, SubscriptionPool};
+use senken_trade::TradeAccountStore;
 use senken_watchlist::WatchlistStore;
 
 use crate::auth::{EndpointPermission, mount};
@@ -148,6 +151,11 @@ pub(crate) struct AppState {
     /// Freeform notes, sharing `identity`'s connection the same way
     /// `watchlists` does.
     pub(crate) notes: Arc<NoteStore>,
+    /// The broker and exchange accounts users have attached, sharing
+    /// `identity`'s connection the same way `notes` does. The adapters
+    /// those accounts trade through live on `runtime`, not here: an
+    /// adapter is registered by a plugin, an account is a user's row.
+    pub(crate) trade_accounts: Arc<TradeAccountStore>,
     /// Storage, the instrument catalog and one `SeriesLoader` per
     /// registered bar source — everything `bars_handlers`
     /// and `indicator_handlers` resolve a request against.
@@ -232,6 +240,7 @@ pub(crate) async fn serve_with_feed_pools(
     let alerts = Arc::new(AlertStore::new(&identity));
     let watchlists = Arc::new(WatchlistStore::new(&identity));
     let notes = Arc::new(NoteStore::new(&identity));
+    let trade_accounts = Arc::new(TradeAccountStore::new(&identity));
     let feed_pools = Arc::new(feed_pools);
     // reconciles every already-enabled alert against those
     // pools right now, and stays running for the life of this server —
@@ -246,6 +255,7 @@ pub(crate) async fn serve_with_feed_pools(
         alerts,
         watchlists,
         notes,
+        trade_accounts,
         runtime,
         feed_pools,
         alert_engine,
@@ -429,6 +439,7 @@ fn router(state: AppState, allowed_origins: &[String]) -> Router {
     api = mount_watchlist_routes(api, &state);
     api = mount_notes_routes(api, &state);
     api = mount_storage_routes(api, &state);
+    api = mount_trade_routes(api, &state);
     let api: Router = api.fallback(api_not_found).with_state(state.clone());
 
     let router = Router::new().nest("/api", api);
@@ -447,6 +458,93 @@ fn router(state: AppState, allowed_origins: &[String]) -> Router {
             state,
             warn_if_insecurely_bound,
         ))
+}
+
+/// Mounts the trade engine surface.
+///
+/// Every route sits at plain `Authenticated`: `senken_trade`'s own store
+/// performs the real check on each call, and it draws distinctions a
+/// router-level gate cannot — reading a portfolio is scope-limited, while
+/// placing an order is owner-only whatever scope a role grants. A second,
+/// all-or-nothing gate here could only ever be looser than that.
+fn mount_trade_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/trade/adapters",
+        get(trade_handlers::list_adapters),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts",
+        get(trade_handlers::list_accounts).post(trade_handlers::create_account),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}",
+        patch(trade_handlers::update_account).delete(trade_handlers::delete_account),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/settings",
+        get(trade_handlers::get_settings).put(trade_handlers::replace_settings),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/health",
+        get(trade_handlers::account_health),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/balances",
+        get(trade_handlers::account_balances),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/positions",
+        get(trade_handlers::account_positions),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/orders",
+        get(trade_handlers::account_orders).post(trade_handlers::place_order),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/orders/{order_id}",
+        delete(trade_handlers::cancel_order),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/fills",
+        get(trade_handlers::account_fills),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/trade/accounts/{account_id}/actions/{action_id}",
+        post(trade_handlers::run_action),
+        EndpointPermission::Authenticated,
+    )
 }
 
 /// Mounts the user/role/grant management surface, split out
