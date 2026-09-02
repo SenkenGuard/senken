@@ -39,10 +39,10 @@ use senken_storage::{Snapshot, Storage};
 use senken_trade::{
     AccountAccess, AccountBalances, AccountRef, ActionOutcome, AdapterAction, AdapterCapabilities,
     AdapterFeature, AdapterHealth, AdapterKind, ChoiceOption, FieldKind, Fill, InstrumentCoverage,
-    Liquidity, Order, OrderAmendment, OrderFilter, OrderId, OrderKindTag, OrderRequest,
-    OrderStatus, Position, PositionId, PositionMode, PositionSide, QuantityUnit, SettingField,
-    SettingsSchema, SettingsValues, TimeInForce, TradeAccountId, TradeAdapter, TradeContext,
-    TradeError,
+    Liquidity, MarginMode, MarginTerms, Order, OrderAmendment, OrderFilter, OrderId, OrderKindTag,
+    OrderRequest, OrderStatus, Position, PositionBasis, PositionId, PositionMode, PositionSide,
+    QuantityUnit, SettingField, SettingsSchema, SettingsValues, TimeInForce, TradeAccountId,
+    TradeAdapter, TradeContext, TradeError,
 };
 
 /// The simulated books and the rules that move between them.
@@ -575,19 +575,21 @@ impl TradeAdapter for SimulatorAdapter {
                 mark_price: mark,
                 unrealized_pnl: unrealized,
                 realized_pnl: Scaled::new(CASH_SCALE, position.realized),
-                margin: Some(Scaled::new(
-                    CASH_SCALE,
-                    notional(mark.unwrap_or(position.average_entry), position.quantity)?
-                        / terms.leverage,
-                )),
-                leverage: Some(Scaled::new(0, terms.leverage)),
                 // This adapter attaches no stops and has no liquidation of
                 // its own: `None` says so, rather than a zero that would
                 // read as a stop set at nothing.
                 stop_loss: None,
                 take_profit: None,
-                margin_mode: None,
-                liquidation_price: None,
+                basis: PositionBasis::Margined(MarginTerms {
+                    margin: Scaled::new(
+                        CASH_SCALE,
+                        notional(mark.unwrap_or(position.average_entry), position.quantity)?
+                            / terms.leverage,
+                    ),
+                    leverage: Scaled::new(0, terms.leverage),
+                    mode: MarginMode::Cross,
+                    liquidation_price: None,
+                }),
                 opened_at: position.opened_at,
             });
         }

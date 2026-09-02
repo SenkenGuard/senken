@@ -18,8 +18,8 @@
 use senken_core::decimal::Scaled;
 use senken_trade::{
     AccessLevel, AccountAccess, AccountBalances, AdapterAction, AdapterCapabilities, AdapterHealth,
-    AdapterKind, Fill, InstrumentCoverage, Order, Position, SettingsInput, SettingsSchema,
-    TradeAccountSummary,
+    AdapterKind, Fill, InstrumentCoverage, Order, Position, PositionBasis, SettingsInput,
+    SettingsSchema, TradeAccountSummary,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -439,6 +439,13 @@ pub(crate) struct PositionDto {
 
 impl From<Position> for PositionDto {
     fn from(position: Position) -> Self {
+        // An outright holding has no margin figures to report, so every
+        // one of them is `None` on the wire rather than a zero that would
+        // read as "no margin held" on a position that cannot hold any.
+        let margined = match &position.basis {
+            PositionBasis::Margined(terms) => Some(terms),
+            PositionBasis::Outright => None,
+        };
         Self {
             id: position.id.to_string(),
             account_id: position.account_id.to_string(),
@@ -449,12 +456,12 @@ impl From<Position> for PositionDto {
             mark_price: position.mark_price.map(Into::into),
             unrealized_pnl: position.unrealized_pnl.map(Into::into),
             realized_pnl: position.realized_pnl.into(),
-            margin: position.margin.map(Into::into),
-            leverage: position.leverage.map(Into::into),
+            margin: margined.map(|terms| terms.margin.into()),
+            leverage: margined.map(|terms| terms.leverage.into()),
             stop_loss: position.stop_loss.map(Into::into),
             take_profit: position.take_profit.map(Into::into),
-            margin_mode: position.margin_mode,
-            liquidation_price: position.liquidation_price.map(Into::into),
+            margin_mode: margined.map(|terms| terms.mode),
+            liquidation_price: margined.and_then(|terms| terms.liquidation_price.map(Into::into)),
             opened_at: position.opened_at.as_nanos(),
         }
     }

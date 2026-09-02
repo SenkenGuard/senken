@@ -94,7 +94,8 @@ pub use crate::order::{
     OrderSide, OrderStatus, TimeInForce,
 };
 pub use crate::portfolio::{
-    AccountBalances, AdapterHealth, AssetBalance, MarginMode, Position, PositionSide,
+    AccountBalances, AdapterHealth, AssetBalance, MarginMode, MarginTerms, Position, PositionBasis,
+    PositionSide,
 };
 pub use crate::settings::{
     ActionForm, ChoiceOption, FieldKind, SecretString, SettingField, SettingValue, SettingsError,

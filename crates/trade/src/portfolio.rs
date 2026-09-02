@@ -53,6 +53,75 @@ pub enum MarginMode {
     Cross,
 }
 
+/// What a position is held under.
+///
+/// The two are different enough that flattening them into optional fields
+/// beside each other lets an adapter report a spot holding carrying
+/// leverage — a shape that looks right and means nothing, which is the
+/// error class this repository closes with a type rather than a review
+/// comment. Here the margin figures live *inside* the margined variant,
+/// so an outright holding has no field to put them in and the mistake
+/// stops being expressible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Reaching for margin on a position that has none does not compile — the
+/// field is not merely absent from an outright holding, it is absent from
+/// [`Position`] entirely, and lives inside [`PositionBasis::Margined`]:
+///
+/// ```compile_fail,E0609
+/// fn leverage_of(position: &senken_trade::Position) {
+///     let _ = position.leverage;
+/// }
+/// ```
+///
+/// Reading it through the basis is how it is done instead:
+///
+/// ```
+/// use senken_trade::{PositionBasis, Position};
+/// fn leverage_of(position: &Position) -> Option<&senken_core::Scaled> {
+///     match &position.basis {
+///         PositionBasis::Margined(terms) => Some(&terms.leverage),
+///         PositionBasis::Outright => None,
+///     }
+/// }
+/// ```
+// Deliberately not `#[non_exhaustive]`: a third basis should fail to
+// compile everywhere that decides what to show for one, the way adding a
+// `Resource` fails until its authorisation is written. A catch-all arm
+// would silently render a new basis as though it were an old one.
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PositionBasis {
+    /// Owned outright: the whole quantity is held, nothing is borrowed.
+    ///
+    /// A spot holding is this. There is no margin to report, no leverage
+    /// applied and no price at which it can be liquidated, so none of
+    /// those figures exist on this variant to be filled in with a
+    /// plausible-looking zero.
+    Outright,
+    /// Held on margin, under the terms the venue is applying to it.
+    Margined(MarginTerms),
+}
+
+/// The terms a margined position is held under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarginTerms {
+    /// Margin the venue is holding against the position.
+    pub margin: Scaled,
+    /// Leverage applied to it.
+    pub leverage: Scaled,
+    /// Whether the margin is this position's own or the account's.
+    pub mode: MarginMode,
+    /// The price at which the venue would close the position for want of
+    /// margin.
+    ///
+    /// `None` is the honest answer whenever the figure is not known — a
+    /// venue that does not publish one, or an account that cannot be
+    /// liquidated at all. It is never filled in with an estimate: a trader
+    /// who is shown a liquidation price will believe it, and a wrong one
+    /// is worse than an absent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liquidation_price: Option<Scaled>,
+}
+
 /// One open position.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
@@ -101,27 +170,13 @@ pub struct Position {
     /// [`stop_loss`](Self::stop_loss).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub take_profit: Option<Scaled>,
-    /// Margin the venue is holding against it, where the account uses
-    /// margin at all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub margin: Option<Scaled>,
-    /// Leverage applied, where the account uses leverage at all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub leverage: Option<Scaled>,
-    /// Whether this position's margin is its own or the account's, where
-    /// the venue offers the choice. `None` where it does not.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub margin_mode: Option<MarginMode>,
-    /// The price at which the venue would close this position for want of
-    /// margin.
+    /// What the position is held under — outright, or on margin.
     ///
-    /// `None` is the honest answer whenever the figure is not known — a
-    /// venue that does not publish one, or an account that cannot be
-    /// liquidated at all. It is never filled in with an estimate: a trader
-    /// who is shown a liquidation price will believe it, and a wrong one
-    /// is worse than an absent one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub liquidation_price: Option<Scaled>,
+    /// Margin, leverage and a liquidation price live inside
+    /// [`PositionBasis::Margined`] rather than beside it, so a holding
+    /// that is owned outright has nowhere to put them. See
+    /// [`PositionBasis`] for why that is a type and not a convention.
+    pub basis: PositionBasis,
     /// When the position was first opened.
     pub opened_at: UnixNanos,
 }

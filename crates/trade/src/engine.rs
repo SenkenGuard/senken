@@ -526,7 +526,7 @@ mod tests {
         Order, OrderAmendment, OrderFilter, OrderKind, OrderKindTag, OrderRequest, OrderSide,
         OrderStatus, TimeInForce,
     };
-    use crate::portfolio::{AccountBalances, AdapterHealth, Position, PositionSide};
+    use crate::portfolio::{AccountBalances, AdapterHealth, Position, PositionBasis, PositionSide};
     use crate::settings::{SettingsSchema, SettingsValues};
 
     fn id(raw: &str) -> InstrumentId {
@@ -931,12 +931,9 @@ mod tests {
             mark_price: None,
             unrealized_pnl: None,
             realized_pnl: Scaled::new(2, 0),
-            margin: None,
-            leverage: None,
             stop_loss: None,
             take_profit: None,
-            margin_mode: None,
-            liquidation_price: None,
+            basis: PositionBasis::Outright,
             opened_at: UnixNanos::from_secs(1_700_000_000).unwrap(),
         }
     }
