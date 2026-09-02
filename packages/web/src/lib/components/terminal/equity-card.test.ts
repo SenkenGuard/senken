@@ -30,6 +30,7 @@ function balances(overrides: Partial<BalancesDto> = {}): BalancesDto {
 		balance: { scale: 2, value: '10000000' },
 		equity: { scale: 2, value: '10250000' },
 		unrealized_pnl: { scale: 2, value: '250000' },
+		realized_pnl: { scale: 2, value: '0' },
 		margin_used: { scale: 2, value: '150000' },
 		margin_available: { scale: 2, value: '9850000' },
 		...overrides

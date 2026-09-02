@@ -48,6 +48,7 @@ function portfolioWithEquity(value: string): Portfolio {
 			balance: { scale: 2, value },
 			equity: { scale: 2, value },
 			unrealized_pnl: { scale: 2, value: '0' },
+			realized_pnl: { scale: 2, value: '0' },
 			margin_used: { scale: 2, value: '0' }
 		}
 	};

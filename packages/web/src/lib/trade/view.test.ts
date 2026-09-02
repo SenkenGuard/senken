@@ -62,6 +62,7 @@ function order(overrides: Partial<OrderDto> = {}): OrderDto {
 
 function position(overrides: Partial<PositionDto> = {}): PositionDto {
 	return {
+		id: 'okx-spot:BTCUSDT',
 		account_id: 'acct-1',
 		instrument: 'okx-spot:BTCUSDT',
 		side: 'long',
@@ -98,6 +99,7 @@ function balances(overrides: Partial<BalancesDto> = {}): BalancesDto {
 		balance: { scale: 2, value: '10000000' },
 		equity: { scale: 2, value: '10000000' },
 		unrealized_pnl: { scale: 2, value: '0' },
+		realized_pnl: { scale: 2, value: '0' },
 		margin_used: { scale: 2, value: '0' },
 		margin_available: { scale: 2, value: '10000000' },
 		...overrides

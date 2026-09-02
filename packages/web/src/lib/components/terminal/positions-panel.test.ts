@@ -26,6 +26,7 @@ function account(overrides: Partial<TradeAccountDto> = {}): TradeAccountDto {
 
 function position(overrides: Partial<PositionDto> = {}): PositionDto {
 	return {
+		id: 'okx-spot:BTCUSDT',
 		account_id: 'acct-1',
 		instrument: 'okx-spot:BTCUSDT',
 		side: 'long',

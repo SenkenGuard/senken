@@ -353,10 +353,17 @@ pub(crate) struct BalancesDto {
     pub equity: ScaledDto,
     /// Unrealised profit across every open position.
     pub unrealized_pnl: ScaledDto,
+    /// Profit banked on this account across every instrument and every
+    /// position it has held. An account total, so it survives a position
+    /// being closed — which is when a profit becomes real.
+    pub realized_pnl: ScaledDto,
     /// Margin held against positions and orders.
     pub margin_used: Option<ScaledDto>,
     /// Margin still available.
     pub margin_available: Option<ScaledDto>,
+    /// Equity over margin held, as a percentage — the figure a margin call
+    /// and a stop out are thresholds on. Absent when no margin is held.
+    pub margin_level: Option<ScaledDto>,
     /// Per-asset rows, for venues that have them.
     pub assets: Vec<AssetBalanceDto>,
 }
@@ -368,8 +375,10 @@ impl From<AccountBalances> for BalancesDto {
             balance: balances.balance.into(),
             equity: balances.equity.into(),
             unrealized_pnl: balances.unrealized_pnl.into(),
+            realized_pnl: balances.realized_pnl.into(),
             margin_used: balances.margin_used.map(Into::into),
             margin_available: balances.margin_available.map(Into::into),
+            margin_level: balances.margin_level.map(Into::into),
             assets: balances
                 .assets
                 .into_iter()
@@ -387,6 +396,10 @@ impl From<AccountBalances> for BalancesDto {
 /// One open position.
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct PositionDto {
+    /// This position, distinctly from any other on the same instrument.
+    /// A hedging account holds several at once, so a client that offers a
+    /// close must name one rather than name the instrument.
+    pub id: String,
     /// The account holding it.
     pub account_id: String,
     /// The instrument, as `source:symbol`.
@@ -409,6 +422,17 @@ pub(crate) struct PositionDto {
     pub margin: Option<ScaledDto>,
     /// Leverage applied.
     pub leverage: Option<ScaledDto>,
+    /// The stop loss attached to this position, when it has one. At most
+    /// one exists; there is no list.
+    pub stop_loss: Option<ScaledDto>,
+    /// The take profit attached to this position, when it has one.
+    pub take_profit: Option<ScaledDto>,
+    /// `isolated` or `cross`, on venues that offer the choice.
+    #[schema(value_type = Option<String>)]
+    pub margin_mode: Option<senken_trade::MarginMode>,
+    /// Where the venue would close this position for want of margin.
+    /// Absent when the venue publishes none — never an estimate.
+    pub liquidation_price: Option<ScaledDto>,
     /// When it was opened, as Unix nanoseconds.
     pub opened_at: i64,
 }
@@ -416,6 +440,7 @@ pub(crate) struct PositionDto {
 impl From<Position> for PositionDto {
     fn from(position: Position) -> Self {
         Self {
+            id: position.id.to_string(),
             account_id: position.account_id.to_string(),
             instrument: position.instrument.to_string(),
             side: position.side,
@@ -426,6 +451,10 @@ impl From<Position> for PositionDto {
             realized_pnl: position.realized_pnl.into(),
             margin: position.margin.map(Into::into),
             leverage: position.leverage.map(Into::into),
+            stop_loss: position.stop_loss.map(Into::into),
+            take_profit: position.take_profit.map(Into::into),
+            margin_mode: position.margin_mode,
+            liquidation_price: position.liquidation_price.map(Into::into),
             opened_at: position.opened_at.as_nanos(),
         }
     }

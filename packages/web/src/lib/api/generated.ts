@@ -1926,7 +1926,14 @@ export interface components {
             /** @description Cash plus unrealised profit. */
             equity: components["schemas"]["ScaledDto"];
             margin_available?: null | components["schemas"]["ScaledDto"];
+            margin_level?: null | components["schemas"]["ScaledDto"];
             margin_used?: null | components["schemas"]["ScaledDto"];
+            /**
+             * @description Profit banked on this account across every instrument and every
+             *     position it has held. An account total, so it survives a position
+             *     being closed — which is when a profit becomes real.
+             */
+            realized_pnl: components["schemas"]["ScaledDto"];
             /** @description Unrealised profit across every open position. */
             unrealized_pnl: components["schemas"]["ScaledDto"];
         };
@@ -2119,14 +2126,19 @@ export interface components {
         /**
          * @description `POST /api/trade/accounts/{account_id}/close` request body.
          *
-         *     The instrument travels in the body rather than the path: an
-         *     [`senken_marketdata::InstrumentId`] contains a colon, and path-encoding
-         *     it invites exactly the double-decoding mistakes that make one endpoint
-         *     disagree with another about the same instrument.
+         *     The position travels in the body rather than the path: an id is opaque
+         *     venue text that may hold any character, and path-encoding it invites
+         *     exactly the double-decoding mistakes that make one endpoint disagree
+         *     with another about the same thing.
+         *
+         *     It names a **position**, not an instrument, because a hedging account
+         *     holds several on one instrument at once and "close BTCUSDT" has no
+         *     answer there. A client always has the position row in hand when it
+         *     offers a close, so it always has the id.
          */
         CloseRequest: {
-            /** @description The instrument to close, as `source:symbol`. */
-            instrument: string;
+            /** @description The position to close, as the adapter reported its id. */
+            position_id: string;
         };
         /**
          * @description `POST /api/indicators/compile`'s error body for a mistake in the
@@ -3627,6 +3639,8 @@ export interface components {
             reduce_only?: boolean;
             /** @description `buy` or `sell`. */
             side: string;
+            stop_loss?: null | components["schemas"]["ScaledDto"];
+            take_profit?: null | components["schemas"]["ScaledDto"];
             /** @description How long the order lives. */
             time_in_force?: string;
             trigger_price?: null | components["schemas"]["ScaledDto"];
@@ -3708,10 +3722,19 @@ export interface components {
             account_id: string;
             /** @description Volume-weighted entry. */
             average_entry: components["schemas"]["ScaledDto"];
+            /**
+             * @description This position, distinctly from any other on the same instrument.
+             *     A hedging account holds several at once, so a client that offers a
+             *     close must name one rather than name the instrument.
+             */
+            id: string;
             /** @description The instrument, as `source:symbol`. */
             instrument: string;
             leverage?: null | components["schemas"]["ScaledDto"];
+            liquidation_price?: null | components["schemas"]["ScaledDto"];
             margin?: null | components["schemas"]["ScaledDto"];
+            /** @description `isolated` or `cross`, on venues that offer the choice. */
+            margin_mode?: string | null;
             mark_price?: null | components["schemas"]["ScaledDto"];
             /**
              * Format: int64
@@ -3724,6 +3747,8 @@ export interface components {
             realized_pnl: components["schemas"]["ScaledDto"];
             /** @description `long` or `short`. */
             side: string;
+            stop_loss?: null | components["schemas"]["ScaledDto"];
+            take_profit?: null | components["schemas"]["ScaledDto"];
             unrealized_pnl?: null | components["schemas"]["ScaledDto"];
         };
         /**

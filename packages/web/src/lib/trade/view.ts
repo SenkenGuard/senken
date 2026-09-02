@@ -780,7 +780,11 @@ export function engineTable(
 			{ label: 'PNL', align: 'right' }
 		],
 		rows: positions.map((position) => ({
-			key: `${position.accountId}:${position.instrument}`,
+			// Keyed by the position's own id, not by its instrument: a
+			// hedging account holds several on one instrument, and a key
+			// that cannot tell them apart would send a close to whichever
+			// happened to be found first.
+			key: `${position.accountId}:${position.id}`,
 			cells: [
 				L(position.instrument, 'fg'),
 				...accCell(position.accountLabel),

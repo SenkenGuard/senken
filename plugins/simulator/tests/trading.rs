@@ -1192,3 +1192,71 @@ async fn closing_after_the_position_grows_between_the_read_and_the_close_uses_th
         "the close must use the size the adapter reports now, not the one the screen opened with"
     );
 }
+
+/// A realised profit records something that already happened, so closing
+/// the position that earned it must not take the number with it.
+///
+/// This is the shape the book got wrong: a reversal carried the figure
+/// forward and a partial reduce carried it forward, but closing exactly
+/// flat called `positions.remove` and dropped it — leaving an account
+/// whose balance had moved and whose reported profit said nothing had.
+#[tokio::test]
+async fn a_profit_survives_the_position_that_earned_it_being_closed() {
+    let (f, settings) = Fixture::open(6_842_000, clean_settings).await;
+
+    f.adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&settings),
+            OrderRequest::market(instrument(), OrderSide::Buy, qty(250)),
+        )
+        .await
+        .unwrap();
+
+    let opening_balance = f
+        .adapter
+        .balances(&f.ctx(), f.account(&settings))
+        .await
+        .unwrap()
+        .balance;
+
+    // The mark moves up, and the whole position is closed at the new one.
+    f.mark.set(6_942_000);
+    f.adapter
+        .place_order(
+            &f.ctx(),
+            f.account(&settings),
+            OrderRequest::market(instrument(), OrderSide::Sell, qty(250)),
+        )
+        .await
+        .unwrap();
+
+    let positions = f
+        .adapter
+        .positions(&f.ctx(), f.account(&settings))
+        .await
+        .unwrap();
+    assert!(
+        positions.is_empty(),
+        "the position closed exactly flat, which is the case that used to lose the number"
+    );
+
+    let balances = f
+        .adapter
+        .balances(&f.ctx(), f.account(&settings))
+        .await
+        .unwrap();
+
+    // 0.250 at a 1 000.00 gain per unit is 250.00, at the scale this
+    // adapter keeps cash in.
+    let expected = Scaled::new(balances.realized_pnl.scale, 250 * 10_i64.pow(8));
+    assert_eq!(
+        balances.realized_pnl, expected,
+        "the profit is still reported after the position is gone"
+    );
+    assert_eq!(
+        balances.balance.value - opening_balance.value,
+        expected.value,
+        "and it agrees with what the balance actually did"
+    );
+}

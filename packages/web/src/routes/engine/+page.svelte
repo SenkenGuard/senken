@@ -85,7 +85,11 @@
 	let accountDialogAccount = $state<TradeAccountDto | null>(null);
 	let actionDialogOpen = $state(false);
 	let actionDialogAction = $state<AdapterActionDto | null>(null);
-	let closeConfirm = $state<{ accountId: string; instrument: string } | null>(null);
+	let closeConfirm = $state<{
+		accountId: string;
+		positionId: string;
+		instrument: string;
+	} | null>(null);
 	let closing = $state(false);
 	let closeFailure = $state<string | null>(null);
 	let amendDialogOpen = $state(false);
@@ -225,7 +229,17 @@
 		const [accountId, resourceId] = splitRowKey(rowKey);
 		if (actionKey === 'close') {
 			closeFailure = null;
-			closeConfirm = { accountId, instrument: resourceId };
+			// `resourceId` is the position's own id. The instrument comes
+			// from the row it belongs to, and is only ever used to name the
+			// position in the confirmation — never to address it.
+			const position = tradeStore.portfolios[accountId]?.positions.find(
+				(candidate) => candidate.id === resourceId
+			);
+			closeConfirm = {
+				accountId,
+				positionId: resourceId,
+				instrument: position?.instrument ?? resourceId
+			};
 		} else if (actionKey === 'cancel') {
 			void cancelTableOrder(accountId, resourceId);
 		} else if (actionKey === 'amend') {
@@ -252,7 +266,7 @@
 		closeFailure = null;
 		try {
 			await apiClient.closePosition(closeConfirm.accountId, {
-				instrument: closeConfirm.instrument
+				position_id: closeConfirm.positionId
 			});
 			notice = 'Position closed.';
 			const { accountId } = closeConfirm;

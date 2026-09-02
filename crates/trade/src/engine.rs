@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use senken_core::decimal::checked_rescale;
-use senken_marketdata::{Instrument, InstrumentId};
+use senken_marketdata::Instrument;
 
 use crate::adapter::{AccountRef, ActionOutcome, TradeAdapter, TradeContext};
 use crate::capability::{AccountAccess, AdapterCapabilities, AdapterFeature};
@@ -1323,8 +1323,9 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(error, TradeError::UnknownPosition(_)),
-            "got {error:?}"
+            matches!(error, TradeError::UnknownPositionId(_)),
+            "a close names a position, so what it cannot find is a position \
+             rather than an instrument: got {error:?}"
         );
         assert!(
             adapter.seen.lock().unwrap().is_none(),
