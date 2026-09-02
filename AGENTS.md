@@ -420,6 +420,46 @@ generator: change the source, run the generator.
   so.
 - **Never run `cargo clean` while another agent is building.** On `ENOSPC`, stop
   and report rather than deleting anything.
+
+### Why `target/` grows without bound, and what actually helps
+
+It reached **76 GB in one day**, and the shape of it is worth knowing, because
+the instinct — "something in here is enormous" — is wrong.
+
+`target/debug/deps` held **566,000 files**, including **662 copies of
+`libwasmtime`** and 274 of `libcranelift`. Cargo gives every distinct feature
+combination its own hash, writes fresh artifacts under it, and **never deletes
+the old ones**. A day of `--workspace`, `--all-targets`, `--all-features`,
+two `--no-default-features` checks, a default binary, a `--no-default-features`
+binary and `cargo doc` is a day of writing complete new copies of the whole
+dependency tree, over and over. Nothing reclaims them.
+
+So the levers, in the order they actually pay:
+
+- **Scope the command to the crate.** `cargo test -p <crate>` and
+  `cargo clippy -p <crate>` while iterating; the workspace sweep runs once, at
+  the end. This rule already exists above and is the one most often ignored —
+  every full-workspace invocation is a full set of artifacts.
+- **Feature-matrix checks belong in the final sweep**, not in the loop. They
+  catch real breakage, and each one is its own complete artifact set.
+- **`cargo clean` is the only real garbage collector.** Deleting
+  `target/debug/incremental` alone reclaims a lot and costs only a slower next
+  build; it is the safe first move when disk gets tight, and it must not be
+  done while another build is running.
+
+### Test fixtures share one build directory
+
+Every WebAssembly fixture under `crates/*/tests/fixtures/` is its own
+workspace, deliberately: a fixture is a real compiled component with a real
+defect, not a description of one. But its own workspace also means its own
+`target/` by default — thirteen of them, each compiling the same dependency
+tree, **8.9 GB between them**.
+
+They now build into one shared `target/fixture-wasm` via `CARGO_TARGET_DIR`,
+set by the `tests/support` module that spawns them: **465 MB for all thirteen.**
+Cargo locks that directory itself, and those builds are already serialised
+behind a mutex. **Add a new fixture by copying an existing one — do not let it
+fall back to a private `target/`.**
 - `rm -rf .data` forces a refetch of 50 venue catalogs. Do not do it casually.
 - **Binance has banned this machine's IP once (HTTP 418).** Requests to a banned
   endpoint extend the ban. Prefer OKX or Bybit for live checks, and never poll.

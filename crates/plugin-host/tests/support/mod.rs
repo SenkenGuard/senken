@@ -29,17 +29,23 @@ pub(crate) fn build_fixture(name: &str) -> PathBuf {
     let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
+    let shared_target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixture-wasm");
     let status = std::process::Command::new(env!("CARGO"))
         .args(["build", "--target", "wasm32-wasip2"])
+        // One shared build directory for every fixture in the repository.
+        // Each fixture is its own workspace, so by default each one also
+        // gets its own `target/` and compiles the same dependency tree
+        // again — thirteen copies of the same work, and gigabytes of it.
+        // Cargo locks this directory itself, and the mutex above already
+        // serialises these builds anyway.
+        .env("CARGO_TARGET_DIR", &shared_target)
         .current_dir(&fixture_dir)
         .status()
         .expect("spawning `cargo build` for a test fixture must succeed");
     assert!(status.success(), "fixture `{name}` failed to build");
 
     let binary_name = format!("fixture_{}.wasm", name.replace('-', "_"));
-    let wasm_path = fixture_dir
-        .join("target/wasm32-wasip2/debug")
-        .join(&binary_name);
+    let wasm_path = shared_target.join("wasm32-wasip2/debug").join(&binary_name);
     assert!(
         wasm_path.is_file(),
         "expected {} to exist after building fixture `{name}`",
