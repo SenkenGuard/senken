@@ -50,11 +50,28 @@ someone's first upload.
 
 ## Installing
 
-Either upload the resulting `.zip` through the dashboard's own "Widget
-plugins" manager (workspace bar → "…" → "Widget plugins…" → Install), or
-drop it, already unzipped into its own directory named for the package's
-own `id` (`example-clock/`, `example-quotes/`), directly under this
-server's `widget-plugins/packages/` data directory and use that same
-dialog's "Refresh" button — both paths converge on the same on-disk layout,
-and neither executes anything: the archive is data until the host's own
-manifest validator and path-safety checks pass.
+Either upload the resulting `.zip` through Settings → Plugins → Widget
+plugins → Install, or drop it, already unzipped into its own directory
+named for the package's own `id` (`example-clock/`, `example-quotes/`),
+directly under this server's `widget-plugins/packages/` data directory and
+use that same page's "Refresh" button — both paths converge on the same
+on-disk layout, and neither executes anything: the archive is data until
+the host's own manifest validator and path-safety checks pass.
+
+## The Content-Security-Policy a widget's own markup must fit
+
+The sandboxed iframe a widget's `index.html` loads into has no
+`allow-same-origin`, which makes its document's origin opaque — and the
+`'self'` CSP keyword cannot match anything for an opaque origin. To still
+let a widget's own inline code run at all, the host computes a
+`'sha256-...'` CSP source from the exact text of every **bare** `<script>`
+and `<style>` tag in the served document (no attributes on the tag itself —
+`<script type="module">` or `<script src="...">` do not qualify) and allows
+only those. Both examples here are written this way on purpose: one
+`<style>` block, one `<script>` block, neither with any attribute. A widget
+that needs a second script or stylesheet file, rather than more markup
+inside the one bare `<script>`/`<style>` tag it already has, is not served
+by this policy yet — put everything in the one document, and ship any
+image or font as a `data:` URI, until this widget's entry document is
+served from a genuinely separate origin (`crates/api/src/widget_plugin_handlers.rs`'s
+own doc comment on `widget_plugin_asset` names this as a follow-up).

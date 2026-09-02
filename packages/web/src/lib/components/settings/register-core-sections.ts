@@ -65,12 +65,15 @@ registerSettingsSection({
 	icon: PuzzleIcon,
 	component: PluginsSection,
 	searchIndex: pluginsSearchIndex,
-	// Shown to an account granted indicator administration — the same
-	// resource `crates/api/src/indicator_handlers.rs` checks on every one
-	// of the three `/indicators/plugins*` routes. Hiding it is still only
-	// cosmetic; those endpoints check a real grant on every request
-	// regardless of what this list says.
-	requiresAnyResource: ['Indicator'],
+	// This page lists two kinds of plugin, each checked against its own
+	// resource: `Indicator` (`crates/api/src/indicator_handlers.rs`'s three
+	// `/indicators/plugins*` routes) and `WidgetPlugin`
+	// (`crates/api/src/widget_plugin_handlers.rs`'s `/widget-plugins*`
+	// routes) — an account granted either one should still find the page,
+	// even without the other. Hiding it is still only cosmetic; those
+	// endpoints check a real grant on every request regardless of what
+	// this list says.
+	requiresAnyResource: ['Indicator', 'WidgetPlugin'],
 	order: 40
 });
 

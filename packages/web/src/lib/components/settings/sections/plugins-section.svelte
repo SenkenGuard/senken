@@ -13,6 +13,18 @@
 			rowId: 'plugins-upload',
 			rowLabel: 'Upload a plugin',
 			rowDescription: 'Register a compiled .wasm indicator component.'
+		},
+		{
+			groupHeading: 'Widget plugins',
+			rowId: 'widget-plugins-list',
+			rowLabel: 'Installed widget plugins',
+			rowDescription: 'Enable, disable, or remove a dashboard widget UI package.'
+		},
+		{
+			groupHeading: 'Widget plugins',
+			rowId: 'widget-plugins-upload',
+			rowLabel: 'Install a widget plugin',
+			rowDescription: 'Register a widget UI package from a .zip archive.'
 		}
 	];
 </script>
@@ -29,8 +41,8 @@
 	// Every request here still gets checked for real by
 	// `crates/api/src/indicator_handlers.rs` regardless of who this section
 	// is shown to (`register-core-sections.ts` hides the nav entry itself
-	// from an account with no grant on `Indicator`, but that is cosmetic —
-	// hiding a control is never the enforcement).
+	// from an account with no grant on `Indicator` or `WidgetPlugin`, but
+	// that is cosmetic — hiding a control is never the enforcement).
 	//
 	// Five states, each demanding a different action from the reader:
 	// active (disable), disabled (enable), incompatible (update the plugin
@@ -43,9 +55,44 @@
 	// presence as guaranteed by `state` alone; every read of one goes
 	// through `hasDescriptor` below first, so a plugin that failed still
 	// renders a readable row instead of one with holes in it.
+	//
+	// This page also lists widget UI packages — a structurally different
+	// kind of plugin (a manifest plus a static bundle rendered client-side
+	// in a sandboxed iframe, never compiled or executed by this server at
+	// all; see `senken_plugin::widget_package`'s own module docs) that used
+	// to be managed from a separate dialog opened out of the dashboard's
+	// own "…" menu. That split was a design mistake, not a deliberate
+	// separation: an account that opened Settings → Plugins expecting to
+	// find out why nothing showed up on their dashboard found the page
+	// empty and reasonably concluded no plugin was installed at all, even
+	// though this server ships one by default. §D8 of this platform's own
+	// design record is explicit that the Plugins page is meant to be **the**
+	// place a plugin author or admin looks — one page, not one page per
+	// plugin shape. The dashboard's "…" menu no longer opens a second
+	// manager; `routes/dashboard/+page.svelte` still re-fetches the
+	// effective catalog on its own (now on every add-widget open, not only
+	// on a mutation this page can no longer report to it directly), which
+	// is what makes a package enabled/disabled here show up there.
+	//
+	// A widget package's state has only three values, not five: it never
+	// compiles a component this server executes, so there is no protocol
+	// version to be "incompatible" with, and no on-server circuit breaker
+	// to auto-disable — nothing runs here for either to apply to. Runtime
+	// health and a per-package log, which the indicator side already has,
+	// do not exist yet on the widget side either; this page says exactly
+	// that in each expanded row rather than rendering an empty-looking
+	// table that would read as "nothing wrong" instead of "not measured".
 	import { apiClient } from '$lib/api/client';
 	import { getErrorMessage } from '$lib/api/errors';
 	import type { IndicatorPluginDto } from '$lib/api/types';
+	import {
+		installWidgetPlugin,
+		listWidgetPlugins,
+		refreshWidgetPlugins,
+		setWidgetPluginEnabled,
+		uninstallWidgetPlugin,
+		type WidgetPluginPackage
+	} from '$lib/components/dashboard/api';
 	import { formatBytes } from '$lib/storage/usage';
 	import { formatInstant } from '$lib/time';
 	import { userZoneStore } from '$lib/state/user-zone.svelte';
@@ -61,6 +108,7 @@
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
 	import ZapOffIcon from '@lucide/svelte/icons/zap-off';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 
 	let plugins = $state<IndicatorPluginDto[]>([]);
 	let loading = $state(true);
@@ -75,6 +123,16 @@
 	let uploading = $state(false);
 	let uploadError = $state<string | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
+
+	let widgetPlugins = $state<WidgetPluginPackage[]>([]);
+	let widgetLoading = $state(true);
+	let widgetError = $state<string | null>(null);
+	let widgetExpanded = $state<string[]>([]);
+	let widgetTogglingId = $state<string | null>(null);
+	let widgetRemovingId = $state<string | null>(null);
+	let widgetUploading = $state(false);
+	let widgetUploadError = $state<string | null>(null);
+	let widgetFileInput = $state<HTMLInputElement | null>(null);
 
 	async function load(): Promise<void> {
 		loading = true;
@@ -193,6 +251,123 @@
 			uploading = false;
 		}
 	}
+
+	// -----------------------------------------------------------------
+	// Widget UI plugin packages — see this file's own top-of-script docs
+	// for why these live on the same page as the indicator plugins above.
+	// -----------------------------------------------------------------
+
+	async function loadWidgetPlugins(): Promise<void> {
+		widgetLoading = true;
+		widgetError = null;
+		try {
+			const response = await listWidgetPlugins();
+			widgetPlugins = response.packages;
+		} catch (cause) {
+			widgetError = getErrorMessage(cause, 'Could not read the installed widget plugins.');
+		} finally {
+			widgetLoading = false;
+		}
+	}
+
+	$effect(() => {
+		void loadWidgetPlugins();
+	});
+
+	function isWidgetOpen(id: string): boolean {
+		return widgetExpanded.includes(id);
+	}
+
+	function toggleWidgetOpen(id: string): void {
+		widgetExpanded = isWidgetOpen(id)
+			? widgetExpanded.filter((n) => n !== id)
+			: [...widgetExpanded, id];
+	}
+
+	/** A widget package's own status has only three values — see this
+	 * file's top-of-script docs for why `incompatible` and `auto_disabled`,
+	 * meaningful for a compiled indicator, do not apply here at all. */
+	function widgetStateDisplay(pkg: WidgetPluginPackage): StateDisplay {
+		if (!pkg.enabled) return { label: 'Disabled', variant: 'outline' };
+		if (pkg.status.state === 'failed') return { label: 'Failed to load', variant: 'destructive' };
+		return { label: 'Active', variant: 'secondary' };
+	}
+
+	/** Only `is_builtin` is known for a widget package — unlike an indicator
+	 * plugin's `origin`, this store never records whether a non-built-in
+	 * package arrived by upload or by being dropped directly into the data
+	 * directory (both converge on the same install path with no separate
+	 * marker kept; see `senken_plugin::widget_package::store`'s own docs on
+	 * why the two are treated as one path on purpose). Reporting a
+	 * three-way origin here would mean guessing the half this store does
+	 * not keep, so this reports only the distinction it actually has. */
+	function widgetOriginLabel(pkg: WidgetPluginPackage): string {
+		return pkg.is_builtin ? 'Built-in' : 'Installed';
+	}
+
+	async function setWidgetEnabled(pkg: WidgetPluginPackage, enabled: boolean): Promise<void> {
+		widgetTogglingId = pkg.id;
+		widgetError = null;
+		try {
+			await setWidgetPluginEnabled(pkg.id, enabled);
+			// Re-read rather than flipping the flag in memory — the server's
+			// own state is the truth, the same reasoning `setEnabled` above
+			// gives for the indicator side.
+			await loadWidgetPlugins();
+		} catch (cause) {
+			widgetError = getErrorMessage(cause, `Could not ${enabled ? 'enable' : 'disable'} ${pkg.name}.`);
+		} finally {
+			widgetTogglingId = null;
+		}
+	}
+
+	async function removeWidgetPlugin(pkg: WidgetPluginPackage): Promise<void> {
+		widgetRemovingId = pkg.id;
+		widgetError = null;
+		try {
+			await uninstallWidgetPlugin(pkg.id);
+			await loadWidgetPlugins();
+		} catch (cause) {
+			widgetError = getErrorMessage(cause, `Could not remove ${pkg.name}.`);
+		} finally {
+			widgetRemovingId = null;
+		}
+	}
+
+	async function refreshWidgetList(): Promise<void> {
+		widgetLoading = true;
+		widgetError = null;
+		try {
+			const response = await refreshWidgetPlugins();
+			widgetPlugins = response.packages;
+		} catch (cause) {
+			widgetError = getErrorMessage(cause, 'Could not refresh the widget plugin directory.');
+		} finally {
+			widgetLoading = false;
+		}
+	}
+
+	function pickWidgetFile(): void {
+		widgetFileInput?.click();
+	}
+
+	async function onWidgetFileChosen(event: Event): Promise<void> {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';
+		if (!file) return;
+		widgetUploading = true;
+		widgetUploadError = null;
+		try {
+			const bytes = await file.arrayBuffer();
+			await installWidgetPlugin(bytes);
+			await loadWidgetPlugins();
+		} catch (cause) {
+			widgetUploadError = getErrorMessage(cause, `Could not install ${file.name}.`);
+		} finally {
+			widgetUploading = false;
+		}
+	}
 </script>
 
 <div class="flex flex-col gap-6">
@@ -200,7 +375,7 @@
 		<header class="mb-2 flex items-start justify-between gap-3">
 			<div>
 				<h3 class="text-[11px] font-semibold tracking-[0.08em] text-foreground uppercase">
-					Installed plugins
+					Indicator plugins
 				</h3>
 				<p class="mt-0.5 text-[12px] text-dim2">
 					Compiled indicator components registered on this server. Disabling one removes it from
@@ -488,6 +663,190 @@
 											{/each}
 										</ul>
 									{/if}
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</section>
+
+	<section class="flex flex-col">
+		<header class="mb-2 flex items-start justify-between gap-3">
+			<div>
+				<h3 class="text-[11px] font-semibold tracking-[0.08em] text-foreground uppercase">
+					Widget plugins
+				</h3>
+				<p class="mt-0.5 text-[12px] text-dim2">
+					Dashboard widget UI packages installed on this server — a manifest plus a static bundle
+					that runs in a sandboxed iframe on your own machine, never compiled or executed here.
+					Disabling one turns every placed instance of its widgets into a placeholder without
+					discarding the install.
+				</p>
+			</div>
+			<div class="flex flex-none items-center gap-2">
+				<input
+					bind:this={widgetFileInput}
+					type="file"
+					accept=".zip"
+					class="hidden"
+					onchange={onWidgetFileChosen}
+				/>
+				<Button variant="outline" size="sm" onclick={pickWidgetFile} disabled={widgetUploading}>
+					{#if widgetUploading}
+						<Spinner class="size-3.5" />
+					{:else}
+						<UploadIcon class="size-3.5" />
+					{/if}
+					Install
+				</Button>
+				<Button
+					variant="outline"
+					size="sm"
+					onclick={() => void refreshWidgetList()}
+					disabled={widgetLoading}
+				>
+					<RefreshIcon class="size-3.5" />
+					Refresh
+				</Button>
+			</div>
+		</header>
+
+		{#if widgetUploadError}
+			<p data-testid="widget-plugins-upload-error" class="mb-2 text-[12.5px] text-destructive">
+				{widgetUploadError}
+			</p>
+		{/if}
+
+		{#if widgetLoading && widgetPlugins.length === 0}
+			<div class="flex items-center gap-2 py-8">
+				<Spinner class="size-3.5" />
+				<span class="font-mono text-[11px] tracking-[0.14em] text-dim2">LOADING…</span>
+			</div>
+		{:else if widgetError}
+			<p data-testid="widget-plugins-error" class="py-4 text-[12.5px] text-destructive">
+				{widgetError}
+			</p>
+		{:else if widgetPlugins.length === 0}
+			<div class="flex flex-col items-center justify-center gap-3 border border-border py-12 text-center">
+				<PuzzleIcon class="size-8 text-dim" />
+				<p class="max-w-sm text-[13px] text-dim2">
+					No widget plugin package has been installed on this server yet.
+				</p>
+			</div>
+		{:else}
+			<div class="border border-border" data-testid="widget-plugins-list">
+				{#each widgetPlugins as pkg (pkg.id)}
+					{@const state = widgetStateDisplay(pkg)}
+					<div class="border-b border-border last:border-b-0">
+						<div class="flex items-center justify-between gap-3 px-3 py-2.5">
+							<button
+								type="button"
+								class="flex min-w-0 flex-1 items-center gap-2 text-left"
+								onclick={() => toggleWidgetOpen(pkg.id)}
+								data-testid={`widget-plugin-row-${pkg.id}`}
+							>
+								{#if isWidgetOpen(pkg.id)}
+									<ChevronDownIcon class="size-3.5 flex-none text-dim2" />
+								{:else}
+									<ChevronRightIcon class="size-3.5 flex-none text-dim2" />
+								{/if}
+								<span class="flex min-w-0 flex-col">
+									<span class="truncate text-[13px] font-medium text-foreground">{pkg.name}</span>
+									<span class="truncate font-mono text-[11px] text-dim2">
+										{pkg.id}@{pkg.version} · {pkg.widget_count}
+										{pkg.widget_count === 1 ? 'widget' : 'widgets'}
+									</span>
+								</span>
+								<Badge
+									variant={state.variant}
+									class={state.class}
+									data-testid={`widget-plugin-state-${pkg.id}`}
+								>
+									{state.label}
+								</Badge>
+								<Badge variant="outline" data-testid={`widget-plugin-origin-${pkg.id}`}>
+									{widgetOriginLabel(pkg)}
+								</Badge>
+							</button>
+							<div class="flex flex-none items-center gap-2">
+								{#if widgetTogglingId === pkg.id}
+									<Spinner class="size-3.5" />
+								{:else}
+									<Switch
+										size="sm"
+										checked={pkg.enabled}
+										onCheckedChange={() => void setWidgetEnabled(pkg, !pkg.enabled)}
+										data-testid={`widget-plugin-toggle-${pkg.id}`}
+									/>
+								{/if}
+								{#if !pkg.is_builtin}
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										aria-label={`Remove ${pkg.name}`}
+										onclick={() => void removeWidgetPlugin(pkg)}
+										disabled={widgetRemovingId === pkg.id}
+									>
+										{#if widgetRemovingId === pkg.id}
+											<Spinner class="size-3.5" />
+										{:else}
+											<Trash2Icon class="size-3.5" />
+										{/if}
+									</Button>
+								{/if}
+							</div>
+						</div>
+
+						{#if isWidgetOpen(pkg.id)}
+							<div
+								class="flex flex-col gap-4 border-t border-border bg-ink/2 px-3 py-3"
+								data-testid={`widget-plugin-detail-${pkg.id}`}
+							>
+								{#if pkg.status.state === 'failed'}
+									<div
+										class="flex items-start gap-2 border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-[12px] text-destructive"
+										data-testid={`widget-plugin-reason-${pkg.id}`}
+									>
+										<OctagonXIcon class="mt-0.5 size-3.5 flex-none" />
+										<div>
+											<div class="font-medium">This plugin failed to load.</div>
+											<div class="mt-0.5">{pkg.status.reason}</div>
+										</div>
+									</div>
+								{/if}
+
+								<div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[12px] sm:grid-cols-3">
+									<div>
+										<div class="text-dim2">Description</div>
+										<div class="text-foreground">
+											{pkg.description || 'No description given.'}
+										</div>
+									</div>
+									<div>
+										<div class="text-dim2">Manifest digest</div>
+										<div class="truncate font-mono text-foreground">{pkg.digest}</div>
+									</div>
+								</div>
+
+								<div>
+									<div class="mb-1 text-[11px] font-medium tracking-[0.05em] text-dim2 uppercase">
+										Runtime health
+									</div>
+									<p class="text-[12px] text-dim2">
+										Widget plugins run entirely in your own browser, not on this server — there is
+										no runtime health to report yet.
+									</p>
+								</div>
+
+								<div>
+									<div class="mb-1 text-[11px] font-medium tracking-[0.05em] text-dim2 uppercase">
+										Logs
+									</div>
+									<p class="text-[12px] text-dim2" data-testid={`widget-plugin-logs-empty-${pkg.id}`}>
+										Widget plugins do not report a log yet.
+									</p>
 								</div>
 							</div>
 						{/if}

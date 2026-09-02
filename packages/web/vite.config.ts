@@ -14,6 +14,17 @@ export default defineConfig({
 			'/api': {
 				target: 'http://127.0.0.1:4190',
 				changeOrigin: true
+			},
+			// A widget plugin's own static files live outside `/api` (see
+			// `crates/api/src/lib.rs`'s `mount_widget_plugin_routes` doc
+			// comment) so this route can eventually move to a genuinely
+			// separate origin. Without proxying it too, the sandboxed iframe's
+			// `GET /widget-plugin-assets/...` hits Vite's own dev server, which
+			// has no such route and falls back to the SPA's `index.html` — the
+			// widget then renders that fallback page instead of its own bundle.
+			'/widget-plugin-assets': {
+				target: 'http://127.0.0.1:4190',
+				changeOrigin: true
 			}
 		}
 	},

@@ -9,7 +9,6 @@
 	import EllipsisVerticalIcon from '@lucide/svelte/icons/ellipsis-vertical';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
-	import PuzzleIcon from '@lucide/svelte/icons/puzzle';
 
 	let {
 		workspaces,
@@ -17,7 +16,6 @@
 		onSelect,
 		onAdd,
 		onOpenAddWidget,
-		onOpenWidgetPlugins,
 		onRename,
 		onDelete
 	}: {
@@ -26,10 +24,6 @@
 		onSelect: (id: string) => void;
 		onAdd: () => void;
 		onOpenAddWidget: () => void;
-		/** Opens the widget plugin package manager — install, enable/disable,
-		 * refresh, remove. Separate from `onOpenAddWidget`'s picker, which
-		 * only ever places an already-active widget type. */
-		onOpenWidgetPlugins: () => void;
 		onRename: (id: string, newName: string) => void;
 		onDelete: (id: string) => void;
 	} = $props();
@@ -91,12 +85,6 @@
 				<DropdownMenu.Item class={itemClass} onSelect={onOpenAddWidget}>
 					<PlusIcon class="size-[13px] text-secondary-foreground" />
 					<span class="font-mono text-[10px] tracking-[0.12em] text-foreground">ADD WIDGET…</span>
-				</DropdownMenu.Item>
-				<DropdownMenu.Item class={itemClass} onSelect={onOpenWidgetPlugins}>
-					<PuzzleIcon class="size-[13px] text-secondary-foreground" />
-					<span class="font-mono text-[10px] tracking-[0.12em] text-foreground">
-						WIDGET PLUGINS…
-					</span>
 				</DropdownMenu.Item>
 				<DropdownMenu.Item class={itemClass} onSelect={renameActive}>
 					<PencilIcon class="size-[13px] text-secondary-foreground" />

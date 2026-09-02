@@ -37,12 +37,17 @@
 //! `senken_dashboard::WidgetRegistry` — when the lookup misses, the caller
 //! draws a placeholder and leaves the stored config exactly where it was.
 
+/// The Content-Security-Policy header served with a widget's entry
+/// document, computed from that document's own bytes. See this module's own
+/// docs for why a fixed policy string cannot work for this sandbox.
+pub mod csp;
 /// The manifest schema and its validation. See this module's own docs.
 pub mod manifest;
 /// The on-disk package store: install, discovery, enable/disable, and the
 /// effective widget catalog. See this module's own docs.
 pub mod store;
 
+pub use csp::content_security_policy;
 pub use manifest::{
     DASHBOARD_WIDGET_POINT, DataSource, GridSize, ManifestError, ValidatedManifest,
     ValidatedWidgetContribution,

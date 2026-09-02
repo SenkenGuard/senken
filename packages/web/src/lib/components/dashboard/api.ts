@@ -170,11 +170,20 @@ export async function dashboardWidgetCatalog(): Promise<DashboardWidgetCatalogRe
 // Widget UI plugin packages — a manifest plus a static bundle (`index.html`
 // + assets), built entirely outside this repository and served into a
 // sandboxed iframe. Mirrors `crates/api/src/widget_plugin_handlers.rs`
-// field-for-field; that module is not registered on the server's router
-// yet either (see its own doc comment on the wiring it still needs), so
-// these calls will 404 until an integrator mounts it — same situation the
-// comment at the top of this file already notes for the dashboard routes
-// themselves.
+// field-for-field; those routes are mounted (`mount_widget_plugin_routes`,
+// `crates/api/src/lib.rs`) and included in `GET /api/openapi.json` today.
+//
+// `openapi-typescript`'s own `generated.ts` already has a
+// `WidgetPluginPackageDto`, but it predates that struct's `is_builtin`
+// field and has not been regenerated since — the hand-written
+// `WidgetPluginPackage` below is kept, rather than switched to the
+// generated (and currently incomplete) one, until that regeneration
+// happens. Every admin action a package supports still requires
+// `Action::<Create|View|Edit|Delete>` on `Resource::WidgetPlugin` at
+// `Scope::All` — its own resource variant, distinct from every other
+// resource this crate checks (a widget package is third-party code the
+// server runs in a sandboxed iframe for every user, a different
+// administrative concern from disk usage or an indicator definition).
 // ---------------------------------------------------------------------
 
 /** One widget a plugin package contributes — a structural superset of
@@ -239,7 +248,7 @@ export async function widgetPluginCatalog(): Promise<WidgetPluginCatalogResponse
 }
 
 /** `GET /api/widget-plugins` — every installed package, enabled or not.
- * Requires the caller to hold `Action::View` on `Resource::Storage` at
+ * Requires the caller to hold `Action::View` on `Resource::WidgetPlugin` at
  * `Scope::All` (an ordinary account gets `ForbiddenError`). */
 export async function listWidgetPlugins(): Promise<WidgetPluginListResponse> {
 	return apiClient.request<WidgetPluginListResponse>('/api/widget-plugins');
@@ -247,7 +256,7 @@ export async function listWidgetPlugins(): Promise<WidgetPluginListResponse> {
 
 /** `POST /api/widget-plugins`: installs a package from the raw bytes of a
  * zip archive (`manifest.json` at its root, assets under `web/`). Requires
- * `Action::Create` on `Resource::Storage` at `Scope::All`. */
+ * `Action::Create` on `Resource::WidgetPlugin` at `Scope::All`. */
 export async function installWidgetPlugin(zipBytes: Uint8Array | ArrayBuffer): Promise<{ id: string }> {
 	return apiClient.request<{ id: string }>('/api/widget-plugins', {
 		method: 'POST',
@@ -259,7 +268,7 @@ export async function installWidgetPlugin(zipBytes: Uint8Array | ArrayBuffer): P
 /** `POST /api/widget-plugins/{id}/enabled`: flips whether this package's
  * widgets are in the effective catalog, without touching its files or any
  * placed instance's stored config — enabling restores it exactly. Requires
- * `Action::Edit` on `Resource::Storage` at `Scope::All`. */
+ * `Action::Edit` on `Resource::WidgetPlugin` at `Scope::All`. */
 export async function setWidgetPluginEnabled(id: string, enabled: boolean): Promise<void> {
 	await apiClient.request<void>(`/api/widget-plugins/${encodeURIComponent(id)}/enabled`, {
 		method: 'POST',
@@ -268,7 +277,7 @@ export async function setWidgetPluginEnabled(id: string, enabled: boolean): Prom
 }
 
 /** `DELETE /api/widget-plugins/{id}`: removes a package's files entirely.
- * Requires `Action::Delete` on `Resource::Storage` at `Scope::All`. */
+ * Requires `Action::Delete` on `Resource::WidgetPlugin` at `Scope::All`. */
 export async function uninstallWidgetPlugin(id: string): Promise<void> {
 	await apiClient.request<void>(`/api/widget-plugins/${encodeURIComponent(id)}`, {
 		method: 'DELETE'
@@ -278,7 +287,7 @@ export async function uninstallWidgetPlugin(id: string): Promise<void> {
 /** `POST /api/widget-plugins/refresh`: an explicit rescan of the data
  * directory, for a package dropped directly on disk rather than uploaded —
  * never a filesystem watcher (a watcher can fire mid-copy and read a
- * half-written file). Requires `Action::View` on `Resource::Storage` at
+ * half-written file). Requires `Action::View` on `Resource::WidgetPlugin` at
  * `Scope::All`. */
 export async function refreshWidgetPlugins(): Promise<WidgetPluginListResponse> {
 	return apiClient.request<WidgetPluginListResponse>('/api/widget-plugins/refresh', {

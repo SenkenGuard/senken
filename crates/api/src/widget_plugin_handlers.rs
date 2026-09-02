@@ -42,7 +42,7 @@ use senken_acl::{Action, Resource, Scope};
 use senken_identity::AuthenticatedUser;
 use senken_plugin::widget_package::{
     DataSource, GridSize, InstalledPackage, PackageStatus, ValidatedWidgetContribution,
-    WidgetPackageStore,
+    WidgetPackageStore, content_security_policy,
 };
 
 use crate::HandlerError;
@@ -57,13 +57,6 @@ use crate::auth::Authed;
 /// request this crate would reject for being too large and one the store
 /// would reject for the same reason agree.
 pub(crate) const WIDGET_PLUGIN_PACKAGE_MAX_BYTES: usize = 32 * 1024 * 1024;
-
-/// The exact sandbox Content Security Policy this platform's design record
-/// specifies for a dynamic widget's `index.html` — applied as a response
-/// header (not a `<meta>` tag, which cannot express `frame-ancestors` and
-/// is weaker for `form-action`/`base-uri`) whenever this server answers
-/// with `text/html`.
-const WIDGET_SANDBOX_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';";
 
 /// Checks `action` on `senken_acl::Resource::WidgetPlugin` and requires
 /// `Scope::All` — a widget UI package is third-party code the server runs
@@ -513,7 +506,22 @@ pub(crate) async fn widget_plugin_asset(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type);
     if content_type.starts_with("text/html") {
-        response = response.header(header::CONTENT_SECURITY_POLICY, WIDGET_SANDBOX_CSP);
+        // A response header, never a `<meta http-equiv="Content-Security-
+        // Policy">` tag: `frame-ancestors` cannot be expressed in a `<meta>`
+        // policy at all, and `form-action`/`base-uri` are weaker there too
+        // (a `<meta>` policy only starts applying once the parser reaches
+        // it, after which anything earlier in the document already ran).
+        //
+        // Computed from these exact bytes, not a fixed string — see
+        // `senken_plugin::widget_package::csp`'s own docs for why a widget
+        // sandboxed with no `allow-same-origin` needs that. Bytes that are
+        // not valid UTF-8 (never true of a real widget's HTML today) fall
+        // back to an empty document: no inline block can be hashed, so the
+        // policy ends up allowing nothing — the safe direction for content
+        // this handler cannot actually read as text.
+        let html = std::str::from_utf8(&bytes).unwrap_or_default();
+        let csp = content_security_policy(html);
+        response = response.header(header::CONTENT_SECURITY_POLICY, csp);
     }
     response
         .body(Body::from(bytes))

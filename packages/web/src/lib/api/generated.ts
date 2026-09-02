@@ -4446,6 +4446,13 @@ export interface components {
             enabled: boolean;
             /** @description The package's own id. */
             id: string;
+            /**
+             * @description `true` for the package this server installs on every fresh start.
+             *     It can still be disabled like any other package; it cannot be
+             *     uninstalled — `DELETE /api/widget-plugins/{id}` refuses it (see
+             *     `senken_plugin::widget_package::WidgetPackageError::CannotUninstallBuiltIn`).
+             */
+            is_builtin: boolean;
             /** @description Display name. */
             name: string;
             /** @description This package's current status. */
