@@ -51,6 +51,23 @@ use serde_json::value::RawValue;
 /// `wss://api-pub.bitfinex.com/ws/2` — confirmed live 2026-09-02.
 pub(crate) const BITFINEX_WS_URL: &str = "wss://api-pub.bitfinex.com/ws/2";
 
+/// The marker Bitfinex puts in a derivative's pair name.
+///
+/// A perpetual is written `BTCF0:USTF0` — the `F0` suffix on both legs is
+/// what distinguishes it from the spot `BTCUSD`. Both normalise to
+/// different symbols, but only the source id says which market a channel
+/// belongs to, and one socket carries both.
+const DERIVATIVE_MARKER: &str = "F0";
+
+/// Which of this plugin's sources a pair belongs to.
+fn source_of(pair: &str) -> &'static str {
+    if pair.contains(DERIVATIVE_MARKER) {
+        crate::PERP_ID
+    } else {
+        crate::SPOT_ID
+    }
+}
+
 /// Bitfinex prefixes a trading pair with `t`; the catalog stores the pair
 /// without it.
 const TRADING_PREFIX: char = 't';
@@ -61,7 +78,10 @@ const SEPARATOR: char = ':';
 
 /// Bitfinex's public `trades` channel.
 pub(crate) struct BitfinexTradesProtocol {
-    source_id: Box<str>,
+    /// Every source this protocol may publish under. One socket carries
+    /// both markets, so a channel's own pair decides which — see
+    /// [`source_of`].
+    source_ids: Vec<String>,
     symbols: Arc<dyn SymbolMap>,
     /// `chanId` → the pair that channel carries.
     ///
@@ -74,9 +94,12 @@ pub(crate) struct BitfinexTradesProtocol {
 }
 
 impl BitfinexTradesProtocol {
-    pub(crate) fn new(source_id: impl Into<Box<str>>, symbols: Arc<dyn SymbolMap>) -> Self {
+    pub(crate) fn new(
+        source_ids: impl IntoIterator<Item = String>,
+        symbols: Arc<dyn SymbolMap>,
+    ) -> Self {
         Self {
-            source_id: source_id.into(),
+            source_ids: source_ids.into_iter().collect(),
             symbols,
             channels: Mutex::new(HashMap::new()),
         }
@@ -89,7 +112,11 @@ impl BitfinexTradesProtocol {
     }
 
     fn instrument(&self, pair: &str) -> Option<InstrumentId> {
-        InstrumentId::new(&self.source_id, &normalise_symbol(pair, &[SEPARATOR])).ok()
+        let source = source_of(pair);
+        if !self.source_ids.iter().any(|id| id == source) {
+            return None;
+        }
+        InstrumentId::new(source, &normalise_symbol(pair, &[SEPARATOR])).ok()
     }
 }
 
@@ -219,7 +246,8 @@ pub(crate) struct BitfinexFeedSource {
 impl BitfinexFeedSource {
     pub(crate) fn new() -> Self {
         Self {
-            source_ids: vec![crate::SPOT_ID.to_owned()],
+            // One socket carries both markets.
+            source_ids: vec![crate::SPOT_ID.to_owned(), crate::PERP_ID.to_owned()],
         }
     }
 }
@@ -234,7 +262,10 @@ impl FeedSource for BitfinexFeedSource {
     }
 
     fn protocol(&self, symbols: Arc<dyn SymbolMap>) -> Arc<dyn VenueProtocol> {
-        Arc::new(BitfinexTradesProtocol::new(crate::SPOT_ID, symbols))
+        Arc::new(BitfinexTradesProtocol::new(
+            self.source_ids.clone(),
+            symbols,
+        ))
     }
 }
 
@@ -249,7 +280,10 @@ mod tests {
     const SUBSCRIBED: &str = r#"{"event":"subscribed","channel":"trades","chanId":3317,"symbol":"tBTCUSD","pair":"BTCUSD"}"#;
 
     fn protocol() -> BitfinexTradesProtocol {
-        BitfinexTradesProtocol::new(crate::SPOT_ID, Arc::new(IdentitySymbolMap))
+        BitfinexTradesProtocol::new(
+            vec![crate::SPOT_ID.to_owned(), crate::PERP_ID.to_owned()],
+            Arc::new(IdentitySymbolMap),
+        )
     }
 
     fn instrument() -> InstrumentId {

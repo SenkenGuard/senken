@@ -139,6 +139,7 @@ fn interval_of(spec: BarSpec) -> Option<&'static str> {
 /// a [`Clock`] (Bitfinex sends no confirmation flag — see the module docs).
 #[derive(Clone)]
 pub struct BitfinexBarSource {
+    source_id: &'static str,
     url: String,
     client: VenueClient,
     clock: Arc<dyn Clock>,
@@ -182,7 +183,23 @@ impl BitfinexBarSource {
 /// Bitfinex spot bars.
 #[must_use]
 pub fn bar_source_spot(client: VenueClient, clock: Arc<dyn Clock>) -> BitfinexBarSource {
+    bar_source(crate::SPOT_ID, client, clock)
+}
+
+/// A bar source for one of Bitfinex's two markets.
+///
+/// One endpoint serves both — `candles/trade:{interval}:{symbol}/hist`
+/// takes the symbol in its path and nothing else — and the perpetual
+/// market answers the identical six-cell row, confirmed live 2026-09-02
+/// against `tBTCF0:USTF0`.
+#[must_use]
+pub fn bar_source(
+    source_id: &'static str,
+    client: VenueClient,
+    clock: Arc<dyn Clock>,
+) -> BitfinexBarSource {
     BitfinexBarSource {
+        source_id,
         url: CANDLES_URL.to_owned(),
         client,
         clock,
@@ -193,7 +210,7 @@ pub fn bar_source_spot(client: VenueClient, clock: Arc<dyn Clock>) -> BitfinexBa
 #[async_trait::async_trait]
 impl BarSource for BitfinexBarSource {
     fn source_id(&self) -> &str {
-        crate::SPOT_ID
+        self.source_id
     }
 
     fn supported(&self) -> &[BarSpec] {

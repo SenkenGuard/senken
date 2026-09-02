@@ -20,6 +20,7 @@ mod api;
 mod bars;
 mod book;
 mod feed;
+mod futures;
 
 pub use bars::{KucoinBarSource, bar_source_spot};
 
@@ -221,7 +222,21 @@ impl Plugin for KucoinPlugin {
         context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client.clone())));
         // The live feed fetches its own WebSocket token over HTTP before
         // every dial, so it needs the same rate-limited client as the rest.
-        context.register_feed_source(Arc::new(crate::feed::KucoinFeedSource::new(client)));
+        context.register_feed_source(Arc::new(crate::feed::KucoinFeedSource::new(client.clone())));
+
+        // KuCoin Futures is a separate API on a separate host, with its
+        // own token endpoint — see `futures`' own docs.
+        context.register_bar_source(Arc::new(crate::futures::bar_source_futures(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_book_source(Arc::new(crate::futures::book_source_futures(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_feed_source(Arc::new(crate::futures::KucoinFuturesFeedSource::new(
+            client,
+        )));
         Ok(())
     }
 }

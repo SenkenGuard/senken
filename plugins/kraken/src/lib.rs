@@ -50,6 +50,8 @@ use crate::api::{AssetPairsResponse, InstrumentsResponse, RawInstrument, RawPair
 mod api;
 mod bars;
 mod book;
+mod futures_bars;
+mod futures_feed;
 
 pub use bars::{KrakenBarSource, bar_source_spot};
 
@@ -297,7 +299,18 @@ impl Plugin for KrakenPlugin {
             client.clone(),
             Arc::new(senken_plugin::SystemClock),
         )));
-        context.register_book_source(Arc::new(crate::book::book_source_futures(client)));
+        context.register_book_source(Arc::new(crate::book::book_source_futures(client.clone())));
+
+        // Kraken Futures has candles and a stream of its own, on its own
+        // host. Unlike spot, its product id is the same string on the
+        // REST API and the socket, so nothing has to be reconstructed —
+        // see `futures_feed`'s own docs.
+        context.register_bar_source(Arc::new(crate::futures_bars::bar_source_futures(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_feed_source(Arc::new(crate::futures_feed::KrakenFuturesFeedSource::new()));
+        let _ = &client;
         Ok(())
     }
 }

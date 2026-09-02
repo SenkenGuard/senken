@@ -99,6 +99,7 @@ type ErrorEnvelope = (String, i64, String);
 /// (see the module docs).
 #[derive(Clone)]
 pub(crate) struct BitfinexBookSource {
+    source_id: &'static str,
     url: String,
     client: VenueClient,
     clock: Arc<dyn Clock>,
@@ -124,8 +125,13 @@ impl BitfinexBookSource {
 
 /// Builds a [`BitfinexBookSource`] against the real Bitfinex endpoint.
 #[must_use]
-pub(crate) fn book_source(client: VenueClient, clock: Arc<dyn Clock>) -> BitfinexBookSource {
+pub(crate) fn book_source(
+    source_id: &'static str,
+    client: VenueClient,
+    clock: Arc<dyn Clock>,
+) -> BitfinexBookSource {
     BitfinexBookSource {
+        source_id,
         url: BOOK_URL.to_owned(),
         client,
         clock,
@@ -167,7 +173,7 @@ fn parse_book(body: &[u8]) -> Result<Vec<RawLevel>, SourceError> {
 #[async_trait]
 impl BookSource for BitfinexBookSource {
     fn source_id(&self) -> &str {
-        crate::SPOT_ID
+        self.source_id
     }
 
     async fn book_snapshot(
@@ -271,8 +277,12 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(BOOK, "application/json"))
             .mount(&server)
             .await;
-        let source = book_source(test_client(), Arc::new(FixedClock(1_788_332_500_000)))
-            .with_url(server.uri());
+        let source = book_source(
+            crate::SPOT_ID,
+            test_client(),
+            Arc::new(FixedClock(1_788_332_500_000)),
+        )
+        .with_url(server.uri());
         (server, source)
     }
 
@@ -340,8 +350,12 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(&b"[]"[..], "application/json"))
             .mount(&server)
             .await;
-        let source = book_source(test_client(), Arc::new(FixedClock(1_788_332_500_000)))
-            .with_url(server.uri());
+        let source = book_source(
+            crate::SPOT_ID,
+            test_client(),
+            Arc::new(FixedClock(1_788_332_500_000)),
+        )
+        .with_url(server.uri());
 
         let snapshot = source.book_snapshot(&btcusd(), 25).await.unwrap();
         assert!(snapshot.bids.is_empty());
@@ -367,7 +381,8 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let source = book_source(test_client(), Arc::new(FixedClock(0))).with_url(server.uri());
+        let source = book_source(crate::SPOT_ID, test_client(), Arc::new(FixedClock(0)))
+            .with_url(server.uri());
 
         let error = source.book_snapshot(&btcusd(), 25).await.unwrap_err();
         assert!(matches!(error, SourceError::Rejected { .. }));

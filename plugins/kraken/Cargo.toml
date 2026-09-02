@@ -20,6 +20,7 @@ senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
 senken-plugin = { workspace = true, features = ["http"] }
 senken-series = { workspace = true }
+senken-subscription = { workspace = true }
 senken-venue = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

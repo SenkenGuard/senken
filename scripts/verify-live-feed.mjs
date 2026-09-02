@@ -70,7 +70,15 @@ const PREFERRED = [
 	'KRWBTC',
 	'BTCPERPETUAL',
 	'BTCUSDTM',
-	'BTCUSDTPERP'
+	'BTCUSDTPERP',
+	// Derivative markets name their BTC contract in their own way.
+	'XBTUSDTM',
+	'PFXBTUSD',
+	'BTCF0USTF0',
+	'BTCUSDPERP',
+	'BTCPERP',
+	// Kraken Futures keeps its underscores through normalisation.
+	'PF_XBTUSD'
 ];
 // The search grammar takes `source:term`, so each source is asked about
 // its own catalog and only exact symbol matches count — a fuzzy hit like
