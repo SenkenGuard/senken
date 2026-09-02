@@ -21,6 +21,7 @@ import {
 	emptyPortfolio,
 	engineTable,
 	exposureByAdapter,
+	hudStats,
 	isAccountTradable,
 	mulScaled,
 	sumByCurrency,
@@ -297,6 +298,75 @@ describe('sumByCurrency', () => {
 	test('an account whose balances have not loaded contributes to no currency', () => {
 		const totals = sumByCurrency([account()], {});
 		expect(totals).toHaveLength(0);
+	});
+});
+
+describe('sumByCurrency margin', () => {
+	test('margins are summed when every account in the currency reports one', () => {
+		const accounts = [account({ id: 'a' }), account({ id: 'b' })];
+		const portfolios: Record<string, Portfolio> = {
+			a: { ...emptyPortfolio(), balances: balances({ margin_used: { scale: 2, value: '1000' } }) },
+			b: { ...emptyPortfolio(), balances: balances({ margin_used: { scale: 2, value: '2500' } }) }
+		};
+		expect(sumByCurrency(accounts, portfolios)[0].marginUsed).toEqual({ scale: 2, value: '3500' });
+	});
+
+	test('one account that reports no margin makes the currency total unknown, not understated', () => {
+		const accounts = [account({ id: 'a' }), account({ id: 'b' })];
+		const portfolios: Record<string, Portfolio> = {
+			a: { ...emptyPortfolio(), balances: balances({ margin_used: { scale: 2, value: '1000' } }) },
+			b: { ...emptyPortfolio(), balances: balances({ margin_used: undefined }) }
+		};
+		const total = sumByCurrency(accounts, portfolios)[0];
+		expect(total.marginUsed).toBeNull();
+		// The equity beside it is still a real sum — one missing optional
+		// field must not blank the figures that were reported.
+		expect(total.equity).toEqual({ scale: 2, value: '20000000' });
+	});
+});
+
+describe('hudStats', () => {
+	test('equity is the accounts\' own total, with its currency', () => {
+		const accounts = [account({ id: 'a' }), account({ id: 'b' })];
+		const portfolios: Record<string, Portfolio> = {
+			a: { ...emptyPortfolio(), balances: balances({ equity: { scale: 2, value: '10000' } }) },
+			b: { ...emptyPortfolio(), balances: balances({ equity: { scale: 2, value: '5000' } }) }
+		};
+		expect(hudStats(accounts, portfolios).find((s) => s.key === 'equity')?.value).toBe('150.00 USD');
+	});
+
+	test('with nothing attached every money cell is a dash, never a figure', () => {
+		const stats = hudStats([], {});
+		for (const key of ['equity', 'pnl', 'balance', 'margin', 'available']) {
+			expect(stats.find((s) => s.key === key)?.value).toBe('—');
+		}
+		expect(stats.find((s) => s.key === 'positions')?.value).toBe('0');
+	});
+
+	test('counts positions and working orders across every account', () => {
+		const accounts = [account({ id: 'a' }), account({ id: 'b' })];
+		const portfolios: Record<string, Portfolio> = {
+			a: {
+				...emptyPortfolio(),
+				positions: [position()],
+				orders: [order({ status: 'open' }), order({ id: 'o2', status: 'filled' })]
+			},
+			b: { ...emptyPortfolio(), positions: [position()], orders: [order({ id: 'o3', status: 'pending' })] }
+		};
+		const stats = hudStats(accounts, portfolios);
+		expect(stats.find((s) => s.key === 'positions')?.value).toBe('2');
+		expect(stats.find((s) => s.key === 'working')?.value).toBe('2');
+	});
+
+	test('mixed currencies are never blended into one headline figure', () => {
+		const accounts = [account({ id: 'a' }), account({ id: 'b' })];
+		const portfolios: Record<string, Portfolio> = {
+			a: { ...emptyPortfolio(), balances: balances({ currency: 'USD' }) },
+			b: { ...emptyPortfolio(), balances: balances({ currency: 'USDT' }) }
+		};
+		expect(hudStats(accounts, portfolios).find((s) => s.key === 'equity')?.value).toBe(
+			'2 accounts · 2 currencies'
+		);
 	});
 });
 

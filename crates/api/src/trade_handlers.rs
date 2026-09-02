@@ -1744,6 +1744,101 @@ mod end_to_end_tests {
         handle.shutdown().await.unwrap();
     }
 
+    /// Someone who has only ever opened a chart on a venue that serves its
+    /// own coarse candles still has real, current prices stored for that
+    /// instrument — and every market order they placed used to come back
+    /// "no price is available, load some history first", which they had
+    /// just done. Nothing on screen said the granularity was what mattered.
+    ///
+    /// The venue here serves five-minute bars and nothing finer, so
+    /// five-minute is the only series that can exist in the store for it.
+    /// That is the exact shape the defect needed, and it is not exotic: it
+    /// is what every venue whose finest candle is coarser than a minute
+    /// looks like.
+    #[tokio::test]
+    async fn a_coarser_series_is_mark_enough_to_fill_a_market_order() {
+        let runtime_dir = tempfile::TempDir::new().unwrap();
+        let runtime = crate::bars_handlers::test_support::runtime_with_5m_only_venue_and_simulator(
+            runtime_dir.path(),
+        );
+        let (handle, identity, _dir) = serve_unfenced_test_server_with(runtime).await;
+        let addr = handle.local_addr();
+        let admin = admin_of(&identity);
+        let admin_token = login_token(addr, DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD).await;
+        let token = trader(addr, &identity, &admin, "alice@example.com").await;
+        let instrument = format!(
+            "{}:{}",
+            crate::bars_handlers::test_support::TEST_SOURCE_5M_ONLY,
+            crate::bars_handlers::test_support::TEST_SYMBOL
+        );
+
+        let account = body_json(
+            post_json_auth(
+                format!("http://{addr}/api/trade/accounts"),
+                &token,
+                serde_json::json!({
+                    "adapter_id": "simulator",
+                    "label": "COARSE",
+                    "settings": {
+                        "starting_balance": "50000.00",
+                        "fee_bps": 0,
+                        "slippage_bps": 0
+                    }
+                }),
+            )
+            .await,
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let now = senken_loader::SystemClock.now().as_nanos();
+        let five = 5 * MINUTE;
+        let aligned_now = now - now.rem_euclid(five);
+        let job_id = body_json(
+            post_json_auth(
+                format!("http://{addr}/api/bars/ensure"),
+                &admin_token,
+                serde_json::json!({
+                    "instrument": instrument,
+                    "spec": "5m",
+                    "from": aligned_now - 36 * five,
+                    "to": aligned_now,
+                }),
+            )
+            .await,
+        )
+        .await["job_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        wait_for_job(addr, &admin_token, &job_id).await;
+
+        let placed = post_json_auth(
+            format!("http://{addr}/api/trade/accounts/{account}/orders"),
+            &token,
+            serde_json::json!({
+                "instrument": instrument,
+                "side": "buy",
+                "kind": "market",
+                "quantity": { "scale": 0, "value": "1" }
+            }),
+        )
+        .await;
+        let status = placed.status();
+        let order = body_json(placed).await;
+        assert_eq!(
+            status,
+            reqwest::StatusCode::CREATED,
+            "five-minute bars are history; the order must not be refused for want of a price: {order}"
+        );
+        assert_eq!(order["status"], "filled");
+        assert_eq!(order["average_price"]["value"], "100");
+
+        handle.shutdown().await.unwrap();
+    }
+
     /// Loads history and opens one long position, returning the running
     /// server, the account id and the trader's token — the setup both the
     /// test above and the one below need.

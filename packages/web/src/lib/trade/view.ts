@@ -254,21 +254,53 @@ export function sumByCurrency(
 	portfolios: Record<string, Portfolio>
 ): CurrencyTotal[] {
 	const order: string[] = [];
-	const totals = new Map<string, { equity: ScaledDto | null; balance: ScaledDto | null; pnl: ScaledDto | null }>();
+	const totals = new Map<string, CurrencyTotal>();
+	// Margin is optional per adapter, and a partial sum is worse than none:
+	// adding the one account that reports it to the one that does not
+	// produces a figure that looks like the whole and understates it. Once
+	// any contributing account is silent, that currency's margin is unknown
+	// and stays unknown.
+	const marginUnknown = new Set<string>();
+	const availableUnknown = new Set<string>();
 	for (const account of accounts) {
 		const balances = portfolios[account.id]?.balances;
 		if (!balances || !balances.currency) continue;
-		let entry = totals.get(balances.currency);
+		const currency = balances.currency;
+		let entry = totals.get(currency);
 		if (!entry) {
-			entry = { equity: null, balance: null, pnl: null };
-			totals.set(balances.currency, entry);
-			order.push(balances.currency);
+			entry = {
+				currency,
+				equity: null,
+				balance: null,
+				pnl: null,
+				marginUsed: null,
+				marginAvailable: null
+			};
+			totals.set(currency, entry);
+			order.push(currency);
 		}
 		entry.equity = addScaled(entry.equity, balances.equity);
 		entry.balance = addScaled(entry.balance, balances.balance);
 		entry.pnl = addScaled(entry.pnl, balances.unrealized_pnl ?? null);
+		if (balances.margin_used) {
+			entry.marginUsed = addScaled(entry.marginUsed, balances.margin_used);
+		} else {
+			marginUnknown.add(currency);
+		}
+		if (balances.margin_available) {
+			entry.marginAvailable = addScaled(entry.marginAvailable, balances.margin_available);
+		} else {
+			availableUnknown.add(currency);
+		}
 	}
-	return order.map((currency) => ({ currency, ...totals.get(currency)! }));
+	return order.map((currency) => {
+		const total = totals.get(currency)!;
+		return {
+			...total,
+			marginUsed: marginUnknown.has(currency) ? null : total.marginUsed,
+			marginAvailable: availableUnknown.has(currency) ? null : total.marginAvailable
+		};
+	});
 }
 
 /** One currency's totals across whichever accounts share it, from
@@ -278,6 +310,12 @@ export interface CurrencyTotal {
 	equity: ScaledDto | null;
 	balance: ScaledDto | null;
 	pnl: ScaledDto | null;
+	/** `null` when at least one account in this currency does not report
+	 * margin at all — see `sumByCurrency` for why that is not summed
+	 * around. */
+	marginUsed: ScaledDto | null;
+	/** `null` on the same rule as `marginUsed`. */
+	marginAvailable: ScaledDto | null;
 }
 
 /** `a * b`, exactly — the scales add rather than widen, because that is what
@@ -352,6 +390,58 @@ function moneyStat(
 		detail: totals.map((total) => `${format(pick(total))} ${total.currency}`)
 	};
 }
+
+/** One HUD cell in the shell's top bar, from `hudStats`. `key` is what the
+ * bar's own visibility toggles are keyed on, so a stat can be turned off
+ * without depending on its label text. */
+export interface HudStat extends StatItem {
+	key: string;
+}
+
+/** The shell top bar's stat strip, across every account the shared trade
+ * store currently holds.
+ *
+ * Every cell here is read from an adapter's own answer. There is
+ * deliberately no "PNL 24h", no "open risk" and no "buying power": nothing
+ * in this system records an equity history to difference, no adapter
+ * reports an R-multiple, and "buying power" would be a friendlier name for
+ * available margin that not every venue reports at all. A number in the
+ * chrome of every screen is the one a user glances at instead of checking,
+ * so it is either something an adapter said or it is not shown.
+ *
+ * With no accounts attached (or none loaded yet) the money cells read as
+ * `formatScaledForDisplay`'s placeholder rather than as zero — an account
+ * whose balances have not arrived has not told us it is empty.
+ */
+export function hudStats(
+	accounts: TradeAccountDto[],
+	portfolios: Record<string, Portfolio>
+): HudStat[] {
+	const totals = sumByCurrency(accounts, portfolios);
+	const positions = accounts.reduce((n, a) => n + (portfolios[a.id]?.positions.length ?? 0), 0);
+	const working = accounts.reduce(
+		(n, a) => n + (portfolios[a.id]?.orders.filter((o) => isWorking(o)).length ?? 0),
+		0
+	);
+	return [
+		{ key: 'equity', ...moneyStat('EQUITY', accounts.length, totals, (t) => t.equity, false) },
+		{ key: 'pnl', ...moneyStat('OPEN PNL', accounts.length, totals, (t) => t.pnl, true) },
+		{ key: 'positions', label: 'POSITIONS', value: String(positions), tone: 'fg2' },
+		{ key: 'working', label: 'WORKING ORDERS', value: String(working), tone: 'fg2' },
+		{ key: 'balance', ...moneyStat('BALANCE', accounts.length, totals, (t) => t.balance, false) },
+		{
+			key: 'margin',
+			...moneyStat('MARGIN USED', accounts.length, totals, (t) => t.marginUsed, false)
+		},
+		{
+			key: 'available',
+			...moneyStat('MARGIN FREE', accounts.length, totals, (t) => t.marginAvailable, false)
+		}
+	];
+}
+
+/** Which of `hudStats` the top bar shows before anyone changes it. */
+export const DEFAULT_HUD_KEYS = ['equity', 'pnl', 'positions', 'working'];
 
 /** Whether an order can still fill — the same partition
  * `senken_trade::OrderStatus::is_open` draws. */

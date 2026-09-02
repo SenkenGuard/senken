@@ -3,7 +3,8 @@
 //!
 //! # Where a mark price comes from, and why
 //!
-//! From the newest stored one-minute bar's close, through the same
+//! From the newest stored bar's close on the finest series this
+//! installation actually holds for the instrument, through the same
 //! `senken-loader` ladder every chart reads. That choice is worth stating
 //! because it has a visible consequence: **an instrument nobody has loaded
 //! history for has no mark**, and a market order on it is refused by name
@@ -24,9 +25,9 @@
 use async_trait::async_trait;
 use senken_core::decimal::Scaled;
 use senken_core::{TimeRange, UnixNanos};
-use senken_loader::SeriesLoader;
+use senken_loader::{LoadError, SeriesLoader};
 use senken_marketdata::{Instrument, InstrumentId};
-use senken_series::{Anchor, BarSpec, BarUnit, Clock, Origin, SeriesKey};
+use senken_series::{AggregateError, Anchor, BarSpec, BarUnit, Clock, Origin, SeriesKey};
 use senken_trade::{InstrumentSource, MarkPrice, MarkPriceSource, TradeError};
 
 use crate::AppState;
@@ -45,12 +46,27 @@ use crate::AppState;
 /// Monday morning.
 const MARK_LOOKBACK_SECS: [i64; 4] = [60 * 60, 6 * 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60];
 
-/// The one-minute series every mark is read from.
-fn mark_spec() -> BarSpec {
-    BarSpec {
-        step: std::num::NonZeroU32::MIN,
-        unit: BarUnit::Minute,
-    }
+/// The series a mark is read from, finest first.
+///
+/// **Not one-minute alone**, and the reason is a defect this cost: a reader
+/// who opens an hourly chart has real, current prices stored for that
+/// instrument, and asking only for a one-minute series found nothing — so
+/// every market order came back "no price is available, load some history
+/// first", which they had just done. Nothing on screen could have told them
+/// the granularity was what mattered.
+///
+/// Finest first because a finer series carries a fresher close; a coarser
+/// one is a legitimate, staler mark, and how stale is visible either way
+/// because [`MarkPrice::as_of`] carries the bar's own instant rather than
+/// the wall clock.
+fn mark_specs() -> [BarSpec; 5] {
+    [
+        BarSpec::new(1, BarUnit::Minute),
+        BarSpec::new(5, BarUnit::Minute),
+        BarSpec::new(15, BarUnit::Minute),
+        BarSpec::new(1, BarUnit::Hour),
+        BarSpec::new(1, BarUnit::Day),
+    ]
 }
 
 /// The engine's window onto the instrument catalog.
@@ -106,13 +122,11 @@ impl MarkPriceSource for StoredMarkPrice {
         };
 
         let now = senken_loader::SystemClock.now();
-        let key = SeriesKey::new(
-            instrument.source(),
-            instrument.symbol(),
-            Origin::Derived,
-            mark_spec(),
-        );
 
+        // Window-major: a narrow window across every granularity before a
+        // wider one at any of them, so the answer is the freshest price
+        // this installation actually holds rather than the finest series it
+        // happens to have somewhere in the distant past.
         for lookback in MARK_LOOKBACK_SECS {
             let Some(from) = UnixNanos::from_secs(now.as_nanos() / 1_000_000_000 - lookback) else {
                 return Ok(None);
@@ -120,23 +134,40 @@ impl MarkPriceSource for StoredMarkPrice {
             let Some(range) = TimeRange::new(from, now) else {
                 return Ok(None);
             };
-            // `resolve` never fetches — it returns whatever is already
-            // stored. A mark price must not be able to start a
-            // multi-minute backfill on the request path of an order.
-            let resolved = loader
-                .resolve(&key, range, Anchor::UTC)
-                .await
-                .map_err(|source| TradeError::adapter(source.to_string()))?;
 
-            if let Some(bar) = resolved.bars.last() {
-                return Ok(Some(MarkPrice {
-                    price: Scaled::new(hit.instrument.price_scale, bar.close),
-                    // The bar's own open time, not the wall clock: this is
-                    // when the price was current, and reporting it as "now"
-                    // would make a stale mark indistinguishable from a live
-                    // one.
-                    as_of: bar.ts_open,
-                }));
+            for spec in mark_specs() {
+                let key = SeriesKey::new(
+                    instrument.source(),
+                    instrument.symbol(),
+                    Origin::Derived,
+                    spec,
+                );
+                // `resolve` never fetches — it returns whatever is already
+                // stored. A mark price must not be able to start a
+                // multi-minute backfill on the request path of an order.
+                let resolved = match loader.resolve(&key, range, Anchor::UTC).await {
+                    Ok(resolved) => resolved,
+                    // A venue whose finest candle is coarser than this spec
+                    // cannot fold one out of what it has, and says so by
+                    // name. That is an absence, not a failure: the next
+                    // spec in the ladder is exactly the coarser one this
+                    // venue *can* answer, and turning it into an error
+                    // instead made every market order on such a venue fail
+                    // with "internal server error".
+                    Err(LoadError::Aggregate(AggregateError::DoesNotDivide { .. })) => continue,
+                    Err(source) => return Err(TradeError::adapter(source.to_string())),
+                };
+
+                if let Some(bar) = resolved.bars.last() {
+                    return Ok(Some(MarkPrice {
+                        price: Scaled::new(hit.instrument.price_scale, bar.close),
+                        // The bar's own open time, not the wall clock: this
+                        // is when the price was current, and reporting it as
+                        // "now" would make a stale mark indistinguishable
+                        // from a live one.
+                        as_of: bar.ts_open,
+                    }));
+                }
             }
         }
         Ok(None)

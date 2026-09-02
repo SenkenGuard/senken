@@ -603,6 +603,21 @@ pub(crate) mod test_support {
         }
     }
 
+    /// The same 5-minute-only venue as [`runtime_with_5m_only_venue`], plus
+    /// the simulator — a store whose only bars for an instrument are
+    /// coarser than one minute, which is what a mark price has to cope
+    /// with on any venue that serves its own coarse candles.
+    pub(crate) fn runtime_with_5m_only_venue_and_simulator(data_dir: &std::path::Path) -> Runtime {
+        Runtime::builder()
+            .data_dir(data_dir)
+            .plugin(FakeVenuePlugin5mOnly)
+            .plugin(senken_plugin_simulator::SimulatorPlugin::new(
+                senken_storage::Storage::new(data_dir),
+            ))
+            .build()
+            .expect("two well-behaved plugins always activate")
+    }
+
     /// Builds a [`Runtime`] with one fake venue registered whose `BarSource`
     /// supports only 5-minute bars — see [`TEST_SOURCE_5M_ONLY`].
     pub(crate) fn runtime_with_5m_only_venue(data_dir: &std::path::Path) -> Runtime {
