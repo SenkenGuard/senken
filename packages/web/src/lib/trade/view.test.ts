@@ -13,6 +13,7 @@ import type {
 	TradeAccountDto
 } from '$lib/api/types';
 import {
+	accountStats,
 	aggregateStats,
 	anyPortfolioLoading,
 	dashboardEquity,
@@ -614,5 +615,56 @@ describe('engineTable TIME column', () => {
 			'America/New_York'
 		);
 		expect(table.rows[0].cells[0].value).toBe('20:00:00');
+	});
+});
+
+describe('accountStats — the figures a MetaTrader terminal shows', () => {
+	test('margin level, free margin and margin used all reach the strip', () => {
+		const stats = accountStats({
+			balances: balances({
+				margin_used: { scale: 2, value: '200000' },
+				margin_available: { scale: 2, value: '800000' },
+				margin_level: { scale: 2, value: '50000' }
+			}),
+			positions: [],
+			orders: [],
+			fills: [],
+			error: null
+		});
+
+		const labelled = Object.fromEntries(stats.map((stat) => [stat.label, stat.value]));
+		expect(labelled['MARGIN LEVEL']).toContain('500.00%');
+		expect(labelled['FREE MARGIN']).toContain('8,000.00');
+		expect(labelled['MARGIN USED']).toContain('2,000.00');
+	});
+
+	test('an account holding no margin shows a dash, not a zero', () => {
+		const stats = accountStats({
+			balances: balances({ margin_used: null, margin_available: null, margin_level: null }),
+			positions: [],
+			orders: [],
+			fills: [],
+			error: null
+		});
+
+		const level = stats.find((stat) => stat.label === 'MARGIN LEVEL');
+		// A zero here would read as fully margin called on an account that
+		// simply has nothing open.
+		expect(level?.value).toBe('\u2014');
+	});
+
+	test('a margin level under 100% is toned as a loss so it is visible at a glance', () => {
+		const stats = accountStats({
+			balances: balances({
+				margin_used: { scale: 2, value: '200000' },
+				margin_level: { scale: 2, value: '8000' }
+			}),
+			positions: [],
+			orders: [],
+			fills: [],
+			error: null
+		});
+
+		expect(stats.find((stat) => stat.label === 'MARGIN LEVEL')?.tone).toBe('loss');
 	});
 });

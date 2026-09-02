@@ -484,8 +484,40 @@ export function accountStats(portfolio: Portfolio | undefined): StatItem[] {
 			label: 'MARGIN USED',
 			value: withCurrency(formatScaledForDisplay(balances?.margin_used)),
 			tone: 'fg2'
+		},
+		{
+			label: 'FREE MARGIN',
+			value: withCurrency(formatScaledForDisplay(balances?.margin_available)),
+			tone: 'fg2'
+		},
+		// The figure a MetaTrader terminal shows most prominently, because
+		// it is the one a margin call and a stop out are both measured
+		// against. A dash when no margin is held: an account with nothing
+		// open has no margin level, and a zero would read as fully margin
+		// called.
+		{
+			label: 'MARGIN LEVEL',
+			value: balances?.margin_level
+				? `${formatScaledForDisplay(balances.margin_level)}%`
+				: '—',
+			tone: marginLevelTone(balances?.margin_level ?? null)
 		}
 	];
+}
+
+/**
+ * How close a margin level is to trouble.
+ *
+ * The thresholds are the account's own and are not known here, so this
+ * shades by distance rather than claiming a breach it cannot verify: the
+ * server refuses the order, and the screen only warns.
+ */
+function marginLevelTone(level: ScaledDto | null): Tone {
+	if (!level) return 'fg2';
+	const percent = Number(level.value) / 10 ** level.scale;
+	if (percent < 100) return 'loss';
+	if (percent < 200) return 'dim';
+	return 'fg';
 }
 
 /** "Equity by adapter" bars. */
