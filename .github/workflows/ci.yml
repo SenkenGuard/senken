@@ -84,12 +84,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          # The dynamic-indicator tests compile their fixture crates to a
-          # WebAssembly component while the test is running, so the target
-          # has to be installed or the fixture build fails with a missing
-          # `core` before any assertion is reached.
-          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       # `--locked` here matches what the release workflow builds with. Without
       # it CI may quietly resolve a newer dependency and pass, while the

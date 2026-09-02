@@ -2,3 +2,7 @@
 # Keep in sync with `rust-version` in Cargo.toml (the MSRV); CI checks both.
 channel = "1.97"
 components = ["clippy", "rustfmt"]
+# The dynamic-indicator tests shell out to `cargo build --target wasm32-wasip2`
+# to compile their fixtures, so the target belongs to the pin rather than to
+# one CI job: pinning it here installs it for a contributor's first build too.
+targets = ["wasm32-wasip2"]
