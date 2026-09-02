@@ -16,6 +16,7 @@ import type { Component } from 'svelte';
 import CpuIcon from '@lucide/svelte/icons/cpu';
 import LandmarkIcon from '@lucide/svelte/icons/landmark';
 import CoinsIcon from '@lucide/svelte/icons/coins';
+import { formatInstant } from '$lib/time';
 import type {
 	AccountAccessDto,
 	AdapterDto,
@@ -653,13 +654,12 @@ export function adapterCards(
 const L = (value: string, tone: Tone = 'fg2'): TableCell => ({ value, tone, align: 'left' });
 const R = (value: string, tone: Tone = 'fg2'): TableCell => ({ value, tone, align: 'right' });
 
-/** A short local time, for a nanosecond timestamp. */
-export function formatTime(nanos: number): string {
-	return new Date(nanos / 1_000_000).toLocaleTimeString([], {
-		hour: '2-digit',
-		minute: '2-digit',
-		second: '2-digit'
-	});
+/** A short clock-only time, for a nanosecond timestamp, rendered in `zoneId`
+ * — the reader's chosen display zone (`userZoneStore.zone`), never the
+ * browser's own, the same `formatInstant(...).text.slice(11)` idiom
+ * `top-bar.svelte`'s own clock uses. */
+export function formatTime(nanos: number, zoneId: string): string {
+	return formatInstant(nanos, zoneId).text.slice(11);
 }
 
 /** Builds the POSITIONS / ORDERS / EXECUTIONS table.
@@ -673,6 +673,10 @@ export function engineTable(
 	positions: (PositionDto & { accountId: string; accountLabel: string; tradable: boolean })[],
 	orders: (OrderDto & { accountId: string; accountLabel: string; tradable: boolean })[],
 	fills: (FillDto & { accountId: string; accountLabel: string })[],
+	/** The reader's chosen display zone, for every `TIME` cell — see
+	 * `formatTime`. No default: a table rendered with nobody's zone is
+	 * exactly the ambiguity `$lib/time` exists to rule out. */
+	zoneId: string,
 	/** `true` when at least one account in scope has no portfolio fetched
 	 * yet — see `EngineTable.loading`. Defaults to `false` for callers (like
 	 * a fixture-driven test) that have no loading state to report. */
@@ -703,7 +707,7 @@ export function engineTable(
 			rows: orders.map((order) => ({
 				key: `${order.accountId}:${order.id}`,
 				cells: [
-					L(formatTime(order.submitted_at), 'dim2'),
+					L(formatTime(order.submitted_at, zoneId), 'dim2'),
 					L(order.instrument, 'fg'),
 					...accCell(order.accountLabel),
 					L(order.side.toUpperCase(), order.side === 'buy' ? 'gain' : 'loss'),
@@ -750,7 +754,7 @@ export function engineTable(
 			rows: fills.map((fill) => ({
 				key: `${fill.accountId}:${fill.id}`,
 				cells: [
-					L(formatTime(fill.executed_at), 'dim2'),
+					L(formatTime(fill.executed_at, zoneId), 'dim2'),
 					L(fill.instrument, 'fg'),
 					...accCell(fill.accountLabel),
 					L(fill.side.toUpperCase(), fill.side === 'buy' ? 'gain' : 'loss'),
@@ -937,7 +941,11 @@ export function dashboardEquity(
  * looks live and does nothing when clicked. */
 export function dashboardPositions(
 	accounts: TradeAccountDto[],
-	portfolios: Record<string, Portfolio>
+	portfolios: Record<string, Portfolio>,
+	/** Threaded through to `engineTable` for parity with its other callers,
+	 * even though the `positions` tab this widget always renders has no
+	 * `TIME` column of its own to use it on. */
+	zoneId: string
 ): EngineTable {
 	const positions = accounts.flatMap((account) =>
 		(portfolios[account.id]?.positions ?? []).map((row) => ({
@@ -947,7 +955,15 @@ export function dashboardPositions(
 			tradable: false
 		}))
 	);
-	return engineTable('positions', 'all', positions, [], [], anyPortfolioLoading(accounts, portfolios));
+	return engineTable(
+		'positions',
+		'all',
+		positions,
+		[],
+		[],
+		zoneId,
+		anyPortfolioLoading(accounts, portfolios)
+	);
 }
 
 /** Whether at least one of `accounts` has no portfolio fetched at all

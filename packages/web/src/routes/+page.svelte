@@ -23,6 +23,7 @@
 	} from '$lib/mock/dashboard';
 	import { openCommand, closeCommand } from '$lib/state/command-palette.svelte';
 	import { loadTrade, refreshPortfolios, tradeStore, watchTrade } from '$lib/state/trade.svelte';
+	import { userZoneStore } from '$lib/state/user-zone.svelte';
 	import { dashboardEquity, dashboardPositions, dashboardRisk } from '$lib/trade/view';
 	import WorkspaceBar from '$lib/components/terminal/workspace-bar.svelte';
 	import DashboardWidget from '$lib/components/terminal/dashboard-widget.svelte';
@@ -50,7 +51,9 @@
 	// attached or removed elsewhere is reflected without this page doing
 	// anything special.
 	const equityData = $derived(dashboardEquity(tradeStore.ownAccounts, tradeStore.portfolios));
-	const positionsTable = $derived(dashboardPositions(tradeStore.ownAccounts, tradeStore.portfolios));
+	const positionsTable = $derived(
+		dashboardPositions(tradeStore.ownAccounts, tradeStore.portfolios, userZoneStore.zone)
+	);
 	const riskData = $derived(dashboardRisk(tradeStore.ownAccounts, tradeStore.portfolios));
 
 	async function reload() {

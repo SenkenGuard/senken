@@ -71,9 +71,18 @@ export function initialFormState(
 		}
 		if (field.type === 'toggle') {
 			state[field.key] = typeof value === 'boolean' ? value : defaultOf(field);
-		} else if (field.type === 'decimal' && typeof value === 'object') {
-			// A stored decimal arrives as `{ scale, value }`.
-			state[field.key] = formatScaled(value as never);
+		} else if (field.type === 'decimal') {
+			// A stored decimal arrives as `ScaledDto` (`{ scale, value }`,
+			// `value` a digit string) — never a bare number, which would
+			// have gone through a double on the way here. A value that is
+			// not that shape is a server or fixture bug, not something to
+			// paper over by coercing it through `String`.
+			if (typeof value !== 'object') {
+				throw new Error(
+					`"${field.key}" is a decimal setting; expected a scaled value but got ${typeof value}.`
+				);
+			}
+			state[field.key] = formatScaled(value);
 		} else {
 			state[field.key] = String(value);
 		}

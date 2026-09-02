@@ -29,7 +29,7 @@
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { apiClient } from '$lib/api/client';
-	import { describeError } from '$lib/api/errors';
+	import { getErrorMessage } from '$lib/api/errors';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
 	import type { AdapterActionDto, AdapterDto, OrderDto, TradeAccountDto } from '$lib/api/types';
 	import {
@@ -41,6 +41,7 @@
 		tradeStore,
 		watchTrade
 	} from '$lib/state/trade.svelte';
+	import { userZoneStore } from '$lib/state/user-zone.svelte';
 	import {
 		accountCards,
 		accountStats,
@@ -86,6 +87,7 @@
 	let actionDialogAction = $state<AdapterActionDto | null>(null);
 	let closeConfirm = $state<{ accountId: string; instrument: string } | null>(null);
 	let closing = $state(false);
+	let closeFailure = $state<string | null>(null);
 	let amendDialogOpen = $state(false);
 	let amendDialogAccountId = $state<string | null>(null);
 	let amendDialogOrder = $state<OrderDto | null>(null);
@@ -151,6 +153,7 @@
 			scoped.positions,
 			scoped.orders,
 			scoped.fills,
+			userZoneStore.zone,
 			scoped.loading
 		)
 	);
@@ -185,7 +188,7 @@
 			await refreshPortfolios();
 			notice = `${account.label} detached.`;
 		} catch (error) {
-			notice = describeError(error);
+			notice = getErrorMessage(error, `Could not detach ${account.label}.`);
 		}
 	}
 
@@ -221,6 +224,7 @@
 	function onTableAction(rowKey: string, actionKey: string) {
 		const [accountId, resourceId] = splitRowKey(rowKey);
 		if (actionKey === 'close') {
+			closeFailure = null;
 			closeConfirm = { accountId, instrument: resourceId };
 		} else if (actionKey === 'cancel') {
 			void cancelTableOrder(accountId, resourceId);
@@ -238,13 +242,14 @@
 			await apiClient.cancelOrder(accountId, orderId);
 			await afterMutation(accountId);
 		} catch (error) {
-			notice = describeError(error);
+			notice = getErrorMessage(error, 'Could not cancel that order.');
 		}
 	}
 
 	async function confirmClose() {
 		if (!closeConfirm) return;
 		closing = true;
+		closeFailure = null;
 		try {
 			await apiClient.closePosition(closeConfirm.accountId, {
 				instrument: closeConfirm.instrument
@@ -254,7 +259,7 @@
 			closeConfirm = null;
 			await afterMutation(accountId);
 		} catch (error) {
-			notice = describeError(error);
+			closeFailure = getErrorMessage(error, 'Could not close this position.');
 		} finally {
 			closing = false;
 		}
@@ -598,6 +603,14 @@
 				This cannot be undone.
 			</AlertDialog.Description>
 		</AlertDialog.Header>
+		{#if closeFailure}
+			<p
+				class="border border-loss/40 bg-loss/8 px-2.5 py-2 font-mono text-[9.5px] text-loss"
+				data-dialog-error
+			>
+				{closeFailure}
+			</p>
+		{/if}
 		<AlertDialog.Footer>
 			<AlertDialog.Cancel disabled={closing}>Cancel</AlertDialog.Cancel>
 			<Button

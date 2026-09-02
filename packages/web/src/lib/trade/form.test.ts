@@ -69,6 +69,23 @@ describe('initialFormState', () => {
 		expect(state.api_key).toBe('');
 		expect(state.leverage).toBe('20');
 	});
+
+	test('renders a stored decimal from its ScaledDto at its own scale', () => {
+		const state = initialFormState(schema, {
+			starting_balance: { scale: 2, value: '500000' }
+		});
+		expect(state.starting_balance).toBe('5000.00');
+	});
+
+	test('a stored decimal that arrives as a bare number throws rather than mis-rendering it', () => {
+		// Money that skipped the scaled-integer wire shape is a server bug,
+		// not something to silently coerce through `String` — that is what
+		// produced `scaled.value.startsWith is not a function` in
+		// production, with every field blank.
+		expect(() =>
+			initialFormState(schema, { starting_balance: 500000 as unknown as never })
+		).toThrow('starting_balance');
+	});
 });
 
 describe('validateField', () => {

@@ -35,7 +35,7 @@
 		tfLabel
 	} from '$lib/components/terminal/chart-config';
 	import { apiClient } from '$lib/api/client';
-	import { describeError } from '$lib/api/errors';
+	import { getErrorMessage } from '$lib/api/errors';
 	import type { InstrumentSummaryDto } from '$lib/api/types';
 	import type { MarketStatus } from '$lib/charts/live-state';
 	import { setIndicatorDescriptors, type IndicatorDescriptorClient } from '$lib/charts/layer-style';
@@ -95,6 +95,7 @@
 		tradeStore,
 		watchTrade
 	} from '$lib/state/trade.svelte';
+	import { userZoneStore } from '$lib/state/user-zone.svelte';
 	import { iconForKind, isAccountTradable, isWorking, modeOf, formatTime } from '$lib/trade/view';
 	import { formatScaledForDisplay } from '$lib/trade/scaled';
 	import type { OrderDto, PlaceOrderRequest } from '$lib/api/types';
@@ -613,7 +614,7 @@
 			await apiClient.placeOrder(account.id, request);
 			await afterMutation(account.id);
 		} catch (error) {
-			orderError = describeError(error);
+			orderError = getErrorMessage(error, 'Could not place that order.');
 		} finally {
 			placing = false;
 		}
@@ -627,7 +628,7 @@
 			await apiClient.cancelOrder(account.id, orderId);
 			await afterMutation(account.id);
 		} catch (error) {
-			orderError = describeError(error);
+			orderError = getErrorMessage(error, 'Could not cancel that order.');
 		}
 	}
 
@@ -1453,7 +1454,9 @@
 												<span
 													class="overflow-hidden font-mono text-[9px] text-ellipsis whitespace-nowrap text-dim"
 												>
-													{formatTime(o.submitted_at)} · {parseInstrumentId(o.instrument).ticker}
+													{formatTime(o.submitted_at, userZoneStore.zone)} · {parseInstrumentId(
+													o.instrument
+												).ticker}
 												</span>
 												<span class="font-mono text-[9.5px] text-secondary-foreground">
 													{formatScaledForDisplay(o.quantity, 8)} @ {formatScaledForDisplay(

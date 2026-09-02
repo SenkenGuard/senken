@@ -21,6 +21,7 @@ import {
 	emptyPortfolio,
 	engineTable,
 	exposureByAdapter,
+	formatTime,
 	hudStats,
 	isAccountTradable,
 	mulScaled,
@@ -110,7 +111,8 @@ describe('engineTable order actions', () => {
 			'account',
 			[],
 			[{ ...order(), accountId: 'acct-1', accountLabel: 'Main', tradable: true }],
-			[]
+			[],
+			'UTC'
 		);
 		expect(table.rows[0].actions?.map((a) => a.key)).toEqual(['cancel', 'amend']);
 	});
@@ -128,7 +130,8 @@ describe('engineTable order actions', () => {
 					tradable: true
 				}
 			],
-			[]
+			[],
+			'UTC'
 		);
 		expect(table.rows[0].actions).toBeUndefined();
 	});
@@ -139,7 +142,8 @@ describe('engineTable order actions', () => {
 			'account',
 			[],
 			[{ ...order(), accountId: 'acct-1', accountLabel: 'Main', tradable: false }],
-			[]
+			[],
+			'UTC'
 		);
 		expect(table.rows[0].actions).toBeUndefined();
 	});
@@ -152,7 +156,8 @@ describe('engineTable position actions', () => {
 			'account',
 			[{ ...position(), accountId: 'acct-1', accountLabel: 'Main', tradable: true }],
 			[],
-			[]
+			[],
+			'UTC'
 		);
 		expect(table.rows[0].actions?.map((a) => a.key)).toEqual(['close']);
 	});
@@ -163,7 +168,8 @@ describe('engineTable position actions', () => {
 			'account',
 			[{ ...position(), accountId: 'acct-1', accountLabel: 'Main', tradable: false }],
 			[],
-			[]
+			[],
+			'UTC'
 		);
 		expect(table.rows[0].actions).toBeUndefined();
 	});
@@ -417,7 +423,7 @@ describe('dashboardPositions', () => {
 		const portfolios: Record<string, Portfolio> = {
 			'acct-1': { ...emptyPortfolio(), positions: [position()] }
 		};
-		const table = dashboardPositions([account()], portfolios);
+		const table = dashboardPositions([account()], portfolios, 'UTC');
 		expect(table.rows[0].actions).toBeUndefined();
 	});
 
@@ -425,7 +431,7 @@ describe('dashboardPositions', () => {
 		const portfolios: Record<string, Portfolio> = {
 			'acct-1': { ...emptyPortfolio(), positions: [position()] }
 		};
-		const table = dashboardPositions([account({ label: 'Live BTC' })], portfolios);
+		const table = dashboardPositions([account({ label: 'Live BTC' })], portfolios, 'UTC');
 		expect(table.rows[0].cells.some((c) => c.value === 'Live BTC')).toBe(true);
 	});
 });
@@ -576,5 +582,35 @@ describe('dashboardRisk across currencies', () => {
 		expect(data.exposure).toHaveLength(1);
 		expect(data.exposure[0].notional).toBe('17,250.00');
 		expect(data.exposure[0].pct).toBe(null);
+	});
+});
+
+describe('formatTime — the reader\'s own display zone, not the browser\'s', () => {
+	test('renders the same instant differently depending on the zone given', () => {
+		const nanos = 3600 * 1_000_000_000; // 1970-01-01T01:00:00Z
+		expect(formatTime(nanos, 'UTC')).toBe('01:00:00');
+		expect(formatTime(nanos, 'America/New_York')).toBe('20:00:00');
+	});
+});
+
+describe('engineTable TIME column', () => {
+	test('renders an order\'s TIME cell in the zone passed in, not a fixed one', () => {
+		const submittedAt = 3600 * 1_000_000_000; // 1970-01-01T01:00:00Z
+		const table = engineTable(
+			'orders',
+			'account',
+			[],
+			[
+				{
+					...order({ submitted_at: submittedAt }),
+					accountId: 'acct-1',
+					accountLabel: 'Main',
+					tradable: true
+				}
+			],
+			[],
+			'America/New_York'
+		);
+		expect(table.rows[0].cells[0].value).toBe('20:00:00');
 	});
 });

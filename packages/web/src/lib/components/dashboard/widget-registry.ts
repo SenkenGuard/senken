@@ -42,6 +42,7 @@ import { FEED, FLOW_BARS, HEAT_CELLS, SIGNALS, WATCHLIST } from '$lib/mock/dashb
 // showing invented numbers beside one showing real ones is worse than no
 // widget at all.
 import { tradeStore } from '$lib/state/trade.svelte';
+import { userZoneStore } from '$lib/state/user-zone.svelte';
 import { dashboardEquity, dashboardPositions, dashboardRisk } from '$lib/trade/view';
 
 /** One registered widget type's render binding: the component that draws
@@ -79,7 +80,9 @@ const BUILTIN_RENDERERS: Record<string, ClientWidgetRenderer> = {
 	},
 	'senken/positions': {
 		component: PositionsPanel as Component<any>,
-		props: () => ({ table: dashboardPositions(tradeStore.ownAccounts, tradeStore.portfolios) })
+		props: () => ({
+			table: dashboardPositions(tradeStore.ownAccounts, tradeStore.portfolios, userZoneStore.zone)
+		})
 	},
 	'senken/risk': {
 		component: RiskPanel as Component<any>,

@@ -7,7 +7,7 @@
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { apiClient } from '$lib/api/client';
-	import { describeError } from '$lib/api/errors';
+	import { getErrorMessage } from '$lib/api/errors';
 	import type { AdapterActionDto } from '$lib/api/types';
 	import SchemaForm from './schema-form.svelte';
 	import {
@@ -64,7 +64,7 @@
 			open = false;
 			onran(outcome.message);
 		} catch (error) {
-			failure = describeError(error);
+			failure = getErrorMessage(error, `Could not run ${action.label}.`);
 		} finally {
 			submitting = false;
 		}

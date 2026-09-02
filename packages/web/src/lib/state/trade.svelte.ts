@@ -23,7 +23,7 @@
 // blanks another's already-fetched portfolio).
 
 import { apiClient } from '$lib/api/client';
-import { describeError } from '$lib/api/errors';
+import { getErrorMessage } from '$lib/api/errors';
 import { refreshPortfolios as runPortfolioRefresh } from '$lib/trade/portfolio-refresh';
 import { TradePoller } from '$lib/trade/poller';
 import { WatchScopes, type TradeWatchScope } from '$lib/trade/watch-scope';
@@ -134,7 +134,7 @@ export async function loadTrade(): Promise<void> {
 		tradeStore.load = 'ready';
 		await loadAccountState(accounts.rows);
 	} catch (error) {
-		tradeStore.error = describeError(error);
+		tradeStore.error = getErrorMessage(error, 'Could not load the trade engine.');
 		tradeStore.load = 'error';
 	}
 }
@@ -181,7 +181,7 @@ async function fetchOnePortfolio(account: TradeAccountDto): Promise<Portfolio> {
 		portfolio.orders = orders;
 		portfolio.fills = fills;
 	} catch (error) {
-		portfolio.error = describeError(error);
+		portfolio.error = getErrorMessage(error, `Could not load ${account.label}.`);
 	}
 	return portfolio;
 }
@@ -204,7 +204,7 @@ export async function refreshPortfolios(): Promise<void> {
 		remove: (id) => {
 			delete tradeStore.portfolios[id];
 		},
-		describeError
+		describeError: (error) => getErrorMessage(error, 'Could not load this account.')
 	});
 }
 

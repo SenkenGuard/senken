@@ -99,6 +99,23 @@ describe('getErrorMessage — surfacing the server\'s own ErrorBody.error', () =
 	});
 });
 
+describe('the trade UI must read the server\'s own sentence, not describeError\'s generic one', () => {
+	test('on the reproduced "no open position" failure, describeError shows only the URL and status', () => {
+		// The literal failure this defect was reproduced against: closing an
+		// already-closed position returned `400
+		// {"error":"no open position for okx-spot:BTCUSDT"}`, and the close
+		// dialog showed `describeError`'s generic "Request to <url> failed
+		// with 400." instead of the server's own sentence.
+		const error = new HttpError('Request to /api/trade/accounts/acct-1/close failed with 400.', 400, {
+			error: 'no open position for okx-spot:BTCUSDT'
+		});
+		expect(describeError(error)).toBe('Request to /api/trade/accounts/acct-1/close failed with 400.');
+		expect(getErrorMessage(error, 'Could not close this position.')).toBe(
+			'no open position for okx-spot:BTCUSDT'
+		);
+	});
+});
+
 describe('a rejected login must not read as an expired session', () => {
 	test("the server's own wording survives into an UnauthorizedError", () => {
 		// A wrong password is a 401 like any other, but it answers a

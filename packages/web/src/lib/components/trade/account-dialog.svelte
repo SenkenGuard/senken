@@ -10,7 +10,7 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { cn } from '$lib/utils.js';
 	import { apiClient } from '$lib/api/client';
-	import { describeError } from '$lib/api/errors';
+	import { getErrorMessage } from '$lib/api/errors';
 	import type { AdapterDto, TradeAccountDto } from '$lib/api/types';
 	import SchemaForm from './schema-form.svelte';
 	import {
@@ -72,7 +72,7 @@
 				secretsSet = stored.secrets_set;
 			})
 			.catch((error) => {
-				failure = describeError(error);
+				failure = getErrorMessage(error, "Could not load this account's settings.");
 			});
 	});
 
@@ -106,7 +106,10 @@
 			open = false;
 			onsaved();
 		} catch (error) {
-			failure = describeError(error);
+			failure = getErrorMessage(
+				error,
+				editing ? 'Could not save this account.' : 'Could not attach this account.'
+			);
 		} finally {
 			submitting = false;
 		}

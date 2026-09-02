@@ -46,14 +46,14 @@ describe('positions-panel (real DOM output)', () => {
 		const portfolios: Record<string, Portfolio> = {
 			'acct-1': { ...emptyPortfolio(), positions: [position()] }
 		};
-		const table = dashboardPositions([account()], portfolios);
+		const table = dashboardPositions([account()], portfolios, 'UTC');
 		const { body } = render(PositionsPanel, { props: { table } });
 		expect(body).toContain('okx-spot:BTCUSDT');
 		expect(body).toContain('Sim Main');
 	});
 
 	test('no open positions renders the empty-state copy, not an empty grid', () => {
-		const table = dashboardPositions([account()], { 'acct-1': emptyPortfolio() });
+		const table = dashboardPositions([account()], { 'acct-1': emptyPortfolio() }, 'UTC');
 		const { body } = render(PositionsPanel, { props: { table } });
 		expect(body).toContain('NO OPEN POSITIONS');
 	});
@@ -62,7 +62,7 @@ describe('positions-panel (real DOM output)', () => {
 		const portfolios: Record<string, Portfolio> = {
 			'acct-1': { ...emptyPortfolio(), positions: [position()] }
 		};
-		const table = dashboardPositions([account()], portfolios);
+		const table = dashboardPositions([account()], portfolios, 'UTC');
 		const { body } = render(PositionsPanel, { props: { table } });
 		expect(body).not.toContain('CLOSE');
 	});

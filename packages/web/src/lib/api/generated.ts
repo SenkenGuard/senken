@@ -3971,6 +3971,18 @@ export interface components {
              */
             zone: string;
         };
+        /**
+         * @description One stored setting on its way out.
+         *
+         *     Mirrors [`senken_trade::SettingValue`]'s untagged shape so the wire
+         *     form is unchanged, with one correction: a decimal travels as
+         *     [`ScaledDto`], whose digits are a string. Serialising the domain type
+         *     directly — which this endpoint used to do — sent money as a JSON
+         *     *number* while every other endpoint sent a string, so a value past
+         *     2^53 would have been rounded by the browser on the way in. See
+         *     [`WireInt`] for why that is the one thing this API may never do.
+         */
+        SettingValueDto: null | boolean | number | components["schemas"]["ScaledDto"] | string;
         /** @description What one registered market-data source can do. */
         SourceCapabilityDto: {
             /** @description A `BarSource` is registered for it, so its instruments can be charted. */
@@ -4170,8 +4182,13 @@ export interface components {
             account: components["schemas"]["TradeAccountDto"];
             /** @description Which secret fields hold a credential. */
             secrets_set: Record<string, never>;
-            /** @description The stored values, credentials redacted to `null`. */
-            settings: Record<string, never>;
+            /**
+             * @description The stored values, credentials redacted to `null`, every decimal
+             *     carrying its digits as a string.
+             */
+            settings: {
+                [key: string]: components["schemas"]["SettingValueDto"];
+            };
         };
         /**
          * @description `GET /api/trade/accounts/{account_id}` response body: the account, its

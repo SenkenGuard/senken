@@ -271,8 +271,11 @@ export type InstrumentCoverageDto =
 
 /** A settings value, as stored. A secret always arrives as `null` — that is
  * `SecretString`'s own serialisation on the server, not something the API
- * layer strips, so there is no shape in which one could arrive populated. */
-export type SettingValueDto = string | number | boolean | null;
+ * layer strips, so there is no shape in which one could arrive populated.
+ * A decimal arrives as `ScaledDto` — `crates/api/src/dto/trade.rs`'s
+ * `SettingValueDto` sends its digits as a string for the same reason every
+ * other money value does, never as a JSON number a double could round. */
+export type SettingValueDto = string | number | boolean | ScaledDto | null;
 
 export type SettingsValuesDto = Record<string, SettingValueDto>;
 

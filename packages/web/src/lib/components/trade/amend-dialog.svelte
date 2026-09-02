@@ -10,7 +10,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { apiClient } from '$lib/api/client';
-	import { describeError } from '$lib/api/errors';
+	import { getErrorMessage } from '$lib/api/errors';
 	import type { AmendOrderRequest, OrderDto } from '$lib/api/types';
 	import { formatScaled, parseDecimalInput } from '$lib/trade/scaled';
 
@@ -83,7 +83,7 @@
 			open = false;
 			onamended();
 		} catch (error) {
-			failure = describeError(error);
+			failure = getErrorMessage(error, 'Could not amend this order.');
 		} finally {
 			submitting = false;
 		}
