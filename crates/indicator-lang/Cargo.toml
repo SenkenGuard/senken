@@ -1,0 +1,44 @@
+[package]
+name = "senken-indicator-lang"
+description = "The indicator language a trader writes in the app: lexed, parsed, checked, and compiled to WebAssembly in milliseconds, with no toolchain anywhere"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Emits the core WebAssembly module this compiler produces. Bundling a code
+# generator is what lets an indicator compile inside the application instead
+# of needing a Rust toolchain on the machine running Senken.
+wasm-encoder = "0.254"
+# Wraps that core module into a component against the workspace's own
+# `wit/senken.wit`, targeting its `compiled-indicator` world rather than
+# `indicator-plugin` (see `src/codegen/mod.rs` for why). This is the
+# supported path — `cargo component` uses it for exactly this step —
+# rather than hand-rolling the canonical ABI.
+wit-component = "0.254"
+# Parses `wit/senken.wit` into the `Resolve`/`WorldId` that both
+# `wit-component`'s metadata embedding and this crate's own tests need.
+wit-parser = "0.254"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Runs compiled output in tests, so "this indicator agrees with the built-in
+# Rust one" is proved by execution rather than by reading the bytes.
+wasmtime = { version = "48.0.1", features = ["component-model"] }
+# The ten built-in indicators indicator-lang's standard library calls into —
+# the equivalence tests prove a compiled program's output is identical to
+# calling these directly, not merely similar.
+senken-indicators = { workspace = true }
+senken-series = { workspace = true }
+senken-core = { workspace = true }
