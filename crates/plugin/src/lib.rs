@@ -62,6 +62,9 @@ pub mod bar_source;
 pub mod error;
 /// Reconciling a plugin's permissions across activations.
 pub mod permissions;
+/// The dynamic widget UI package contract — a different shape of plugin
+/// entirely from [`Plugin`] below. See that module's own docs.
+pub mod widget_package;
 
 pub use crate::bar_source::BarSource;
 pub use crate::error::{BoxError, PluginError, PluginPermissionRegistrationError};

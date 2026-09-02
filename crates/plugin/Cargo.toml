@@ -40,8 +40,19 @@ senken-marketdata = { workspace = true }
 senken-series = { workspace = true }
 senken-venue = { workspace = true, optional = true }
 thiserror = { workspace = true }
+# The dynamic widget UI package contract (`widget_package` module): its
+# manifest is JSON, and installed packages are unpacked and tracked (enabled
+# state, digest) under the data directory via `senken-storage`'s own
+# atomic, path-traversal-safe writer rather than a second one reinvented
+# here.
+serde = { workspace = true }
+serde_json = { workspace = true }
+senken-storage = { workspace = true }
+sha2 = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 wiremock = { workspace = true }
 
