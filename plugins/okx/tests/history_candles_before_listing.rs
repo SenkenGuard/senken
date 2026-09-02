@@ -16,7 +16,7 @@
 use senken_core::{TimeRange, UnixNanos};
 use senken_marketdata::{Instrument, SourceSymbol};
 use senken_plugin::BarSource;
-use senken_plugin_okx::bar_source_spot;
+use senken_plugin_okx::bar_source;
 use senken_series::{BarSpec, BarUnit};
 use senken_venue::{LimitGroup, VenueClient};
 use wiremock::matchers::method;
@@ -49,7 +49,7 @@ async fn a_window_entirely_before_listing_returns_an_empty_page_not_an_error() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(FIXTURE, "application/json"))
         .mount(&server)
         .await;
-    let source = bar_source_spot(test_client()).with_url(server.uri());
+    let source = bar_source(senken_plugin_okx::SPOT_ID, test_client()).with_url(server.uri());
 
     let bars = source
         .bars(

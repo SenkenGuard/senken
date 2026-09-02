@@ -122,6 +122,27 @@ impl LimitGroup {
         &self.inner.name
     }
 
+    /// Every proactive window this group admits requests under, as
+    /// `(window, budget)` pairs.
+    ///
+    /// Exists so a caller can *check* the ceiling it is running under.
+    /// That distinction is not academic: a book source polls, and a
+    /// polling source with no ceiling is how an IP gets banned — a budget
+    /// that quietly went missing looks exactly like one that is there,
+    /// right up until the ban. `senken-plugin` asserts against this that
+    /// every venue group starts bounded, which is the check that was
+    /// missing when one did go missing.
+    #[must_use]
+    pub fn windows(&self) -> Vec<(Duration, u32)> {
+        self.inner
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|window| (window.duration, window.budget))
+            .collect()
+    }
+
     /// Waits for capacity — proactive windows, then the concurrency ceiling —
     /// and returns a permit that must be held for the lifetime of the
     /// request. Fails immediately, without waiting for anything, if the

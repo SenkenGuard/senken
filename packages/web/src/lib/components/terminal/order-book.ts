@@ -11,7 +11,17 @@
 // `$lib/api/ws-frames.ts` and `$lib/charts/indicator-display.ts` are: it
 // stays unit-testable with a plain `bun test` against the wire shape
 // directly, without dragging in the WS client singleton.
-import type { WsBookLevel } from '$lib/api/ws-frames';
+import {
+	bookFrameFor,
+	isFailedFor,
+	isUnsupportedFor,
+	type WsBookLevel,
+	type WsBookPayload
+} from '$lib/api/ws-frames';
+// Type-only, and it has to stay that way: `ws-events.svelte.ts` is a rune
+// module, which `bun test` cannot import at all. `ws-frames.ts` depends on
+// this shape the same way, for the same reason.
+import type { WsEvent } from '$lib/api/ws-events.svelte';
 
 export interface BookRow {
 	price: string;
@@ -51,4 +61,69 @@ export function bookRowsFromSnapshot(bids: WsBookLevel[], asks: WsBookLevel[], p
 		depthPct: depthPct(level.size)
 	});
 	return [...[...asks].reverse().map((l) => toRow(l, 'ask')), ...bids.map((l) => toRow(l, 'bid'))];
+}
+
+/** The venue's own timestamp for a snapshot, as the panel prints it —
+ * `14:32:07`, in the reader's local zone, or `null` for a snapshot that has
+ * not arrived or carries no usable time.
+ *
+ * The panel shows this instead of a "LIVE" badge, and that is deliberate.
+ * Depth refreshes on its own now, so the only question a reader actually
+ * has is whether what they are looking at is current — and a time that
+ * stops advancing answers it truthfully in every case, including the ones a
+ * badge would get wrong: a dropped websocket, a server that stopped
+ * publishing, a tab that was backgrounded. A label claiming "LIVE" is a
+ * promise about the next second; a timestamp is a fact about this one.
+ *
+ * Zero-padded and built from the parts rather than left to
+ * `toLocaleTimeString`, so the width never changes under the reader (a
+ * locale that drops the leading zero shifts the whole row at 09:59:59) and
+ * so it cannot come back in a 12-hour form in a monospace ladder. */
+export function formatBookTime(ts: number | null | undefined): string | null {
+	if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null;
+	const at = new Date(ts);
+	if (Number.isNaN(at.getTime())) return null;
+	const pad = (n: number) => String(n).padStart(2, '0');
+	return `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+}
+
+/** Everything the panel knows about one `book:` topic, folded from the WS
+ * frames that have arrived for it. */
+export interface BookTopicState {
+	/** The newest whole snapshot, or `null` before the first one. */
+	snapshot: WsBookPayload | null;
+	/** The server answered that this venue serves no depth at all. */
+	unsupported: boolean;
+	/** The server asked and could not get depth. */
+	failed: boolean;
+}
+
+/** A topic nothing has been heard about yet — what a fresh subscribe, or a
+ * change of instrument, resets to. */
+export const NO_BOOK_YET: BookTopicState = { snapshot: null, unsupported: false, failed: false };
+
+/** Folds one WS event into what the panel knows about `topic`.
+ *
+ * Pure, and separate from the component, so the one rule that is easy to get
+ * wrong here can actually be tested: **a snapshot arriving clears a previous
+ * failure.** The server's own poll loop keeps trying and recovers on its
+ * own, so a failure flag that only ever gets set would leave a panel showing
+ * "could not load depth" over a book that is arriving again every second —
+ * a derived state disagreeing with the state it is derived from, which is
+ * exactly the shape of bug this codebase keeps paying for.
+ *
+ * `unsupported` is not cleared the same way, and that asymmetry is
+ * deliberate: "this venue serves no depth" is a fact about the venue that no
+ * later frame contradicts, while "this attempt failed" is a fact about one
+ * attempt that the next one does. */
+export function foldBookEvent(
+	previous: BookTopicState,
+	event: WsEvent | null,
+	topic: string
+): BookTopicState {
+	if (isUnsupportedFor(event, topic)) return { ...previous, unsupported: true };
+	if (isFailedFor(event, topic)) return { ...previous, failed: true };
+	const frame = bookFrameFor(event, topic);
+	if (!frame) return previous;
+	return { ...previous, snapshot: frame, failed: false };
 }

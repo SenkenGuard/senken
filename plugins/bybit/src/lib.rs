@@ -22,6 +22,7 @@ use crate::api::{InstrumentsResponse, RawInstrument};
 
 mod api;
 mod bars;
+mod feed;
 
 pub use crate::bars::{BybitBarSource, bar_source as bar_source_spot};
 
@@ -314,6 +315,7 @@ impl Plugin for BybitPlugin {
         // Bar traffic shares the same group as every market data source
         // above — one shared budget per venue.
         context.register_bar_source(Arc::new(bar_source_spot(client)));
+        context.register_feed_source(Arc::new(crate::feed::BybitFeedSource::new()));
         Ok(())
     }
 }

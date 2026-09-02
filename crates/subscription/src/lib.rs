@@ -58,15 +58,25 @@
 //! at the cap, the pool opens another one through the [`VenueConnector`] it
 //! was built with, rather than failing the lease.
 
-mod book;
+mod book_session;
 mod connection;
 mod indicator_session;
 mod pool;
 mod price;
+mod protocol;
 mod quote;
 mod session;
+mod symbol_map;
 
-pub use book::{BookError, BookLevel, BookSnapshot, BookSource};
+// The book port itself lives in `senken-marketdata`, beside
+// `MarketDataSource`: it needs only a `SourceSymbol` and a `SourceError`,
+// so putting it here would have made every venue plugin compile this
+// crate's pool, its tokio runtime and its indicators just to declare that
+// it can serve depth. Re-exported so this crate's own consumers — the live
+// book session below, and `senken-feed`'s adapters — still need one import.
+pub use book_session::{
+    BookSessionHandle, BookSessionRegistry, BookState, DEFAULT_REFRESH_INTERVAL,
+};
 pub use connection::{ConnectionError, VenueConnection, VenueConnector};
 pub use indicator_session::{
     IndicatorEngine, IndicatorReading, IndicatorSessionHandle, IndicatorSessionKey,
@@ -74,5 +84,8 @@ pub use indicator_session::{
 };
 pub use pool::{Lease, PoolError, SubscriptionPool};
 pub use price::PriceUpdate;
+pub use protocol::{FeedSource, LiveUpdate, VenueProtocol};
 pub use quote::{QuoteError, QuoteLease, QuoteSource, QuoteUpdate};
+pub use senken_marketdata::book::{BookError, BookLevel, BookSnapshot, BookSource};
 pub use session::TickBarBuilder;
+pub use symbol_map::{IdentitySymbolMap, SymbolMap};

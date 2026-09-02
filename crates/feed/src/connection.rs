@@ -10,10 +10,12 @@ use futures::{SinkExt, StreamExt};
 use senken_marketdata::InstrumentId;
 use senken_subscription::{ConnectionError, SubscriptionPool, VenueConnection};
 use senken_venue::LimitGroup;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use crate::protocol::{LiveUpdate, VenueProtocol};
+use senken_subscription::{LiveUpdate, VenueProtocol};
+
+use crate::proxy::HttpProxy;
 
 /// Cost charged against a venue's [`LimitGroup`] for one WebSocket dial.
 /// no venue's real connection weight is verified anywhere in
@@ -55,13 +57,39 @@ type WsStream = futures::stream::SplitStream<WsSocket>;
 /// connection in the process — test-only instrumentation for
 /// `reconnect_does_not_spin_between_failed_attempts`, compiled out of any
 /// non-test build.
+/// The proxy to tunnel `url` through, with the host and port to ask it for —
+/// or `None` when this host should be dialled directly.
+///
+/// A URL this cannot parse dials directly rather than failing: the
+/// WebSocket client is about to parse it too, and it gives a far better
+/// error for a malformed URL than a proxy layer guessing at one would.
+fn proxy_target(url: &str) -> Option<(HttpProxy, String, u16)> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?']).next()?;
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host.to_owned(), port.parse().ok()?),
+        // `wss` is TLS and `ws` is not, so their default ports differ. The
+        // explicit form above still has to work: a venue is free to serve
+        // its stream on another port (OKX documents 8443 for its public
+        // feed), and a proxy must be asked for the port the URL names.
+        None => (
+            authority.to_owned(),
+            if url.starts_with("wss://") { 443 } else { 80 },
+        ),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    HttpProxy::for_host(&host).map(|proxy| (proxy, host, port))
+}
+
 #[cfg(test)]
 static DIAL_ATTEMPTS_FOR_TEST: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// A real [`VenueConnection`]: one live (or currently reconnecting)
 /// WebSocket to a venue, per [`VenueProtocol`] `P`.
-pub struct WsVenueConnection<P: VenueProtocol> {
+pub struct WsVenueConnection<P: VenueProtocol + ?Sized> {
     protocol: Arc<P>,
     group: LimitGroup,
     pool: SubscriptionPool,
@@ -75,10 +103,18 @@ pub struct WsVenueConnection<P: VenueProtocol> {
     /// Signals the background read/reconnect task to stop, breaking the
     /// `Arc` cycle that task's own clone of `self` would otherwise hold
     /// forever.
-    shutdown: Arc<Notify>,
+    /// Flipped to `true` once, when this connection is retired.
+    ///
+    /// A `watch` channel rather than a `Notify`: `Notify::notify_waiters`
+    /// only wakes tasks that are *already registered*, so a stop signalled
+    /// while the owning task happened to be decoding a frame — rather than
+    /// sitting in its `select!` — is simply lost, and the task runs on
+    /// forever. `watch` holds the value, so a waiter that arrives after the
+    /// signal still sees it.
+    shutdown: watch::Sender<bool>,
 }
 
-impl<P: VenueProtocol> WsVenueConnection<P> {
+impl<P: VenueProtocol + ?Sized> WsVenueConnection<P> {
     /// Dials `protocol.url()` once, gated by `group`'s shared budget
     /// (a venue's WS dial draws on the same budget as its REST traffic).
     async fn dial_once(
@@ -92,9 +128,29 @@ impl<P: VenueProtocol> WsVenueConnection<P> {
             .acquire_for_connect(WS_CONNECT_COST)
             .await
             .map_err(|source| ConnectionError::new(source.to_string()))?;
-        let (stream, _response) = tokio_tungstenite::connect_async(protocol.url())
-            .await
-            .map_err(|source| ConnectionError::new(source.to_string()))?;
+        let url = protocol.endpoint().await?;
+        let url = url.as_str();
+        let (stream, _response) = match proxy_target(url) {
+            // No proxy configured for this host: dial it directly, exactly
+            // as before.
+            None => tokio_tungstenite::connect_async(url)
+                .await
+                .map_err(|source| ConnectionError::new(source.to_string()))?,
+            Some((proxy, host, port)) => {
+                tracing::debug!(
+                    venue = protocol.venue(),
+                    %host,
+                    "dialling the venue WebSocket through the configured proxy"
+                );
+                let tunnel = proxy.tunnel(&host, port).await?;
+                // TLS, if the URL asks for it, is negotiated end-to-end
+                // inside the tunnel — the proxy carries opaque bytes and
+                // never sees the venue traffic.
+                tokio_tungstenite::client_async_tls(url, tunnel)
+                    .await
+                    .map_err(|source| ConnectionError::new(source.to_string()))?
+            }
+        };
         Ok(stream.split())
     }
 
@@ -146,7 +202,7 @@ impl<P: VenueProtocol> WsVenueConnection<P> {
             group,
             pool,
             outbound: Mutex::new(Some(outbound_tx)),
-            shutdown: Arc::new(Notify::new()),
+            shutdown: watch::channel(false).0,
         });
 
         tokio::spawn(Arc::clone(&connection).run(sink, stream, outbound_rx));
@@ -184,10 +240,30 @@ impl<P: VenueProtocol> WsVenueConnection<P> {
             }
             first_socket = false;
 
+            // A venue that wants an unprompted ping gets one on its own
+            // interval; one that does not is parked on a timer that never
+            // fires, so the `select!` arm below costs it nothing.
+            let keepalive = self.protocol.keepalive();
+            let mut ticker = keepalive.as_ref().map(|(every, _)| {
+                // `interval_at`, not `interval`: the latter fires its first
+                // tick immediately, sending a keep-alive to a socket that
+                // has not even been subscribed on yet.
+                let mut ticker =
+                    tokio::time::interval_at(tokio::time::Instant::now() + *every, *every);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                ticker
+            });
+
             loop {
                 tokio::select! {
                     biased;
-                    () = self.shutdown.notified() => return,
+                    () = wait_for_shutdown(&self.shutdown) => return,
+                    () = tick(ticker.as_mut()) => {
+                        let Some((_, frame)) = keepalive.as_ref() else { continue };
+                        if sink.send(WsMessage::text(frame.clone())).await.is_err() {
+                            break;
+                        }
+                    }
                     outgoing = outbound_rx.recv() => {
                         let Some(outgoing) = outgoing else { return };
                         if sink.send(outgoing).await.is_err() {
@@ -195,35 +271,42 @@ impl<P: VenueProtocol> WsVenueConnection<P> {
                         }
                     }
                     incoming = stream.next() => {
-                        match incoming {
-                            Some(Ok(WsMessage::Text(text))) => {
-                                for (instrument, update) in self.protocol.parse_message(&text) {
-                                    match update {
-                                        LiveUpdate::Price(update) => self.pool.publish(instrument, update),
-                                        LiveUpdate::Quote(update) => self.pool.publish_quote(instrument, update),
-                                    }
-                                }
-                            }
+                        let text = match incoming {
+                            Some(Ok(WsMessage::Text(text))) => Some(text.to_string()),
+                            // Not "nothing to act on": three venues in this
+                            // project send every frame as binary — HTX and
+                            // BingX gzip theirs, Upbit sends plain UTF-8
+                            // JSON in a binary frame. Dropping these
+                            // silently delivers no data at all from them.
+                            Some(Ok(WsMessage::Binary(bytes))) => self.protocol.decode_binary(&bytes),
                             Some(Ok(WsMessage::Close(_))) => {
                                 // A graceful close is still a disconnect:
                                 // reconnect rather than keep waiting on a
                                 // stream that has told us it is ending.
                                 break;
                             }
-                            Some(Ok(_non_text)) => {
-                                // Ping/Pong/Binary/Frame: nothing this
-                                // protocol needs to act on. Application-level
-                                // keep-alive (some venues expect a text
-                                // "ping"/"pong" exchange rather than WS
-                                // control frames) was never observed in this
-                                // milestone's one live capture — a
-                                // documented gap, not an invented behaviour.
-                            }
+                            // Ping/Pong/Frame: the transport answers
+                            // WebSocket control frames itself.
+                            Some(Ok(_control)) => None,
                             Some(Err(error)) => {
                                 tracing::warn!(venue = self.protocol.venue(), %error, "read error; reconnecting");
                                 break;
                             }
                             None => break,
+                        };
+                        let Some(text) = text else { continue };
+                        for (instrument, update) in self.protocol.parse_message(&text) {
+                            match update {
+                                LiveUpdate::Price(update) => self.pool.publish(instrument, update),
+                                LiveUpdate::Quote(update) => self.pool.publish_quote(instrument, update),
+                            }
+                        }
+                        // After publishing, not before: a venue heartbeat
+                        // that also carried data must not lose the data if
+                        // the socket dies as the answer goes out.
+                        if let Some(reply) = self.protocol.reply_to(&text)
+                            && sink.send(WsMessage::text(reply)).await.is_err() {
+                            break;
                         }
                     }
                 }
@@ -260,7 +343,7 @@ impl<P: VenueProtocol> WsVenueConnection<P> {
     async fn redial_until_up(
         protocol: &P,
         group: &LimitGroup,
-        shutdown: &Notify,
+        shutdown: &watch::Sender<bool>,
     ) -> Option<(WsSink, WsStream)> {
         let mut attempt: u32 = 1;
         loop {
@@ -275,7 +358,7 @@ impl<P: VenueProtocol> WsVenueConnection<P> {
                     );
                     let wait = senken_venue::full_jitter(reconnect_backoff(attempt));
                     tokio::select! {
-                        () = shutdown.notified() => return None,
+                        () = wait_for_shutdown(shutdown) => return None,
                         () = tokio::time::sleep(wait) => {}
                     }
                     attempt = attempt.saturating_add(1);
@@ -297,17 +380,55 @@ impl<P: VenueProtocol> WsVenueConnection<P> {
     }
 }
 
-impl<P: VenueProtocol> Drop for WsVenueConnection<P> {
-    fn drop(&mut self) {
-        self.shutdown.notify_waiters();
+/// Awaits `ticker`'s next tick, or never returns when there is no ticker.
+///
+/// `select!` needs a future in every arm even when this protocol has no
+/// keep-alive; `pending()` is the arm that is simply never ready.
+async fn tick(ticker: Option<&mut tokio::time::Interval>) {
+    match ticker {
+        Some(ticker) => {
+            ticker.tick().await;
+        }
+        None => std::future::pending().await,
     }
 }
 
+impl<P: VenueProtocol + ?Sized> Drop for WsVenueConnection<P> {
+    fn drop(&mut self) {
+        // A backstop for the whole pool going away at once. The ordinary
+        // path is `VenueConnection::shutdown`, called by the pool when a
+        // shard empties: the task owning this connection's socket holds an
+        // `Arc` to it for as long as it runs, so nothing else releasing its
+        // handle can bring the strong count to zero and reach this.
+        self.shutdown.send_replace(true);
+    }
+}
+
+/// Resolves once `shutdown` has been signalled, now or later.
+///
+/// Checks the current value before waiting, which is what makes this
+/// race-free: a stop flagged before the caller got here is still seen.
+async fn wait_for_shutdown(shutdown: &watch::Sender<bool>) {
+    let mut stop = shutdown.subscribe();
+    // `wait_for` inspects the value already in the channel first, so this
+    // returns immediately for a connection that is already retired.
+    let _ = stop.wait_for(|stopping| *stopping).await;
+}
+
 #[async_trait::async_trait]
-impl<P: VenueProtocol> VenueConnection for WsVenueConnection<P> {
+impl<P: VenueProtocol + ?Sized> VenueConnection for WsVenueConnection<P> {
     async fn subscribe(&self, instrument: &InstrumentId) -> Result<(), ConnectionError> {
         let frame = self.protocol.subscribe_frame(instrument)?;
         self.send(frame).await
+    }
+
+    async fn shutdown(&self) {
+        // Ends `run`'s loop wherever it currently is — waiting on the
+        // socket, or sleeping between redial attempts — which drops the
+        // `Arc<Self>` that task holds and lets this connection actually be
+        // freed. Idempotent: signalling an already-retired connection just
+        // rewrites the same value.
+        self.shutdown.send_replace(true);
     }
 
     async fn unsubscribe(&self, instrument: &InstrumentId) -> Result<(), ConnectionError> {
@@ -319,9 +440,9 @@ impl<P: VenueProtocol> VenueConnection for WsVenueConnection<P> {
 #[cfg(test)]
 mod tests {
     use super::{DIAL_ATTEMPTS_FOR_TEST, WsVenueConnection, reconnect_backoff};
-    use crate::protocol::{LiveUpdate, VenueProtocol};
     use senken_marketdata::InstrumentId;
     use senken_subscription::ConnectionError;
+    use senken_subscription::{LiveUpdate, VenueProtocol};
     use senken_venue::LimitGroup;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -369,7 +490,7 @@ mod tests {
             url: format!("ws://{addr}"),
         };
         let group = LimitGroup::new("reconnect-spin-test");
-        let shutdown = tokio::sync::Notify::new();
+        let shutdown = tokio::sync::watch::channel(false).0;
 
         DIAL_ATTEMPTS_FOR_TEST.store(0, Ordering::SeqCst);
         let window = Duration::from_millis(700);

@@ -16,6 +16,12 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{InstrumentsResponse, RawContract, RawSymbol};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+mod perp;
+
+pub use bars::{PoloniexBarSource, bar_source_spot};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "poloniex-spot";
@@ -180,7 +186,28 @@ impl Plugin for PoloniexPlugin {
         let group = context.limit_group("poloniex");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(perp_source(client)));
+        context.register_marketdata_source(Arc::new(perp_source(client.clone())));
+        context.register_bar_source(Arc::new(bar_source_spot(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        // Depth, declared the same way as everything above rather than
+        // wired into the HTTP layer by hand.
+        context.register_book_source(Arc::new(crate::book::book_source(SPOT_ID, client.clone())));
+
+        // The perpetual market is Poloniex's v3 API — different shapes,
+        // a different envelope and a different socket. See `perp`' docs.
+        context.register_bar_source(Arc::new(crate::perp::bar_source_perp(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_book_source(Arc::new(crate::perp::book_source_perp(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_feed_source(Arc::new(crate::perp::PoloniexPerpFeedSource::new()));
+        let _ = &client;
+        context.register_feed_source(Arc::new(crate::feed::PoloniexFeedSource::new()));
         Ok(())
     }
 }

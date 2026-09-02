@@ -32,30 +32,101 @@ const MAX_ATTEMPTS: usize = 10;
 /// login body is parsed, so the same primitive has to cover both keys
 /// anyway. One small counter doing both is simpler than a library doing
 /// one and a hand-rolled fallback doing the other.
+/// How often the whole table is swept for keys whose attempts have all
+/// aged out.
+///
+/// Pruning only the key being touched is not enough, and that gap was a
+/// real one: an account key is built from the `email` field of an
+/// **unauthenticated** request body, so every distinct string a caller
+/// sends becomes a map key, and a key nobody ever sends again is never
+/// touched again — so it is never pruned, and the table grows for as long
+/// as the process lives. One sweep per window is enough to bound it:
+/// every attempt expires after [`WINDOW`], so after a sweep the table can
+/// only hold what arrived since the last one.
+const SWEEP_EVERY: Duration = WINDOW;
+
+/// The attempt table, and when it was last swept whole.
+#[derive(Default)]
+struct Attempts {
+    keys: HashMap<String, VecDeque<Instant>>,
+    /// `None` until the first call; the first call sweeps.
+    last_sweep: Option<Instant>,
+}
+
+/// Drops attempts older than [`WINDOW`] from the front of `attempts`.
+///
+/// Front-to-back and stopping at the first live entry: a `VecDeque` filled
+/// in time order is sorted by construction, so everything after the first
+/// unexpired attempt is also unexpired.
+fn prune(attempts: &mut VecDeque<Instant>, now: Instant) {
+    while let Some(&oldest) = attempts.front() {
+        if now.duration_since(oldest) > WINDOW {
+            attempts.pop_front();
+        } else {
+            break;
+        }
+    }
+}
+
+/// Removes every key with nothing left inside [`WINDOW`].
+///
+/// A free function over the map rather than a method, so it can be tested
+/// against a table built by hand — the property that matters here is that
+/// the table *shrinks*, which is not observable from the limiter's own
+/// public answer.
+fn sweep(keys: &mut HashMap<String, VecDeque<Instant>>, now: Instant) {
+    keys.retain(|_, attempts| {
+        prune(attempts, now);
+        !attempts.is_empty()
+    });
+}
+
 #[derive(Default)]
 pub(crate) struct LoginRateLimiter {
-    attempts: Mutex<HashMap<String, VecDeque<Instant>>>,
+    attempts: Mutex<Attempts>,
 }
 
 impl LoginRateLimiter {
+    /// Whether one login attempt from `address_key` for `account_key` is
+    /// allowed, recording it against both.
+    ///
+    /// The two-key rule lives here rather than at the call site because the
+    /// wrong version of it is one character away: `&` instead of `&&`
+    /// records the account attempt even for a request the address limit has
+    /// already refused. That matters twice over. The account key is built
+    /// from an **unauthenticated** request body, so a single address could
+    /// mint unlimited new table keys simply by being refused over and over;
+    /// and the attempts it records are charged to an account the caller
+    /// merely named, letting one rate-limited address push a stranger's
+    /// account toward its own limit. Neither is expressible from outside
+    /// this method.
+    ///
+    /// The address is checked first, so how many distinct account keys one
+    /// address can enter is capped at [`MAX_ATTEMPTS`] per [`WINDOW`].
+    /// Nothing is lost by not recording the rest: a refused request never
+    /// reaches `IdentityStore::login`, so it is not an attempt against that
+    /// account.
+    pub(crate) fn check_login(&self, address_key: &str, account_key: &str) -> bool {
+        self.check_and_record(address_key) && self.check_and_record(account_key)
+    }
+
     /// Records one attempt against `key` and reports whether it is within
-    /// the allowed rate. Call once per key per login attempt; a caller
-    /// checking both an account key and an address key must check both and
-    /// refuse the request if either is over the limit.
+    /// the allowed rate.
     fn check_and_record(&self, key: &str) -> bool {
-        let mut attempts = self
+        let mut state = self
             .attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Instant::now();
-        let entry = attempts.entry(key.to_owned()).or_default();
-        while let Some(&oldest) = entry.front() {
-            if now.duration_since(oldest) > WINDOW {
-                entry.pop_front();
-            } else {
-                break;
-            }
+        if state
+            .last_sweep
+            .is_none_or(|last| now.duration_since(last) >= SWEEP_EVERY)
+        {
+            state.last_sweep = Some(now);
+            sweep(&mut state.keys, now);
         }
+        let entry = state.keys.entry(key.to_owned()).or_default();
+        prune(entry, now);
         if entry.len() >= MAX_ATTEMPTS {
             return false;
         }
@@ -90,9 +161,7 @@ pub(crate) async fn login(
 ) -> Result<Json<LoginResponse>, HandlerError> {
     let address_key = format!("addr:{}", addr.ip());
     let account_key = format!("acct:{}", body.email.trim().to_lowercase());
-    let allowed = state.login_limiter.check_and_record(&address_key)
-        & state.login_limiter.check_and_record(&account_key);
-    if !allowed {
+    if !state.login_limiter.check_login(&address_key, &account_key) {
         return Err(HandlerError::TooManyRequests);
     }
 
@@ -279,6 +348,137 @@ pub(crate) async fn set_password(
         .identity
         .set_password(email, &body.new_password, None)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod rate_limit_table {
+    // The attempt table is keyed by a string an *unauthenticated* caller
+    // chooses. What matters here is not the answer the limiter gives — that
+    // is covered over HTTP below — but that the table it keeps does not grow
+    // for the life of the process. That is invisible from outside, so these
+    // exercise the sweep directly.
+    use super::{LoginRateLimiter, MAX_ATTEMPTS, WINDOW, prune, sweep};
+    use std::collections::{HashMap, VecDeque};
+    use std::time::Instant;
+
+    /// `count` attempts, all recorded at `at`.
+    ///
+    /// Ages are built by moving *`now` forward* rather than moving the
+    /// attempts back: `Instant` is monotonic from boot, so subtracting two
+    /// windows from `Instant::now()` is not representable on a machine that
+    /// booted a minute ago — a test that would pass here and fail on a
+    /// freshly-started CI runner.
+    fn attempts_at(at: Instant, count: usize) -> VecDeque<Instant> {
+        (0..count).map(|_| at).collect()
+    }
+
+    #[test]
+    fn a_key_nobody_sends_again_is_dropped_once_its_window_passes() {
+        // The leak this closes: an attacker sends one login for each of a
+        // million distinct emails. Each mints a key, none is ever touched
+        // again, and pruning only the key being handled never revisits them.
+        let recorded = Instant::now();
+        let now = recorded + WINDOW * 2;
+        let mut keys: HashMap<String, VecDeque<Instant>> = (0..1_000)
+            .map(|i| (format!("acct:{i}@example.test"), attempts_at(recorded, 1)))
+            .collect();
+
+        sweep(&mut keys, now);
+
+        assert!(keys.is_empty(), "{} keys survived their window", keys.len());
+    }
+
+    #[test]
+    fn a_key_still_inside_its_window_is_kept() {
+        // Sweeping must not forgive an attacker mid-burst: the whole point
+        // of the table is to remember recent attempts.
+        let recorded = Instant::now();
+        let now = recorded + WINDOW * 2;
+        let mut keys = HashMap::from([
+            (
+                "acct:live".to_owned(),
+                attempts_at(recorded + WINDOW + WINDOW / 2, MAX_ATTEMPTS),
+            ),
+            ("acct:stale".to_owned(), attempts_at(recorded, MAX_ATTEMPTS)),
+        ]);
+
+        sweep(&mut keys, now);
+
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys["acct:live"].len(), MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn a_key_that_is_partly_stale_keeps_only_what_is_still_inside_the_window() {
+        let recorded = Instant::now();
+        let now = recorded + WINDOW * 2;
+        let mut attempts: VecDeque<Instant> = VecDeque::new();
+        attempts.push_back(recorded);
+        attempts.push_back(recorded);
+        attempts.push_back(recorded + WINDOW + WINDOW / 2);
+
+        prune(&mut attempts, now);
+
+        assert_eq!(attempts.len(), 1);
+    }
+
+    #[test]
+    fn an_address_already_over_its_limit_does_not_charge_the_account_it_named() {
+        // Two things at once. The account key is an unauthenticated string,
+        // so a refused address that still recorded one could mint table keys
+        // without limit; and the attempts it recorded would be charged to an
+        // account the caller merely named, letting a rate-limited stranger
+        // push someone else's account toward its own lockout.
+        let limiter = LoginRateLimiter::default();
+        for _ in 0..MAX_ATTEMPTS {
+            assert!(limiter.check_login("addr:flooder", "acct:noise"));
+        }
+
+        // Over its own limit now, and naming a different account.
+        assert!(!limiter.check_login("addr:flooder", "acct:victim"));
+
+        let keys = &limiter
+            .attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys;
+        assert!(
+            !keys.contains_key("acct:victim"),
+            "a refused request still entered an attacker-chosen key"
+        );
+        assert!(
+            keys["acct:noise"].len() <= MAX_ATTEMPTS,
+            "the account was charged for attempts the address limit refused"
+        );
+    }
+
+    #[test]
+    fn an_account_over_its_limit_is_refused_from_an_address_that_is_not() {
+        // The other half of the rule: the address being fine must not
+        // excuse an account that has already been hammered from elsewhere.
+        let limiter = LoginRateLimiter::default();
+        for i in 0..MAX_ATTEMPTS {
+            assert!(limiter.check_login(&format!("addr:{i}"), "acct:victim"));
+        }
+
+        assert!(!limiter.check_login("addr:fresh", "acct:victim"));
+    }
+
+    #[test]
+    fn a_key_whose_attempts_are_all_stale_leaves_nothing_behind() {
+        // An entry pruned to empty is still an entry — the key, its
+        // allocation and its hash slot all remain. Emptying is not removing.
+        let recorded = Instant::now();
+        let now = recorded + WINDOW * 2;
+        let mut keys = HashMap::from([("acct:gone".to_owned(), attempts_at(recorded, 3))]);
+
+        sweep(&mut keys, now);
+
+        assert!(
+            !keys.contains_key("acct:gone"),
+            "the deque was emptied but the key stayed"
+        );
+    }
 }
 
 #[cfg(test)]

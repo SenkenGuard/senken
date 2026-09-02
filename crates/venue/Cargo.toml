@@ -18,6 +18,9 @@ workspace = true
 async-trait = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
+# `parse_scaled`, for the one helper that has to know whether a batch of
+# venue digits actually fits a scaled integer.
+senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
 serde = { workspace = true }
 # `time` for the backoff between retries, `sync` for the rate/concurrency

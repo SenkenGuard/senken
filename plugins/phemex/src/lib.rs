@@ -24,13 +24,21 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{ProductsResponse, RawProduct};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+pub mod scales;
+
+pub use bars::{PhemexBarSource, bar_source_perp, bar_source_spot};
+pub use book::{PhemexBookSource, book_source};
+pub use scales::{ScaleCatalog, Scales};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "phemex-spot";
 /// Source id of the perpetual market.
 pub const PERP_ID: &str = "phemex-perp";
 
-const URL: &str = "https://api.phemex.com/public/products";
+const URL: &str = crate::scales::PRODUCTS_URL;
 /// The marker Phemex puts in front of every spot symbol.
 const SPOT_PREFIX: char = 's';
 
@@ -201,7 +209,40 @@ impl Plugin for PhemexPlugin {
         let group = context.limit_group("phemex");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(perp_source(client)));
+        context.register_marketdata_source(Arc::new(perp_source(client.clone())));
+
+        // Every Phemex number is written at a scale the venue publishes
+        // per symbol, so all three capabilities below share one catalogue
+        // of those scales rather than each fetching the product list.
+        let scales = crate::scales::ScaleCatalog::new(client.clone());
+        context.register_bar_source(Arc::new(crate::bars::bar_source_spot(
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_bar_source(Arc::new(crate::bars::bar_source_perp(
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_book_source(Arc::new(crate::book::book_source(
+            SPOT_ID,
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_book_source(Arc::new(crate::book::book_source(
+            PERP_ID,
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_feed_source(Arc::new(crate::feed::PhemexFeedSource::new(
+            SPOT_ID,
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_feed_source(Arc::new(crate::feed::PhemexFeedSource::new(
+            PERP_ID,
+            client.clone(),
+            scales,
+        )));
         Ok(())
     }
 }
@@ -288,10 +329,13 @@ mod tests {
         // `quoteTickSize` instead. Reading only `tickSize` dropped every
         // spot pair the venue lists.
         let instruments = parse_spot(FIXTURE).unwrap();
+        // Named rather than "the first spot pair": the fixture now holds
+        // several, deliberately including two that quote in TRY, and each
+        // writes a different increment.
         let spot = instruments
             .iter()
-            .find(|i| i.kind == InstrumentKind::Spot)
-            .expect("the fixture carries a spot pair");
+            .find(|i| i.kind == InstrumentKind::Spot && i.symbol == "BTCUSDT")
+            .expect("the fixture carries BTC/USDT spot");
 
         assert!(spot.contract.is_none());
         assert_eq!((spot.price_scale, spot.tick_size), (2, 1));

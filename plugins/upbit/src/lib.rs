@@ -26,6 +26,12 @@ use senken_plugin::{HttpActivationContext, Plugin, PluginError, PluginManifest};
 use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use serde::Deserialize;
 
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{UpbitBarSource, bar_source};
+
 /// Source id of the Upbit market.
 pub const SOURCE_ID: &str = "upbit";
 
@@ -124,7 +130,13 @@ impl Plugin for UpbitPlugin {
     ) -> Result<(), PluginError> {
         let group = context.limit_group("upbit");
         let client = context.venue_client(&group)?;
-        context.register_marketdata_source(Arc::new(source(client)));
+        context.register_marketdata_source(Arc::new(source(client.clone())));
+        context.register_bar_source(Arc::new(bar_source(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_book_source(Arc::new(crate::book::book_source(client)));
+        context.register_feed_source(Arc::new(crate::feed::UpbitFeedSource::new()));
         Ok(())
     }
 }

@@ -7,6 +7,15 @@
 //! constructors are public, so a library user can take just the one market
 //! they care about without any plugin machinery.
 //!
+//! # No live feed from this network
+//!
+//! `wss://stream.binance.com:9443/ws` could not be reached at all from the
+//! machine this adapter was written on — the socket never opened, the same
+//! restriction that keeps this plugin's bar source unwritten. Nothing
+//! about the feed is claimed either way; it is simply unrecorded, and a
+//! protocol written from memory of the documentation is what this
+//! project's fixtures exist to prevent.
+//!
 //! [`MarketDataSource`]: senken_marketdata::MarketDataSource
 
 use std::sync::Arc;
@@ -23,7 +32,6 @@ use crate::api::{ExchangeInfo, RawSymbol};
 
 mod api;
 mod bars;
-mod clock;
 
 pub use crate::bars::{BinanceBarSource, bar_source as bar_source_spot};
 
@@ -260,7 +268,7 @@ impl Plugin for BinancePlugin {
         context.register_marketdata_source(Arc::new(coinm_source(client.clone())));
         context.register_bar_source(Arc::new(bar_source_spot(
             client,
-            Arc::new(clock::SystemClock),
+            Arc::new(senken_plugin::SystemClock),
         )));
         Ok(())
     }

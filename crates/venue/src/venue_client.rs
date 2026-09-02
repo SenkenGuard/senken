@@ -78,11 +78,35 @@ impl VenueClient {
     /// is exhausted; a [`SourceError::Rejected`] immediately if the group's
     /// circuit breaker is open.
     pub async fn get(&self, url: &str, cost: u32) -> Result<Vec<u8>, SourceError> {
+        self.send(reqwest::Method::GET, url, cost).await
+    }
+
+    /// `POST`s `url` with no body, otherwise exactly as
+    /// [`get`](Self::get) — same budget, same retries, same header
+    /// reconciliation.
+    ///
+    /// Exists because one endpoint this project depends on is not a `GET`
+    /// and cannot be made into one: KuCoin's `/api/v1/bullet-public`,
+    /// which issues the short-lived token its WebSocket URL must carry,
+    /// answers a `GET` with `405 Method Not Allowed`.
+    ///
+    /// # Errors
+    /// As [`get`](Self::get).
+    pub async fn post(&self, url: &str, cost: u32) -> Result<Vec<u8>, SourceError> {
+        self.send(reqwest::Method::POST, url, cost).await
+    }
+
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        cost: u32,
+    ) -> Result<Vec<u8>, SourceError> {
         let _permit = self.group.acquire(cost).await?;
 
         let mut backoff = self.retry_policy.first_backoff;
         for attempt in 1..=self.retry_policy.max_attempts {
-            let response = send_once(&self.http, url).await?;
+            let response = send_once(&self.http, method.clone(), url).await?;
 
             if response.status.is_success() {
                 self.group.reconcile_from_headers(&response.headers);
@@ -141,9 +165,13 @@ fn http_error(response: &RawResponse) -> SourceError {
 
 /// One HTTP round trip, with no retry and no interpretation of the status —
 /// callers decide what a given status means for their own budget.
-async fn send_once(client: &reqwest::Client, url: &str) -> Result<RawResponse, SourceError> {
+async fn send_once(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+) -> Result<RawResponse, SourceError> {
     let response = client
-        .get(url)
+        .request(method, url)
         .send()
         .await
         .map_err(SourceError::transport)?;

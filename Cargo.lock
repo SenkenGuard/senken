@@ -4794,6 +4794,7 @@ name = "senken-feed"
 version = "0.0.5"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "reqwest",
  "senken-core",
@@ -4801,8 +4802,6 @@ dependencies = [
  "senken-series",
  "senken-subscription",
  "senken-venue",
- "serde",
- "serde_json",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -4926,6 +4925,7 @@ dependencies = [
  "senken-marketdata",
  "senken-series",
  "senken-storage",
+ "senken-subscription",
  "senken-trade",
  "senken-venue",
  "serde",
@@ -4934,6 +4934,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
  "wiremock",
  "zip",
 ]
@@ -4969,9 +4970,14 @@ dependencies = [
 name = "senken-plugin-bingx"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "flate2",
  "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -4983,9 +4989,15 @@ dependencies = [
 name = "senken-plugin-bitfinex"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
+ "serde",
  "serde_json",
  "tokio",
  "wiremock",
@@ -4995,9 +5007,13 @@ dependencies = [
 name = "senken-plugin-bitget"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5009,9 +5025,13 @@ dependencies = [
 name = "senken-plugin-bitmart"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5023,9 +5043,13 @@ dependencies = [
 name = "senken-plugin-bitmex"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5038,8 +5062,13 @@ dependencies = [
 name = "senken-plugin-bitstamp"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5057,6 +5086,7 @@ dependencies = [
  "senken-marketdata",
  "senken-plugin",
  "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5069,8 +5099,13 @@ dependencies = [
 name = "senken-plugin-coinbase"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5083,9 +5118,13 @@ dependencies = [
 name = "senken-plugin-cryptocom"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5097,13 +5136,18 @@ dependencies = [
 name = "senken-plugin-deribit"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "wiremock",
 ]
 
@@ -5111,13 +5155,18 @@ dependencies = [
 name = "senken-plugin-gate"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "wiremock",
 ]
 
@@ -5125,8 +5174,13 @@ dependencies = [
 name = "senken-plugin-gemini"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5158,13 +5212,19 @@ dependencies = [
 name = "senken-plugin-htx"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "flate2",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "wiremock",
 ]
 
@@ -5172,9 +5232,13 @@ dependencies = [
 name = "senken-plugin-kraken"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5187,9 +5251,13 @@ dependencies = [
 name = "senken-plugin-kucoin"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5202,8 +5270,13 @@ dependencies = [
 name = "senken-plugin-mexc"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5221,6 +5294,7 @@ dependencies = [
  "senken-marketdata",
  "senken-plugin",
  "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5233,8 +5307,13 @@ dependencies = [
 name = "senken-plugin-phemex"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5246,8 +5325,13 @@ dependencies = [
 name = "senken-plugin-poloniex"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5277,8 +5361,13 @@ dependencies = [
 name = "senken-plugin-upbit"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5290,8 +5379,13 @@ dependencies = [
 name = "senken-plugin-whitebit"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-series",
+ "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5317,6 +5411,7 @@ dependencies = [
  "senken-series",
  "senken-storage",
  "senken-store",
+ "senken-subscription",
  "senken-trade",
  "serde_json",
  "sha2 0.11.0",
@@ -5401,6 +5496,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "reqwest",
+ "senken-core",
  "senken-marketdata",
  "serde",
  "serde_json",

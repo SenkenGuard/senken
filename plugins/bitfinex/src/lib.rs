@@ -26,6 +26,12 @@ use senken_marketdata::source::SourceError;
 use senken_plugin::{HttpActivationContext, Plugin, PluginError, PluginManifest};
 use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{BitfinexBarSource, bar_source, bar_source_spot};
+
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "bitfinex-spot";
 /// Source id of the perpetual market.
@@ -154,7 +160,28 @@ impl Plugin for BitfinexPlugin {
         let group = context.limit_group("bitfinex");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(perp_source(client)));
+        context.register_marketdata_source(Arc::new(perp_source(client.clone())));
+        // One candles endpoint and one depth endpoint serve both markets
+        // — each takes the symbol in its path and nothing else, and the
+        // perpetual answers the identical row and level shapes.
+        // Confirmed live 2026-09-02 against `tBTCF0:USTF0`.
+        //
+        // Neither endpoint carries a timestamp of its own, so both need
+        // the same real-time clock (see each module's own docs).
+        for market in [SPOT_ID, PERP_ID] {
+            context.register_bar_source(Arc::new(bars::bar_source(
+                market,
+                client.clone(),
+                Arc::new(senken_plugin::SystemClock),
+            )));
+            context.register_book_source(Arc::new(crate::book::book_source(
+                market,
+                client.clone(),
+                Arc::new(senken_plugin::SystemClock),
+            )));
+        }
+        let _ = &client;
+        context.register_feed_source(Arc::new(crate::feed::BitfinexFeedSource::new()));
         Ok(())
     }
 }

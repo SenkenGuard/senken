@@ -19,6 +19,11 @@ use senken_venue::{HttpSource, VenueClient, iso8601_ms, normalise_symbol, skip};
 use crate::api::RawInstrument;
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{BitmexBarSource, bar_source};
 
 /// Source id of the BitMEX market.
 pub const SOURCE_ID: &str = "bitmex";
@@ -153,7 +158,16 @@ impl Plugin for BitmexPlugin {
     ) -> Result<(), PluginError> {
         let group = context.limit_group("bitmex");
         let client = context.venue_client(&group)?;
-        context.register_marketdata_source(Arc::new(source(client)));
+        context.register_marketdata_source(Arc::new(source(client.clone())));
+        context.register_bar_source(Arc::new(bars::bar_source(client.clone())));
+        // Depth — this endpoint sends no book-level timestamp, only a
+        // per-row one (empty on an empty book), so the source also carries
+        // a real-time clock as a fallback — see `book`'s own module docs.
+        context.register_book_source(Arc::new(crate::book::book_source(
+            client,
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_feed_source(Arc::new(crate::feed::BitmexFeedSource::new()));
         Ok(())
     }
 }

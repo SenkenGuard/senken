@@ -20,6 +20,12 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{RawContract, RawPair};
 
 mod api;
+mod bars;
+mod book;
+mod contract_bars;
+mod feed;
+
+pub use bars::{GateBarSource, bar_source_spot};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "gate-spot";
@@ -30,7 +36,7 @@ pub const BTC_PERP_ID: &str = "gate-btc-perp";
 /// Source id of the USDT-settled delivery market.
 pub const USDT_DELIVERY_ID: &str = "gate-usdt-delivery";
 
-const BASE_URL: &str = "https://api.gateio.ws/api/v4";
+pub(crate) const BASE_URL: &str = "https://api.gateio.ws/api/v4";
 
 /// The spot market.
 #[must_use]
@@ -242,7 +248,41 @@ impl Plugin for GatePlugin {
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
         context.register_marketdata_source(Arc::new(usdt_perp_source(client.clone())));
         context.register_marketdata_source(Arc::new(btc_perp_source(client.clone())));
-        context.register_marketdata_source(Arc::new(usdt_delivery_source(client)));
+        context.register_marketdata_source(Arc::new(usdt_delivery_source(client.clone())));
+        // Spot's candlesticks are positional strings; every contract
+        // market answers with objects instead, so the two cannot share a
+        // decoder (see `contract_bars`' own docs).
+        context.register_bar_source(Arc::new(bar_source_spot(client.clone())));
+        context.register_book_source(Arc::new(crate::book::book_source_spot(client.clone())));
+
+        // The three contract markets differ only in their path: the same
+        // candle and depth shapes come back from each, confirmed live.
+        let clock: Arc<dyn senken_series::Clock> = Arc::new(senken_plugin::SystemClock);
+        for (source_id, path, path_ws) in [
+            (USDT_PERP_ID, "futures/usdt", "usdt"),
+            (BTC_PERP_ID, "futures/btc", "btc"),
+            (USDT_DELIVERY_ID, "delivery/usdt", "delivery/usdt"),
+        ] {
+            context.register_bar_source(Arc::new(crate::contract_bars::bar_source_contract(
+                source_id,
+                path,
+                client.clone(),
+                Arc::clone(&clock),
+            )));
+            context.register_book_source(Arc::new(crate::book::book_source_contract(
+                source_id,
+                path,
+                client.clone(),
+            )));
+            // One socket per settlement currency, so one pool each — Gate
+            // does not carry them all on one wire the way OKX does.
+            context.register_feed_source(Arc::new(crate::feed::GateContractFeedSource::new(
+                source_id,
+                format!("wss://fx-ws.gateio.ws/v4/ws/{path_ws}"),
+            )));
+        }
+        let _ = &client;
+        context.register_feed_source(Arc::new(crate::feed::GateFeedSource::new()));
         Ok(())
     }
 }

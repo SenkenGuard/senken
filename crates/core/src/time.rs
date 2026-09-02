@@ -72,6 +72,22 @@ impl UnixNanos {
         }
     }
 
+    /// Converts **microseconds** since the epoch, checked against `i64`
+    /// overflow.
+    ///
+    /// Named for its unit like every other constructor here, because the
+    /// unit is exactly what a venue disagrees with its neighbours about:
+    /// Bitstamp's live trades carry `timestamp` in whole seconds and
+    /// `microtimestamp` beside it, and two trades in the same second are
+    /// only told apart by the second field.
+    #[must_use]
+    pub const fn from_micros(us: i64) -> Option<Self> {
+        match us.checked_mul(1_000) {
+            Some(n) => Some(Self(n)),
+            None => None,
+        }
+    }
+
     /// Converts seconds since the epoch, checked against `i64` overflow.
     #[must_use]
     pub const fn from_secs(s: i64) -> Option<Self> {
@@ -85,6 +101,12 @@ impl UnixNanos {
     #[must_use]
     pub const fn as_nanos(self) -> i64 {
         self.0
+    }
+
+    /// The value truncated to whole microseconds.
+    #[must_use]
+    pub const fn as_micros(self) -> i64 {
+        self.0 / 1_000
     }
 
     /// The value truncated to whole milliseconds.

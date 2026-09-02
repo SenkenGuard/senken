@@ -15,12 +15,23 @@ homepage.workspace = true
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
+senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
 senken-plugin = { workspace = true, features = ["http"] }
+senken-series = { workspace = true }
+# The order-book port this plugin implements.
+senken-subscription = { workspace = true }
 senken-venue = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# `SystemClock`: neither MEXC market carries a self-contained closed-candle
+# flag (spot's `closeTime` and futures' silence both still need a wall
+# clock to compare against) — see `clock.rs`. `time` is the only feature
+# it needs.
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 wiremock = { workspace = true }

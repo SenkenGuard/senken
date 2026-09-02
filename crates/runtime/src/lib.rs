@@ -23,19 +23,21 @@
 //! # Ok(()) }
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use senken_identity::IdentityStore;
 use senken_marketdata::MarketData;
+use senken_marketdata::book::BookSource;
 use senken_plugin::widget_package::WidgetPackageStore;
 use senken_plugin::{
     ActivationContext, BarSource, Plugin, PluginError, PluginManifest, reconcile_plugin_permissions,
 };
 use senken_storage::Storage;
 use senken_store::Store;
+use senken_subscription::FeedSource;
 use senken_trade::TradeEngine;
 
 /// Error types.
@@ -249,6 +251,8 @@ impl RuntimeBuilder {
         let mut records: Vec<PluginRecord> = Vec::with_capacity(self.plugins.len());
         let mut seen = HashSet::with_capacity(self.plugins.len());
         let mut bar_sources: Vec<Arc<dyn BarSource>> = Vec::new();
+        let mut book_sources: Vec<Arc<dyn BookSource>> = Vec::new();
+        let mut feed_sources: Vec<Arc<dyn FeedSource>> = Vec::new();
         let mut trade = TradeEngine::new();
         // One context for the whole run, so resources it caches (the shared
         // HTTP client) are shared by every plugin.
@@ -263,6 +267,8 @@ impl RuntimeBuilder {
                 Registries {
                     marketdata: &mut marketdata,
                     bar_sources: &mut bar_sources,
+                    book_sources: &mut book_sources,
+                    feed_sources: &mut feed_sources,
                     trade: &mut trade,
                 },
                 &mut seen,
@@ -310,6 +316,11 @@ impl RuntimeBuilder {
             marketdata,
             series,
             series_store,
+            book_sources: book_sources
+                .into_iter()
+                .map(|source| (source.source_id().to_owned(), source))
+                .collect(),
+            feed_sources,
             dynamic_indicators,
             widget_plugins,
             trade: Arc::new(trade),
@@ -317,12 +328,14 @@ impl RuntimeBuilder {
     }
 }
 
-/// The three registries a plugin's activation contributes into, passed as
-/// one so [`activate`]'s signature does not grow a parameter per
-/// capability.
+/// The registries a plugin's activation contributes into, passed as one so
+/// [`activate`]'s signature does not grow a parameter per capability — a
+/// count that grows every time the plugin contract does.
 struct Registries<'a> {
     marketdata: &'a mut MarketData,
     bar_sources: &'a mut Vec<Arc<dyn BarSource>>,
+    book_sources: &'a mut Vec<Arc<dyn BookSource>>,
+    feed_sources: &'a mut Vec<Arc<dyn FeedSource>>,
     trade: &'a mut TradeEngine,
 }
 
@@ -359,6 +372,8 @@ fn activate(
         // first; it must not leak into the next plugin's activation.
         drop(context.take_marketdata_sources());
         drop(context.take_bar_sources());
+        drop(context.take_book_sources());
+        drop(context.take_feed_sources());
         drop(context.take_trade_adapters());
         return Err(RuntimeError::PluginActivation {
             plugin: manifest.id.clone(),
@@ -386,9 +401,21 @@ fn activate(
             })?;
     }
 
+    drain_registrations(manifest, context, registries)
+}
+
+/// Moves what one plugin registered out of the shared context and into the
+/// runtime's own registries, leaving the context ready for the next plugin.
+fn drain_registrations(
+    manifest: &PluginManifest,
+    context: &mut ActivationContext,
+    registries: Registries<'_>,
+) -> Result<(), RuntimeError> {
     let Registries {
         marketdata,
         bar_sources,
+        book_sources,
+        feed_sources,
         trade,
     } = registries;
 
@@ -413,6 +440,22 @@ fn activate(
             "registering bar source"
         );
         bar_sources.push(source);
+    }
+    for source in context.take_book_sources() {
+        tracing::info!(
+            plugin = manifest.id,
+            source = source.source_id(),
+            "registering book source"
+        );
+        book_sources.push(source);
+    }
+    for source in context.take_feed_sources() {
+        tracing::info!(
+            plugin = manifest.id,
+            sources = ?source.source_ids(),
+            "registering live feed"
+        );
+        feed_sources.push(source);
     }
 
     for adapter in context.take_trade_adapters() {
@@ -467,6 +510,19 @@ pub struct Runtime {
     /// instance rather than constructing a second `Store` pointed at the
     /// same directory. Cheap to clone (a path plus an `Arc`'d lock table).
     series_store: Store,
+    /// Every order-book source the active plugins registered, keyed by the
+    /// source id each one states it serves.
+    ///
+    /// Owned here rather than assembled by whatever serves HTTP, for the
+    /// same reason bar sources are: registration is the capability
+    /// declaration, and a headless caller must be able to read it without
+    /// an HTTP layer to inherit it from. This replaced a hardcoded map in
+    /// `senken-api` that could only ever hold one venue.
+    book_sources: HashMap<String, Arc<dyn BookSource>>,
+    /// Every live feed the active plugins registered. Not yet connected:
+    /// a [`FeedSource`] is the means to build a protocol once a catalog
+    /// exists, and whoever runs live data decides when that happens.
+    feed_sources: Vec<Arc<dyn FeedSource>>,
     /// Indicators loaded from an uploaded `.wasm` component, alongside the
     /// ten built-ins `senken-indicators` ships with.
     dynamic_indicators: crate::plugin_host::DynamicIndicators,
@@ -487,6 +543,27 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// The order-book source registered for `source_id`, if any.
+    ///
+    /// `None` is a real answer — the venue serves no depth in this build —
+    /// not a lookup failure, and a caller reporting capabilities reads it
+    /// as such.
+    #[must_use]
+    pub fn book_source(&self, source_id: &str) -> Option<&Arc<dyn BookSource>> {
+        self.book_sources.get(source_id)
+    }
+
+    /// Whether any plugin registered depth for `source_id`.
+    #[must_use]
+    pub fn has_book_source(&self, source_id: &str) -> bool {
+        self.book_sources.contains_key(source_id)
+    }
+
+    /// Every live feed the active plugins registered.
+    #[must_use]
+    pub fn feed_sources(&self) -> &[Arc<dyn FeedSource>] {
+        &self.feed_sources
+    }
     /// Starts configuring a runtime.
     #[must_use]
     pub fn builder() -> RuntimeBuilder {

@@ -15,13 +15,25 @@ homepage.workspace = true
 workspace = true
 
 [dependencies]
+flate2 = { workspace = true }
+async-trait = { workspace = true }
 senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
 senken-plugin = { workspace = true, features = ["http"] }
+senken-series = { workspace = true }
+senken-subscription = { workspace = true }
 senken-venue = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Warns, rather than fails, when a book level's size is finer than a
+# scaled `i64` can hold — see `book.rs`.
+tracing = { workspace = true }
+# `SystemClock`: HTX's history klines carry no closed-candle flag, so this
+# plugin needs a real `Clock` to close candles against — see `clock.rs`.
+# `time` is the only feature it needs.
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 wiremock = { workspace = true }

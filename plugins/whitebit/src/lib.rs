@@ -16,6 +16,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::RawMarket;
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{WhitebitBarSource, bar_source};
 
 /// Source id of the WhiteBIT market.
 pub const SOURCE_ID: &str = "whitebit";
@@ -102,7 +107,13 @@ impl Plugin for WhitebitPlugin {
     ) -> Result<(), PluginError> {
         let group = context.limit_group("whitebit");
         let client = context.venue_client(&group)?;
-        context.register_marketdata_source(Arc::new(source(client)));
+        context.register_marketdata_source(Arc::new(source(client.clone())));
+        context.register_bar_source(Arc::new(bar_source(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_book_source(Arc::new(crate::book::book_source(client)));
+        context.register_feed_source(Arc::new(crate::feed::WhitebitFeedSource::new()));
         Ok(())
     }
 }

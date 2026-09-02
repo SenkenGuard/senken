@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use senken_marketdata::InstrumentId;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -35,6 +36,22 @@ struct LeaseWatches {
 /// connection outright for carrying this many streams, and never treated as
 /// fact anywhere else in this crate.
 const DEFAULT_STREAM_CAP: usize = 50;
+
+/// How long a connection with nothing subscribed on it is kept before being
+/// closed.
+///
+/// Not zero: releasing the last lease is a routine, momentary state, not a
+/// decision to disconnect. Changing a chart pane's instrument releases the
+/// old lease before taking the new one, so a same-venue switch passes
+/// through "nothing subscribed" every single time — retiring on the spot
+/// would hang up and redial on every one of them.
+///
+/// Not indefinite either, which is what it used to be: a connection that
+/// nobody has needed for half a minute is a socket, a reconnect loop and
+/// one of the venue's own connection slots spent on nobody.
+///
+/// This project's own figure, not a venue-documented one.
+const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(30);
 
 /// Why a [`SubscriptionPool`] operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -175,6 +192,10 @@ enum Command {
     /// here: a tick that arrives for an instrument nobody currently leases
     /// (a race at the tail end of an unsubscribe) is simply dropped, not an
     /// error — see [`SubscriptionPool::publish`].
+    /// Close any connection that has been empty for longer than the idle
+    /// grace. Sent by a timer the actor arms when a shard empties, so an
+    /// otherwise idle pool still retires its sockets.
+    RetireIdle,
     Publish {
         instrument: InstrumentId,
         update: PriceUpdate,
@@ -202,9 +223,20 @@ struct LeaseRecord {
 
 /// One connection to the venue, and the instruments currently subscribed on
 /// it.
+///
+/// Held in the actor as `Vec<Option<Shard>>`: a shard whose last instrument
+/// is released is shut down and its slot left vacant rather than removed,
+/// because [`LeaseRecord::shard`] is an index into that vector and removing
+/// an element would silently re-point every lease after it at a different
+/// connection. A vacant slot is reused by the next shard that needs
+/// opening.
 struct Shard {
     connection: Arc<dyn VenueConnection>,
     symbols: HashSet<InstrumentId>,
+    /// When this shard last became empty, or `None` while anything is
+    /// subscribed on it. Retirement waits out
+    /// [`SubscriptionPool::with_idle_grace`] from this instant.
+    empty_since: Option<Instant>,
 }
 
 /// Owns every mutable field of a [`SubscriptionPool`] and is the only thing
@@ -215,8 +247,12 @@ struct Actor {
     venue: Box<str>,
     connector: Box<dyn VenueConnector>,
     cap_per_connection: usize,
-    shards: Vec<Shard>,
+    idle_grace: Duration,
+    shards: Vec<Option<Shard>>,
     leases: HashMap<InstrumentId, LeaseRecord>,
+    /// A sender back into this actor's own queue, for the delayed
+    /// [`Command::RetireIdle`] a newly-emptied shard arms.
+    commands: mpsc::UnboundedSender<Command>,
 }
 
 impl Actor {
@@ -242,11 +278,16 @@ impl Actor {
                     let result = self.reconnected(&connection).await;
                     let _ = respond.send(result);
                 }
+                Command::RetireIdle => self.retire_idle().await,
                 Command::Publish { instrument, update } => self.publish(&instrument, update),
                 Command::PublishQuote { instrument, update } => {
                     self.publish_quote(&instrument, update);
                 }
                 Command::Flush { respond } => {
+                    // Applies any retirement already due before answering,
+                    // so a caller that flushed has seen the whole effect of
+                    // the releases it flushed — not just their unsubscribes.
+                    self.retire_idle().await;
                     let _ = respond.send(());
                 }
             }
@@ -263,7 +304,7 @@ impl Actor {
         }
 
         let shard_index = self.shard_with_room().await?;
-        self.shards[shard_index]
+        self.shard_mut(shard_index)
             .connection
             .subscribe(instrument)
             .await
@@ -273,7 +314,9 @@ impl Actor {
                 source,
             })?;
 
-        self.shards[shard_index].symbols.insert(instrument.clone());
+        let shard = self.shard_mut(shard_index);
+        shard.symbols.insert(instrument.clone());
+        shard.empty_since = None;
         let (updates, _receiver) = watch::channel(None);
         let (quote_updates, _quote_receiver) = watch::channel(None);
         self.leases.insert(
@@ -349,8 +392,11 @@ impl Actor {
         let Some(shard_index) = shard_index else {
             return;
         };
-        let shard = &mut self.shards[shard_index];
-        if let Err(error) = shard.connection.unsubscribe(instrument).await {
+        // The connection is cloned out rather than held across the await:
+        // `venue` is borrowed by the log line below, and by
+        // `retire_shard` afterwards.
+        let connection = Arc::clone(&self.shard_mut(shard_index).connection);
+        if let Err(error) = connection.unsubscribe(instrument).await {
             // The venue rejecting an unsubscribe must not leave this
             // instrument's bookkeeping — and therefore its slot against the
             // shard's cap — pinned forever on a leaseholder that has
@@ -362,18 +408,89 @@ impl Actor {
                 "venue rejected unsubscribe; releasing bookkeeping anyway"
             );
         }
+        let shard = self.shard_mut(shard_index);
         shard.symbols.remove(instrument);
+        if shard.symbols.is_empty() {
+            shard.empty_since = Some(Instant::now());
+            self.arm_idle_sweep();
+        }
+    }
+
+    /// Asks this actor to reconsider its empty shards once the grace has
+    /// passed.
+    ///
+    /// Delayed rather than immediate, because closing a connection the
+    /// moment its last instrument leaves would hang up and redial on every
+    /// ordinary pane action: changing a chart's instrument releases the old
+    /// lease before it takes the new one, so a same-venue switch would
+    /// close the socket and immediately dial it again.
+    fn arm_idle_sweep(&self) {
+        let commands = self.commands.clone();
+        let grace = self.idle_grace;
+        tokio::spawn(async move {
+            tokio::time::sleep(grace).await;
+            // The pool being gone is the ordinary end of this timer, not a
+            // failure worth reporting.
+            let _ = commands.send(Command::RetireIdle);
+        });
+    }
+
+    /// Closes every connection that has been empty for the whole grace.
+    ///
+    /// Re-checks rather than trusting the timer that woke it: a shard that
+    /// was empty when the sweep was armed may have been leased again since,
+    /// and that lease is exactly what the grace exists to protect.
+    async fn retire_idle(&mut self) {
+        let now = Instant::now();
+        let grace = self.idle_grace;
+        let due: Vec<usize> = self
+            .shards
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let shard = slot.as_ref()?;
+                let empty_since = shard.empty_since?;
+                (shard.symbols.is_empty() && now.duration_since(empty_since) >= grace)
+                    .then_some(index)
+            })
+            .collect();
+        for index in due {
+            self.retire_shard(index).await;
+        }
+    }
+
+    /// Closes the connection behind an empty shard and vacates its slot.
+    ///
+    /// Unsubscribing every instrument is not the same as closing the
+    /// socket, and the difference is the whole cost: before this, a venue
+    /// connection dialled for one pane stayed open for the life of the
+    /// process, subscribed to nothing. With one venue that is a single idle
+    /// socket; with a venue per plugin it is one per venue anybody has ever
+    /// glanced at.
+    ///
+    /// The slot is left vacant rather than removed — see [`Shard`]'s docs
+    /// on why the index must stay stable.
+    async fn retire_shard(&mut self, index: usize) {
+        let Some(shard) = self.shards[index].take() else {
+            return;
+        };
+        tracing::debug!(
+            venue = %self.venue,
+            shard = index,
+            "closing a venue connection with nothing left subscribed on it"
+        );
+        shard.connection.shutdown().await;
     }
 
     /// The index of a shard with room for one more instrument, opening a new
     /// connection if every existing shard is already at
     /// `cap_per_connection`.
     async fn shard_with_room(&mut self) -> Result<usize, PoolError> {
-        if let Some(index) = self
-            .shards
-            .iter()
-            .position(|shard| shard.symbols.len() < self.cap_per_connection)
-        {
+        if let Some(index) = self.shards.iter().position(|shard| {
+            shard
+                .as_ref()
+                .is_some_and(|shard| shard.symbols.len() < self.cap_per_connection)
+        }) {
             return Ok(index);
         }
 
@@ -385,11 +502,39 @@ impl Actor {
                 venue: self.venue.clone(),
                 source,
             })?;
-        self.shards.push(Shard {
+        let shard = Shard {
             connection,
             symbols: HashSet::new(),
-        });
+            empty_since: Some(Instant::now()),
+        };
+        // A slot left vacant by a retired shard is reused before the vector
+        // grows: a server that opens and closes panes all day would
+        // otherwise accumulate one dead slot per venue connection it ever
+        // had, even though every one of them is empty.
+        if let Some(slot) = self.shards.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(shard);
+            return Ok(self
+                .shards
+                .iter()
+                .position(std::option::Option::is_some)
+                .expect("the slot just filled is occupied"));
+        }
+        self.shards.push(Some(shard));
         Ok(self.shards.len() - 1)
+    }
+
+    /// The shard at `index`, which the caller has already established is
+    /// occupied.
+    ///
+    /// Every index in circulation comes from [`LeaseRecord::shard`] or from
+    /// [`shard_with_room`](Self::shard_with_room), and a shard is only
+    /// retired once its last lease is gone — so an index pointing at a
+    /// vacant slot means the actor's own bookkeeping is broken, not that a
+    /// caller passed something bad.
+    fn shard_mut(&mut self, index: usize) -> &mut Shard {
+        self.shards[index]
+            .as_mut()
+            .expect("a leased shard index always points at a live shard")
     }
 
     /// Replays a subscribe for every instrument currently leased on
@@ -399,6 +544,7 @@ impl Actor {
         let Some(shard) = self
             .shards
             .iter()
+            .flatten()
             .find(|shard| Arc::ptr_eq(&shard.connection, connection))
         else {
             return Err(PoolError::UnknownConnection {
@@ -472,14 +618,40 @@ impl SubscriptionPool {
         connector: impl VenueConnector,
         cap_per_connection: usize,
     ) -> Self {
+        Self::build(venue, connector, cap_per_connection, DEFAULT_IDLE_GRACE)
+    }
+
+    /// As [`with_cap`](Self::with_cap), but with an explicit grace before a
+    /// connection with nothing subscribed on it is closed.
+    ///
+    /// [`Duration::ZERO`] retires on the next sweep, which is what a test
+    /// wanting a deterministic retirement asks for — see [`flush`](Self::flush).
+    #[must_use]
+    pub fn with_idle_grace(
+        venue: impl Into<Box<str>>,
+        connector: impl VenueConnector,
+        cap_per_connection: usize,
+        idle_grace: Duration,
+    ) -> Self {
+        Self::build(venue, connector, cap_per_connection, idle_grace)
+    }
+
+    fn build(
+        venue: impl Into<Box<str>>,
+        connector: impl VenueConnector,
+        cap_per_connection: usize,
+        idle_grace: Duration,
+    ) -> Self {
         let venue = venue.into();
         let (commands, receiver) = mpsc::unbounded_channel();
         let actor = Actor {
             venue: venue.clone(),
             connector: Box::new(connector),
             cap_per_connection: cap_per_connection.max(1),
+            idle_grace,
             shards: Vec::new(),
             leases: HashMap::new(),
+            commands: commands.clone(),
         };
         tokio::spawn(actor.run(receiver));
         Self { venue, commands }
@@ -616,6 +788,7 @@ mod tests {
     use senken_marketdata::InstrumentId;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     /// Records every subscribe/unsubscribe call it receives, and reports how
     /// many times it was opened — a venue this crate never has to talk to
@@ -624,6 +797,13 @@ mod tests {
     struct FakeConnection {
         subscribed: Mutex<Vec<InstrumentId>>,
         unsubscribed: Mutex<Vec<InstrumentId>>,
+        shutdowns: AtomicUsize,
+    }
+
+    impl FakeConnection {
+        fn was_shut_down(&self) -> bool {
+            self.shutdowns.load(Ordering::SeqCst) > 0
+        }
     }
 
     #[async_trait]
@@ -642,6 +822,10 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(instrument.clone());
             Ok(())
+        }
+
+        async fn shutdown(&self) {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -682,6 +866,151 @@ mod tests {
 
     fn instrument(symbol: &str) -> InstrumentId {
         InstrumentId::new("fake-venue", symbol).unwrap()
+    }
+
+    /// A pool that retires an empty connection on the next sweep instead of
+    /// waiting out the production grace.
+    ///
+    /// Zero, not "short": a test that waited out a small grace would be
+    /// timing the scheduler, and `flush` runs the sweep before it answers —
+    /// so with no grace to wait out, the retirement has provably already
+    /// happened by the time the assertion runs.
+    fn pool_retiring_at_once(connector: Arc<FakeConnector>) -> SubscriptionPool {
+        SubscriptionPool::with_idle_grace("fake-venue", connector, 50, Duration::ZERO)
+    }
+
+    #[tokio::test]
+    async fn the_last_lease_leaving_closes_the_venue_connection() {
+        // Unsubscribing every instrument is not the same as hanging up. A
+        // connection kept open with nothing on it is a socket, a reconnect
+        // loop and a venue's connection-count slot, all spent on nobody —
+        // one per venue anyone has ever briefly looked at.
+        let connector = Arc::new(FakeConnector::default());
+        let pool = pool_retiring_at_once(Arc::clone(&connector));
+
+        let lease = pool.lease(instrument("BTCUSDT")).await.unwrap();
+        let shard = Arc::clone(&connector.opened_shards()[0]);
+        assert!(!shard.was_shut_down(), "still leased");
+
+        drop(lease);
+        // The release runs on the actor task, so the assertion below is only
+        // worth anything once it has actually been applied.
+        pool.flush().await;
+
+        assert!(
+            shard.was_shut_down(),
+            "the last lease left and the connection stayed open"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_is_kept_while_any_other_instrument_is_still_on_it() {
+        // The other half of the rule: retiring on *an* empty instrument
+        // rather than an empty shard would hang up on everyone else sharing
+        // the socket.
+        let connector = Arc::new(FakeConnector::default());
+        let pool = pool_retiring_at_once(Arc::clone(&connector));
+
+        let btc = pool.lease(instrument("BTCUSDT")).await.unwrap();
+        let eth = pool.lease(instrument("ETHUSDT")).await.unwrap();
+        let shard = Arc::clone(&connector.opened_shards()[0]);
+
+        drop(btc);
+        pool.flush().await;
+        assert!(
+            !shard.was_shut_down(),
+            "ETHUSDT is still leased on this connection"
+        );
+
+        drop(eth);
+        pool.flush().await;
+        assert!(shard.was_shut_down());
+    }
+
+    #[tokio::test]
+    async fn changing_a_panes_instrument_does_not_hang_up_on_the_venue() {
+        // The regression that made a grace necessary. Switching a chart
+        // pane's instrument releases the old lease before it takes the new
+        // one, so the shard passes through "nothing subscribed" every time.
+        // Retiring on the spot closed the socket and redialled it on every
+        // ordinary switch — the default grace exists to see past that
+        // moment.
+        let connector = Arc::new(FakeConnector::default());
+        let pool = SubscriptionPool::new("fake-venue", Arc::clone(&connector));
+
+        let old = pool.lease(instrument("BTCUSDT")).await.unwrap();
+        let shard = Arc::clone(&connector.opened_shards()[0]);
+        drop(old);
+        pool.flush().await;
+        let new = pool.lease(instrument("ETHUSDT")).await.unwrap();
+        pool.flush().await;
+
+        assert!(
+            !shard.was_shut_down(),
+            "the connection was closed between releasing one instrument and taking the next"
+        );
+        assert_eq!(
+            connector.connect_count(),
+            1,
+            "an instrument switch redialled the venue"
+        );
+        drop(new);
+    }
+
+    #[tokio::test]
+    async fn a_connection_leased_again_within_the_grace_is_not_retired_afterwards() {
+        // The sweep must re-check rather than trust the timer that woke it.
+        // A shard emptied, armed for retirement, then leased again before
+        // the grace expired is in use — closing it because a timer said so
+        // would hang up on a live subscription.
+        let connector = Arc::new(FakeConnector::default());
+        let pool = pool_retiring_at_once(Arc::clone(&connector));
+
+        let first = pool.lease(instrument("BTCUSDT")).await.unwrap();
+        let shard = Arc::clone(&connector.opened_shards()[0]);
+        drop(first);
+        // Re-leased before any sweep runs.
+        let second = pool.lease(instrument("BTCUSDT")).await.unwrap();
+        pool.flush().await;
+
+        assert!(
+            !shard.was_shut_down(),
+            "a re-leased connection was retired by a stale timer"
+        );
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn a_slot_left_by_a_retired_connection_is_reused_rather_than_grown_past() {
+        // `LeaseRecord::shard` is an index, so a retired shard leaves its
+        // slot vacant instead of being removed. Vacant slots must be filled
+        // again, or a server that opens and closes panes all day grows one
+        // dead slot per connection it ever had.
+        let connector = Arc::new(FakeConnector::default());
+        let pool = pool_retiring_at_once(Arc::clone(&connector));
+
+        for _ in 0..5 {
+            let lease = pool.lease(instrument("BTCUSDT")).await.unwrap();
+            drop(lease);
+            pool.flush().await;
+        }
+
+        // Five open/close cycles: five connections dialled, and the last one
+        // still resolvable — the index bookkeeping survived every retirement.
+        assert_eq!(connector.connect_count(), 5);
+        let lease = pool.lease(instrument("ETHUSDT")).await.unwrap();
+        assert_eq!(
+            connector
+                .opened_shards()
+                .last()
+                .unwrap()
+                .subscribed
+                .lock()
+                .unwrap()
+                .as_slice(),
+            &[instrument("ETHUSDT")]
+        );
+        drop(lease);
     }
 
     #[tokio::test]
@@ -863,7 +1192,7 @@ mod tests {
     #[tokio::test]
     async fn a_lease_receives_updates_for_its_instrument_and_not_for_others() {
         let connector = Arc::new(FakeConnector::default());
-        let pool = SubscriptionPool::new("fake-venue", Arc::clone(&connector));
+        let pool = pool_retiring_at_once(Arc::clone(&connector));
 
         let btc = pool.lease(instrument("BTCUSDT")).await.unwrap();
         let eth = pool.lease(instrument("ETHUSDT")).await.unwrap();

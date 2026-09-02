@@ -2,6 +2,22 @@
 //!
 //! One endpoint returns both, told apart by `product_type`. The venue lists
 //! no dated futures and no options.
+//!
+//! # No live feed yet, and why
+//!
+//! Gemini's market-data socket connects and streams: on 2026-09-02
+//! `wss://api.gemini.com/v2/marketdata` accepted
+//! `{"type":"subscribe","subscriptions":[{"name":"l2","symbols":["BTCUSD"]}]}`
+//! and sent a book snapshot followed by `l2_updates`. What it did not send
+//! — across roughly eight minutes, on BTCUSD, ETHUSD and SOLUSD, on both
+//! the v1 and v2 endpoints — was a single trade event.
+//!
+//! So the frame a trade arrives in has never been seen here. Writing a
+//! decoder against a remembered shape is what this project's recorded
+//! fixtures exist to prevent, and a decoder that silently matches nothing
+//! is indistinguishable from a venue that is merely quiet. Gemini's
+//! instruments, bars and depth are unaffected; only the stream waits on a
+//! capture.
 
 use std::sync::Arc;
 
@@ -15,6 +31,10 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::RawSymbol;
 
 mod api;
+mod bars;
+mod book;
+
+pub use bars::{GeminiBarSource, bar_source};
 
 /// Source id of the Gemini market.
 pub const SOURCE_ID: &str = "gemini";
@@ -111,7 +131,19 @@ impl Plugin for GeminiPlugin {
     ) -> Result<(), PluginError> {
         let group = context.limit_group("gemini");
         let client = context.venue_client(&group)?;
-        context.register_marketdata_source(Arc::new(source(client)));
+        context.register_marketdata_source(Arc::new(source(client.clone())));
+        context.register_bar_source(Arc::new(bar_source(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        // Depth — this endpoint's own levels carry no book-wide timestamp
+        // and an empty book would carry no level to read one from at all,
+        // so the source also carries a real-time clock as a fallback —
+        // see `book`'s own module docs.
+        context.register_book_source(Arc::new(crate::book::book_source(
+            client,
+            Arc::new(senken_plugin::SystemClock),
+        )));
         Ok(())
     }
 }

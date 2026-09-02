@@ -443,6 +443,10 @@ pub(crate) mod test_support {
 
     struct FakeVenuePlugin {
         bar_source: Arc<FakeBarSource>,
+        /// Registered only when a test actually wants depth from this
+        /// venue — registration is the capability declaration, so a fake
+        /// venue with no book source must genuinely have none.
+        book_source: Option<Arc<dyn senken_marketdata::book::BookSource>>,
     }
 
     impl Plugin for FakeVenuePlugin {
@@ -459,6 +463,9 @@ pub(crate) mod test_support {
         fn activate(&self, context: &mut ActivationContext) -> Result<(), PluginError> {
             context.register_marketdata_source(Arc::new(FakeMarketDataSource));
             context.register_bar_source(self.bar_source.clone());
+            if let Some(book) = &self.book_source {
+                context.register_book_source(Arc::clone(book));
+            }
             Ok(())
         }
     }
@@ -468,6 +475,20 @@ pub(crate) mod test_support {
     pub(crate) fn runtime_with_fake_venue(
         data_dir: &std::path::Path,
     ) -> (Runtime, Arc<FakeBarSource>) {
+        runtime_with_fake_venue_serving(data_dir, None)
+    }
+
+    /// As [`runtime_with_fake_venue`], with `book` registered as this
+    /// venue's order-book source.
+    ///
+    /// Goes through a real plugin activation rather than being handed to
+    /// the server directly, because that is the only way depth reaches the
+    /// runtime now — a test that bypassed registration would be exercising
+    /// a path production does not have.
+    pub(crate) fn runtime_with_fake_venue_serving(
+        data_dir: &std::path::Path,
+        book: Option<Arc<dyn senken_marketdata::book::BookSource>>,
+    ) -> (Runtime, Arc<FakeBarSource>) {
         let bar_source = Arc::new(FakeBarSource {
             calls: AtomicU32::new(0),
         });
@@ -475,6 +496,7 @@ pub(crate) mod test_support {
             .data_dir(data_dir)
             .plugin(FakeVenuePlugin {
                 bar_source: bar_source.clone(),
+                book_source: book,
             })
             .build()
             .expect("a single well-behaved plugin always activates");
@@ -497,6 +519,7 @@ pub(crate) mod test_support {
             .data_dir(data_dir)
             .plugin(FakeVenuePlugin {
                 bar_source: bar_source.clone(),
+                book_source: None,
             })
             .plugin(senken_plugin_simulator::SimulatorPlugin::new(
                 senken_storage::Storage::new(data_dir),

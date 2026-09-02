@@ -28,6 +28,8 @@ pub mod paths;
 pub mod query;
 
 #[cfg(feature = "registry")]
+pub mod book;
+#[cfg(feature = "registry")]
 pub mod catalog;
 #[cfg(feature = "registry")]
 mod registry;

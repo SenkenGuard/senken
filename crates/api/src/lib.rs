@@ -69,7 +69,7 @@ use senken_identity::{DEFAULT_ADMIN_EMAIL, IdentityStore};
 use senken_indicator_registry::RegistryStore;
 use senken_notes::NoteStore;
 use senken_runtime::Runtime;
-use senken_subscription::{BookSource, IndicatorSessionRegistry, SubscriptionPool};
+use senken_subscription::{BookSessionRegistry, IndicatorSessionRegistry, SubscriptionPool};
 use senken_trade::TradeAccountStore;
 use senken_watchlist::WatchlistStore;
 
@@ -190,13 +190,7 @@ pub(crate) struct AppState {
     /// running in the same process (as a test stands up) never share
     /// sessions with each other.
     pub(crate) indicator_sessions: Arc<IndicatorSessionRegistry>,
-    /// Book-depth sources this build actually has, keyed by source id —
-    /// registration is the capability declaration, the same contract every
-    /// other market-data type in this project uses (see
-    /// `senken_subscription::BookSource`'s own docs). Built once per server
-    /// by [`source_handlers::build_book_sources`], the same way `feed_pools`
-    /// is built once by [`feed::build_feed_pools`].
-    pub(crate) book_sources: Arc<HashMap<String, Arc<dyn BookSource>>>,
+    pub(crate) book_sessions: Arc<BookSessionRegistry>,
     /// Login attempt counters.
     pub(crate) login_limiter: Arc<identity_handlers::LoginRateLimiter>,
     /// The address this server actually bound, for the B4 non-loopback
@@ -226,21 +220,49 @@ pub async fn serve(
     identity: Arc<IdentityStore>,
     runtime: Arc<Runtime>,
 ) -> Result<ServerHandle, ApiError> {
-    // one `SubscriptionPool` per source this build has a real
-    // live-price protocol for (today, only OKX — see `feed`'s own docs).
-    let feed_pools = feed::build_feed_pools(runtime.marketdata()).await;
+    // One `SubscriptionPool` per live feed the active plugins registered.
+    let feed_pools = feed::build_feed_pools(runtime.marketdata(), runtime.feed_sources()).await;
     serve_with_feed_pools(options, identity, runtime, feed_pools).await
 }
 
 /// [`serve`], parameterised over the live-feed pools instead of building
 /// them itself — the seam a test uses to stand a real server up on a fake
 /// venue's pool (never a real one; the access-boundary
-/// constraint) rather than OKX's.
+/// constraint) rather than OKX's. Delegates to
+/// [`serve_with_feed_pools_and_book`] with this build's real book-depth
+/// sources and a fresh registry polling at its default cadence.
 pub(crate) async fn serve_with_feed_pools(
     options: ServeOptions,
     identity: Arc<IdentityStore>,
     runtime: Arc<Runtime>,
     feed_pools: HashMap<String, SubscriptionPool>,
+) -> Result<ServerHandle, ApiError> {
+    serve_with_feed_pools_and_book(
+        options,
+        identity,
+        runtime,
+        feed_pools,
+        Arc::new(BookSessionRegistry::new(ws::PANEL_BOOK_DEPTH)),
+    )
+    .await
+}
+
+/// [`serve_with_feed_pools`], parameterised again over the session registry
+/// that polls book depth — the seam a test uses to poll on a fast cadence
+/// (`BookSessionRegistry::with_interval`) instead of waiting a full second
+/// per snapshot. `book_sessions` is already an `Arc` (rather than being
+/// wrapped internally, as every other field here is) so a test can keep its
+/// own clone and read `BookSessionRegistry::live_sessions` after standing
+/// the server up.
+///
+/// The depth *sources* are not a parameter: they come from the runtime,
+/// where the plugins that registered them put them.
+pub(crate) async fn serve_with_feed_pools_and_book(
+    options: ServeOptions,
+    identity: Arc<IdentityStore>,
+    runtime: Arc<Runtime>,
+    feed_pools: HashMap<String, SubscriptionPool>,
+    book_sessions: Arc<BookSessionRegistry>,
 ) -> Result<ServerHandle, ApiError> {
     let addr = SocketAddr::new(options.host, options.port);
     let listener = TcpListener::bind(addr)
@@ -277,7 +299,7 @@ pub(crate) async fn serve_with_feed_pools(
         alert_engine,
         ws_tickets: Arc::new(ws::TicketStore::default()),
         indicator_sessions: Arc::new(IndicatorSessionRegistry::default()),
-        book_sources: Arc::new(source_handlers::build_book_sources()),
+        book_sessions,
         login_limiter: Arc::new(identity_handlers::LoginRateLimiter::default()),
         bind_host: local_addr.ip(),
     };

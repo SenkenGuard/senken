@@ -1,8 +1,11 @@
 //! MEXC market data for Senken: spot pairs and futures contracts.
 //!
-//! Both markets are served from `api.mexc.com`; the dedicated
-//! `contract.mexc.com` host answers 403 to plain clients, so the futures
-//! path is taken from the main host instead.
+//! Instrument catalogs are both served from `api.mexc.com`: the dedicated
+//! `contract.mexc.com` host answers 403 to plain clients for its
+//! *instrument-list* endpoint, so the futures catalog is taken from the
+//! main host instead. That 403 does not extend to market data — this
+//! plugin's bar source fetches futures klines from `contract.mexc.com`
+//! directly, unauthenticated, with no trouble; see `bars`' own module docs.
 
 use std::sync::Arc;
 
@@ -16,6 +19,11 @@ use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
 use crate::api::{ContractDetail, ExchangeInfo, RawContract, RawSymbol};
 
 mod api;
+mod bars;
+mod book;
+mod feed;
+
+pub use bars::{MexcFuturesBarSource, MexcSpotBarSource, futures_bar_source, spot_bar_source};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "mexc-spot";
@@ -177,7 +185,18 @@ impl Plugin for MexcPlugin {
         let group = context.limit_group("mexc");
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(futures_source(client)));
+        context.register_marketdata_source(Arc::new(futures_source(client.clone())));
+        context.register_bar_source(Arc::new(spot_bar_source(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_bar_source(Arc::new(futures_bar_source(
+            client.clone(),
+            Arc::new(senken_plugin::SystemClock),
+        )));
+        context.register_book_source(Arc::new(crate::book::spot_book_source(client.clone())));
+        context.register_book_source(Arc::new(crate::book::futures_book_source(client)));
+        context.register_feed_source(Arc::new(crate::feed::MexcFeedSource::new()));
         Ok(())
     }
 }

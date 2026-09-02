@@ -32,6 +32,9 @@ senken-identity = { workspace = true }
 senken-indicators = { workspace = true }
 senken-loader = { workspace = true }
 senken-marketdata = { workspace = true }
+# The live-feed registrations plugins hand over; the runtime owns them and
+# decides when they are connected.
+senken-subscription = { workspace = true }
 # A checked, non-`as` numeric conversion `plugin_host.rs` uses for the one
 # WIT `scaled` value this bridge cannot losslessly type as
 # `senken_indicators::ScaledPrice` — see that module's own

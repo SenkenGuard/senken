@@ -1,56 +1,35 @@
-//! The live-price feed (Rust half).
+//! The WebSocket dial/reconnect engine for live market data.
 //!
 //! Implements `senken-subscription`'s
 //! [`VenueConnection`](senken_subscription::VenueConnection)/
 //! [`VenueConnector`](senken_subscription::VenueConnector) ports against a
 //! real venue WebSocket, and delivers last-price updates to whoever holds a
 //! [`Lease`](senken_subscription::Lease) — a chart pane, a watchlist row, an
-//! alert, a position, or anything else added later. This
-//! crate has no idea which of those it is talking to, and is not supposed
-//! to: the dial/reconnect engine behind [`WsVenueConnection`] and
-//! [`WsVenueConnector`] is entirely generic across venues, and every
-//! venue-specific fact (URL, subscribe protocol, message shape) is isolated
-//! behind [`VenueProtocol`] and, for OKX specifically, verified live rather
-//! than assumed — see [`okx`]'s module docs for exactly what was confirmed
-//! and what was not.
+//! alert, a position, or anything else added later. This crate has no idea
+//! which of those it is talking to, and is not supposed to.
 //!
-//! [`okx_book`] is the one exception to "against a real venue WebSocket"
-//! above: a fixed-depth order-book snapshot is fetched fresh over plain
-//! HTTP rather than streamed, so it implements
-//! [`senken_subscription::BookSource`] instead of `VenueConnection`. It
-//! still lives in this crate, alongside [`okx`], because both are venue
-//! adapters against `senken-subscription`'s ports for data this crate's own
-//! pool does not carry.
+//! **No venue lives here.** The engine behind [`WsVenueConnection`] and
+//! [`WsVenueConnector`] is entirely generic, and every venue-specific fact
+//! (URL, subscribe protocol, message shape) sits behind
+//! [`VenueProtocol`] in that venue's own plugin, next to the recorded
+//! response it was verified against. Anything else and a venue's quirks
+//! leak into machinery twenty-one other venues share.
 //!
-//! # Sharing the venue's rate budget
-//!
-//! A venue's connection limit is an IP-level fact, the same one
-//! [`senken_venue::LimitGroup`] already exists to track for REST traffic
-//!. A WS dial through [`WsVenueConnector`] draws on the exact
-//! same [`LimitGroup`](senken_venue::LimitGroup) a plugin's REST client uses
-//! for that venue, via
-//! [`senken_venue::LimitGroup::acquire_for_connect`], rather than opening an
-//! unbudgeted side channel.
-//!
-//! # What this crate does not do
-//!
-//! It never decides *which* instruments to subscribe — that is entirely the
-//! pool's job, driven by leases. It never persists a price (the //! scope note) and never aggregates ticks into bars (a derived series is never persisted, and this stage does not even attempt the aggregation). It never reads a wall clock on the price path:
-//! every [`senken_subscription::PriceUpdate`] this crate produces carries a
-//! timestamp decoded from the venue's own message.
 
 mod connection;
 mod connector;
-pub mod okx;
-pub mod okx_book;
-mod protocol;
-mod symbol_map;
+mod proxy;
 
 pub use connection::WsVenueConnection;
 pub use connector::WsVenueConnector;
-pub use protocol::{LiveUpdate, VenueProtocol};
-pub use symbol_map::{IdentitySymbolMap, SymbolMap};
 
 // Re-exported so a caller building a `VenueProtocol` or wiring a connector
 // needs no direct dependency on `senken-subscription` just to name these.
-pub use senken_subscription::{ConnectionError, PriceUpdate, QuoteUpdate};
+// The live-feed *ports* live beside their siblings (`BookSource`,
+// `QuoteSource`, `VenueConnector`) in `senken-subscription`; this crate holds
+// the WebSocket engine and the venue implementations that satisfy them.
+// Re-exported so a venue adapter needs one import, not two.
+pub use senken_subscription::{
+    ConnectionError, IdentitySymbolMap, LiveUpdate, PriceUpdate, QuoteUpdate, SymbolMap,
+    VenueProtocol,
+};

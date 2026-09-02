@@ -70,6 +70,13 @@ impl FakeConn {
         }
     }
 
+    async fn send_binary(&mut self, bytes: Vec<u8>) {
+        self.ws
+            .send(Message::binary(bytes))
+            .await
+            .expect("sending to a freshly accepted loopback socket must not fail");
+    }
+
     async fn send_text(&mut self, text: &str) {
         self.ws
             .send(Message::text(text))
@@ -316,4 +323,194 @@ async fn reconnect_never_resubscribes_an_instrument_already_released() {
         nothing_replayed,
         "reconnect must not resubscribe an instrument that was released while disconnected"
     );
+}
+
+/// A protocol that exercises the three hooks a venue needs beyond
+/// subscribe/parse: a binary wire format, an answer the venue demands, and
+/// an unprompted keep-alive.
+///
+/// Written as a second protocol rather than options on [`TestProtocol`] so
+/// the plain case above stays exactly as simple as it was — three real
+/// venues in this workspace need one or more of these, and every one of
+/// them is silent when it does not work.
+struct ChattyProtocol {
+    url: String,
+}
+
+/// The trivial "compression" this protocol's binary frames use: the bytes
+/// reversed. Not gzip — the point is that `decode_binary` is what turns a
+/// binary frame into text, whatever the venue's own encoding is.
+fn reversed(bytes: &[u8]) -> Vec<u8> {
+    bytes.iter().rev().copied().collect()
+}
+
+impl senken_feed::VenueProtocol for ChattyProtocol {
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    fn venue(&self) -> &'static str {
+        "chatty-venue"
+    }
+
+    fn subscribe_frame(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
+        Ok(format!("SUB {}", instrument.symbol()))
+    }
+
+    fn unsubscribe_frame(&self, instrument: &InstrumentId) -> Result<String, ConnectionError> {
+        Ok(format!("UNSUB {}", instrument.symbol()))
+    }
+
+    fn parse_message(&self, text: &str) -> Vec<(InstrumentId, LiveUpdate)> {
+        let mut parts = text.split_whitespace();
+        if parts.next() != Some("PRICE") {
+            return Vec::new();
+        }
+        let (Some(symbol), Some(price)) = (
+            parts.next(),
+            parts.next().and_then(|p| p.parse::<i64>().ok()),
+        ) else {
+            return Vec::new();
+        };
+        let Ok(instrument) = InstrumentId::new("chatty-venue", symbol) else {
+            return Vec::new();
+        };
+        vec![(
+            instrument,
+            LiveUpdate::Price(PriceUpdate {
+                ts: UnixNanos::EPOCH,
+                price,
+                price_scale: 0,
+                qty: senken_series::Volume::Absent,
+                qty_scale: 0,
+            }),
+        )]
+    }
+
+    fn decode_binary(&self, bytes: &[u8]) -> Option<String> {
+        String::from_utf8(reversed(bytes)).ok()
+    }
+
+    fn reply_to(&self, text: &str) -> Option<String> {
+        text.strip_prefix("PING ")
+            .map(|token| format!("PONG {token}"))
+    }
+
+    fn keepalive(&self) -> Option<(std::time::Duration, String)> {
+        Some((
+            std::time::Duration::from_millis(120),
+            "KEEPALIVE".to_owned(),
+        ))
+    }
+}
+
+fn chatty_connector_and_pool(
+    url: String,
+) -> (
+    senken_feed::WsVenueConnector<ChattyProtocol>,
+    SubscriptionPool,
+) {
+    let connector =
+        senken_feed::WsVenueConnector::new(ChattyProtocol { url }, LimitGroup::new("chatty-venue"));
+    let pool = SubscriptionPool::new("chatty-venue", connector.clone());
+    connector.bind_pool(pool.clone());
+    (connector, pool)
+}
+
+/// HTX, BingX and Upbit all send **every** frame with the binary opcode.
+/// Before `decode_binary` existed the read loop discarded those frames and
+/// reported nothing — no error, no data, for the whole life of the
+/// connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_binary_frame_reaches_a_leaseholder_once_the_protocol_decodes_it() {
+    let server = FakeServer::bind().await;
+    let (_connector, pool) = chatty_connector_and_pool(server.ws_url());
+
+    let server_task = tokio::spawn(async move {
+        let mut conn = server.accept().await;
+        let sub = conn.recv_text().await;
+        (conn, sub)
+    });
+    let lease = pool
+        .lease(InstrumentId::new("chatty-venue", "BTCUSDT").unwrap())
+        .await
+        .expect("the lease must be granted");
+    let (mut conn, sub) = server_task.await.unwrap();
+    assert_eq!(sub, "SUB BTCUSDT");
+    let mut updates = lease.updates();
+
+    conn.send_binary(reversed(b"PRICE BTCUSDT 4242")).await;
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), updates.changed())
+        .await
+        .expect("a decoded binary frame must reach the leaseholder")
+        .expect("the lease is still open");
+    assert_eq!(updates.borrow().map(|u| u.price), Some(4242));
+}
+
+/// HTX drops a connection that does not answer its `{"ping"}`, and
+/// Crypto.com does the same for `public/heartbeat`. The answer has to
+/// leave on the same socket the demand arrived on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_the_protocol_must_answer_is_answered_on_the_same_socket() {
+    let server = FakeServer::bind().await;
+    let (_connector, pool) = chatty_connector_and_pool(server.ws_url());
+
+    let server_task = tokio::spawn(async move {
+        let mut conn = server.accept().await;
+        let sub = conn.recv_text().await;
+        (conn, sub)
+    });
+    let _lease = pool
+        .lease(InstrumentId::new("chatty-venue", "BTCUSDT").unwrap())
+        .await
+        .expect("the lease must be granted");
+    let (mut conn, sub) = server_task.await.unwrap();
+    assert_eq!(sub, "SUB BTCUSDT");
+
+    conn.send_text("PING 991").await;
+
+    // The keep-alive timer also writes to this socket, so the answer is
+    // the next frame that is not one. Bounded, so a regression that stops
+    // answering fails here rather than hanging the suite.
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let frame = conn.recv_text().await;
+            if frame != "KEEPALIVE" {
+                break frame;
+            }
+        }
+    })
+    .await
+    .expect("the venue's demand must be answered on the same socket");
+    assert_eq!(answer, "PONG 991");
+}
+
+/// Bybit, Bitget, Poloniex, WhiteBIT, MEXC, KuCoin and Upbit all drop a
+/// socket that says nothing for long enough. Nothing arrives to prompt
+/// this one — it has to be sent on a timer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_keepalive_is_sent_unprompted_and_repeatedly() {
+    let server = FakeServer::bind().await;
+    let (_connector, pool) = chatty_connector_and_pool(server.ws_url());
+
+    let server_task = tokio::spawn(async move {
+        let mut conn = server.accept().await;
+        let sub = conn.recv_text().await;
+        (conn, sub)
+    });
+    let _lease = pool
+        .lease(InstrumentId::new("chatty-venue", "BTCUSDT").unwrap())
+        .await
+        .expect("the lease must be granted");
+    let (mut conn, sub) = server_task.await.unwrap();
+    assert_eq!(sub, "SUB BTCUSDT");
+
+    // Twice, so this cannot pass on a single fire-once timer.
+    for _ in 0..2 {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), conn.recv_text())
+            .await
+            .expect("the keep-alive must arrive without anything prompting it");
+        assert_eq!(frame, "KEEPALIVE");
+    }
 }
