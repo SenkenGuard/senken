@@ -61,41 +61,21 @@
 //!   `775594000` (the highest, best bid) — this source does not re-sort
 //!   them.
 //!
-//! # Why this module is not registered — the price scale is a guess
+//! # Two endpoints, chosen by the symbol's own scale
 //!
-//! Exactly the caveat `bars.rs` already carries, restated for this
-//! endpoint: Phemex's own convention is that price scale is per-symbol,
-//! and `plugins/phemex/src/api.rs` does not currently capture that
-//! `priceScale` from the product catalogue at all. `PRICE_SCALE` below is
-//! `4`, the same figure `bars.rs` inferred for `BTCUSD` specifically by
-//! comparing its kline prices against BTC's simultaneously observed real
-//! price on other venues — reused here because this capture's own best
-//! bid (`775594000 / 10^4 = 77559.4`) lands in the same plausible BTC
-//! range that same evidence established, which is corroborating, not new,
-//! evidence. It is still **only a per-symbol observation**, not a general
-//! solution: this source would silently misprice any other Phemex
-//! contract whose `priceScale` differs, which is exactly why `lib.rs`
-//! does not register it.
+//! Phemex serves depth in the same two shapes it serves klines in, and
+//! [`crate::scales`] is what says which a symbol uses:
 //!
-//! `QTY_SCALE` (`0`) follows the same reasoning `bars.rs` applies to this
-//! contract's own `volume` field: `BTCUSD` is a $1-per-contract inverse
-//! instrument, so a resting size is a whole number of contracts with no
-//! fractional part — corroborated here by every size in the capture being
-//! an integer with no evident sub-unit meaning, e.g. `45623`, not
-//! `45623.5`.
+//! ```text
+//! priceScale > 0  ->  /md/orderbook      result.book        [[764355000, 27873], ...]
+//! priceScale == 0 ->  /md/v2/orderbook   result.orderbook_p [["76482.4", "0.013"], ...]
+//! ```
 //!
-//! # What was not verified, and is therefore a documented assumption
-//!
-//! The access boundary allows exactly one short-lived live request for this
-//! milestone, already spent on the capture above (a second request
-//! confirmed the trap endpoint's failure, not this one).
-//! - **This endpoint's rate-limit weight** is not in any response header
-//!   this capture returned. `BOOK_FETCH_COST` is this project's own
-//!   conservative proactive budget, matching every other bar/book source
-//!   in this workspace, not a venue-documented number.
-//! - **An empty book** was not observed live; empty `asks`/`bids` arrays
-//!   are handled, but that shape itself is this source's own inference,
-//!   not a confirmed venue response.
+//! Both recorded live 2026-09-02. The first pair are integers at that
+//! symbol's own price and quantity scales; the second are ordinary
+//! decimal text. Asking the integer endpoint about a V2 linear symbol
+//! answers, but with a book that is not the one requested — so the choice
+//! is made from the catalogue, never from the symbol's spelling.
 
 use async_trait::async_trait;
 use senken_core::UnixNanos;
@@ -105,18 +85,20 @@ use senken_subscription::{BookLevel, BookSnapshot, BookSource};
 use senken_venue::VenueClient;
 use serde::Deserialize;
 
-use crate::PERP_ID;
-
+/// Depth for a symbol whose numbers are pre-scaled integers.
 const ORDERBOOK_URL: &str = "https://api.phemex.com/md/orderbook";
 
-/// **A single-symbol assumption, not a general solution — see the module
-/// docs.** Correct for `BTCUSD` only; this is exactly why this source is
-/// not registered.
-const PRICE_SCALE: u8 = 4;
+/// Depth for a symbol whose numbers are decimal text — the V2 linear
+/// perpetuals.
+const ORDERBOOK_V2_URL: &str = "https://api.phemex.com/md/v2/orderbook";
 
-/// Whole contracts on this $1-per-contract inverse instrument — see the
-/// module docs.
-const QTY_SCALE: u8 = 0;
+/// Scale a decimal-family book is stored at. Its `tickSize` is `0.1` and
+/// its `qtyStepSize` `0.001`, so these are finer than the venue quotes and
+/// leave no rounding to do; a level finer than this is refused, never
+/// rounded.
+const V2_PRICE_SCALE: u8 = 4;
+/// See [`V2_PRICE_SCALE`].
+const V2_QTY_SCALE: u8 = 8;
 
 /// This project's own fixed panel depth — a product choice. The venue
 /// itself never returns more than 30 a side in this capture (see module
@@ -149,8 +131,17 @@ struct RawError {
 
 #[derive(Debug, Deserialize)]
 struct RawResult {
-    book: RawBookLevels,
+    /// Present on `/md/orderbook`: pre-scaled integers.
+    #[serde(default)]
+    book: Option<RawBookLevels>,
+    /// Present on `/md/v2/orderbook`: decimal text.
+    #[serde(default)]
+    orderbook_p: Option<RawDecimalLevels>,
+    /// Nanoseconds on the integer endpoint; the V2 one names it `dts`.
+    #[serde(default)]
     timestamp: i64,
+    #[serde(default)]
+    dts: i64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -161,13 +152,27 @@ struct RawBookLevels {
     bids: Vec<RawLevel>,
 }
 
+/// One V2 level: `[price, size]` as decimal strings.
+type RawDecimalLevel = (String, String);
+
+#[derive(Debug, Default, Deserialize)]
+struct RawDecimalLevels {
+    #[serde(default)]
+    asks: Vec<RawDecimalLevel>,
+    #[serde(default)]
+    bids: Vec<RawDecimalLevel>,
+}
+
 /// Phemex order-book depth, fetched through a
 /// [`senken_venue::VenueClient`] — a fresh request per call, never a
 /// maintained local book. **Not registered** — see the module docs.
 #[derive(Debug, Clone)]
 pub struct PhemexBookSource {
+    source_id: &'static str,
     url: String,
+    v2_url: String,
     client: VenueClient,
+    scales: crate::scales::ScaleCatalog,
 }
 
 impl PhemexBookSource {
@@ -178,18 +183,29 @@ impl PhemexBookSource {
         self.url = url.into();
         self
     }
+
+    /// Points the decimal-family endpoint at a different URL.
+    #[must_use]
+    pub fn with_v2_url(mut self, url: impl Into<String>) -> Self {
+        self.v2_url = url.into();
+        self
+    }
 }
 
-/// Builds a [`PhemexBookSource`] against the real Phemex endpoint.
-/// Deliberately not called from `lib.rs`'s `activate_with_http` — see the
-/// module docs. Left `pub`, mirroring `bar_source_perp`, so a caller that
-/// has independently confirmed a symbol's `priceScale` can still use it
-/// directly.
+/// Builds a [`PhemexBookSource`] for `source_id` against the real Phemex
+/// endpoints.
 #[must_use]
-pub fn book_source(client: VenueClient) -> PhemexBookSource {
+pub fn book_source(
+    source_id: &'static str,
+    client: VenueClient,
+    scales: crate::scales::ScaleCatalog,
+) -> PhemexBookSource {
     PhemexBookSource {
+        source_id,
         url: ORDERBOOK_URL.to_owned(),
+        v2_url: ORDERBOOK_V2_URL.to_owned(),
         client,
+        scales,
     }
 }
 
@@ -199,10 +215,27 @@ fn to_levels(raw: Vec<RawLevel>) -> Vec<BookLevel> {
         .collect()
 }
 
+/// Decimal-text levels, read at the V2 family's fixed scales.
+fn decimal_levels(raw: Vec<RawDecimalLevel>) -> Result<Vec<BookLevel>, SourceError> {
+    raw.into_iter()
+        .map(|(price, size)| {
+            Ok(BookLevel {
+                price: at(&price, V2_PRICE_SCALE)?,
+                size: at(&size, V2_QTY_SCALE)?,
+            })
+        })
+        .collect()
+}
+
+fn at(raw: &str, scale: u8) -> Result<i64, SourceError> {
+    senken_core::parse_scaled(raw.trim(), scale)
+        .ok_or_else(|| SourceError::decode(format!("{raw:?} does not parse at scale {scale}")))
+}
+
 #[async_trait]
 impl BookSource for PhemexBookSource {
     fn source_id(&self) -> &str {
-        PERP_ID
+        self.source_id
     }
 
     async fn book_snapshot(
@@ -211,7 +244,13 @@ impl BookSource for PhemexBookSource {
         depth: usize,
     ) -> Result<BookSnapshot, SourceError> {
         let depth = depth.clamp(1, MAX_DEPTH);
-        let url = format!("{}?symbol={}", self.url, symbol.as_str());
+        let scales = self.scales.get(symbol.as_str()).await?;
+        let base = if scales.is_decimal() {
+            &self.v2_url
+        } else {
+            &self.url
+        };
+        let url = format!("{base}?symbol={}", symbol.as_str());
         let body = self.client.get(&url, BOOK_FETCH_COST).await?;
         let envelope: Envelope = serde_json::from_slice(&body).map_err(SourceError::decode)?;
         if let Some(error) = envelope.error {
@@ -224,12 +263,37 @@ impl BookSource for PhemexBookSource {
             .result
             .ok_or_else(|| SourceError::rejected("no result and no error in the response"))?;
 
-        let mut bids = to_levels(result.book.bids);
-        let mut asks = to_levels(result.book.asks);
+        let (mut bids, mut asks, price_scale, qty_scale) = if scales.is_decimal() {
+            let levels = result
+                .orderbook_p
+                .ok_or_else(|| SourceError::rejected("no orderbook_p in a V2 response"))?;
+            (
+                decimal_levels(levels.bids)?,
+                decimal_levels(levels.asks)?,
+                V2_PRICE_SCALE,
+                V2_QTY_SCALE,
+            )
+        } else {
+            let levels = result
+                .book
+                .ok_or_else(|| SourceError::rejected("no book in the response"))?;
+            (
+                to_levels(levels.bids),
+                to_levels(levels.asks),
+                scales.price,
+                scales.quantity,
+            )
+        };
         bids.truncate(depth);
         asks.truncate(depth);
 
-        let ts = UnixNanos::from_nanos(result.timestamp);
+        // The integer endpoint names its instant `timestamp`; the V2 one
+        // names it `dts`. Both are nanoseconds.
+        let ts = UnixNanos::from_nanos(if result.timestamp != 0 {
+            result.timestamp
+        } else {
+            result.dts
+        });
 
         // Both sides arrive best-first already (see module docs) — trusted
         // rather than re-sorted, the same as `senken-plugin-okx`'s book
@@ -237,11 +301,11 @@ impl BookSource for PhemexBookSource {
         BookSnapshot::new(
             ts,
             bids,
-            PRICE_SCALE,
-            QTY_SCALE,
+            price_scale,
+            qty_scale,
             asks,
-            PRICE_SCALE,
-            QTY_SCALE,
+            price_scale,
+            qty_scale,
         )
         .map_err(|source| SourceError::rejected(source.to_string()))
     }
@@ -253,7 +317,7 @@ mod tests {
     use senken_marketdata::SourceSymbol;
     use senken_subscription::BookSource;
     use senken_venue::{LimitGroup, VenueClient};
-    use wiremock::matchers::method;
+    use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const BOOK: &[u8] = include_bytes!("../tests/fixtures/book.json");
@@ -266,22 +330,99 @@ mod tests {
         VenueClient::new(reqwest::Client::new(), LimitGroup::new("test"))
     }
 
-    async fn mock_source() -> (MockServer, super::PhemexBookSource) {
+    /// A real `GET /public/products` response — the document that says
+    /// how each symbol's numbers are written.
+    const PRODUCTS: &[u8] = include_bytes!("../tests/fixtures/products.json");
+    /// A real `GET /md/v2/orderbook?symbol=BTCUSDT` response, recorded
+    /// 2026-09-02: decimal text, under `orderbook_p`.
+    const BOOK_V2: &[u8] = include_bytes!("../tests/fixtures/book_linear.json");
+
+    async fn serving(integer_book: &'static [u8], v2_book: &'static [u8]) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(BOOK, "application/json"))
+            .and(path("/public/products"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(PRODUCTS, "application/json"))
             .mount(&server)
             .await;
-        let source = book_source(test_client()).with_url(server.uri());
+        Mock::given(method("GET"))
+            .and(path("/md/v2/orderbook"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(v2_book, "application/json"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/md/orderbook"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(integer_book, "application/json"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn source_against(server: &MockServer) -> super::PhemexBookSource {
+        let scales = crate::scales::ScaleCatalog::new(test_client())
+            .with_url(format!("{}/public/products", server.uri()));
+        book_source(crate::PERP_ID, test_client(), scales)
+            .with_url(format!("{}/md/orderbook", server.uri()))
+            .with_v2_url(format!("{}/md/v2/orderbook", server.uri()))
+    }
+
+    async fn mock_source() -> (MockServer, super::PhemexBookSource) {
+        let server = serving(BOOK, BOOK_V2).await;
+        let source = source_against(&server);
         (server, source)
     }
 
     #[test]
-    fn the_real_url_is_used_by_default() {
+    fn the_real_urls_are_used_by_default() {
+        let scales = crate::scales::ScaleCatalog::new(test_client());
+        let source = book_source(crate::PERP_ID, test_client(), scales);
         assert_eq!(
-            book_source(test_client()).url,
-            ORDERBOOK_URL,
+            source.url, ORDERBOOK_URL,
             "must default to the real Phemex endpoint, not require with_url"
+        );
+        assert_eq!(source.v2_url, super::ORDERBOOK_V2_URL);
+    }
+
+    /// The V2 linear family answers a different endpoint, in decimal
+    /// text, under a differently named key. Asking the integer endpoint
+    /// about one of these symbols answers — with a book that is not the
+    /// one requested — so the catalogue decides, not the spelling.
+    #[tokio::test]
+    async fn a_decimal_family_symbol_is_read_from_the_v2_endpoint() {
+        let server = serving(BOOK, BOOK_V2).await;
+        let source = source_against(&server);
+
+        let snapshot = source
+            .book_snapshot(&SourceSymbol::assume("BTCUSDT"), 5)
+            .await
+            .unwrap();
+
+        // "76482.4" at four digits, "0.013" at eight.
+        assert_eq!(snapshot.asks[0].price, 764_824_000);
+        assert_eq!(snapshot.price_scale, 4);
+        assert_eq!(snapshot.qty_scale, 8);
+        assert!(snapshot.ts.as_nanos() > 0, "the V2 endpoint names it `dts`");
+    }
+
+    /// The scale carried on the snapshot has to be the symbol's own, not
+    /// a constant: `BTCUSD` is 4 and `sBTCUSDT` is 8 on the same venue.
+    #[tokio::test]
+    async fn the_snapshot_carries_the_symbols_own_price_scale() {
+        let (_server, source) = mock_source().await;
+        let snapshot = source.book_snapshot(&btc_usd(), 5).await.unwrap();
+        assert_eq!(snapshot.price_scale, 4);
+        assert_eq!(snapshot.qty_scale, 0, "inverse sizes are contract counts");
+    }
+
+    /// Refusing beats guessing: a scale invented for an unlisted symbol
+    /// is how a book ends up four orders of magnitude out.
+    #[tokio::test]
+    async fn a_symbol_absent_from_the_product_list_is_refused() {
+        let (_server, source) = mock_source().await;
+        assert!(
+            source
+                .book_snapshot(&SourceSymbol::assume("NOTLISTED"), 5)
+                .await
+                .is_err()
         );
     }
 
@@ -343,15 +484,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_book_is_an_absence_not_an_error() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"error":null,"id":0,"result":{"book":{"asks":[],"bids":[]},
+        let server = serving(
+            br#"{"error":null,"id":0,"result":{"book":{"asks":[],"bids":[]},
                 "depth":30,"sequence":0,"symbol":"BTCUSD","timestamp":0,"type":"snapshot"}}"#,
-            ))
-            .mount(&server)
-            .await;
-        let source = book_source(test_client()).with_url(server.uri());
+            BOOK_V2,
+        )
+        .await;
+        let source = source_against(&server);
 
         let snapshot = source.book_snapshot(&btc_usd(), 30).await.unwrap();
 
@@ -365,14 +504,12 @@ mod tests {
         // (`/md/v2/orderbook`, HTTP 500) — reused here because both
         // endpoints share the same `{error, id, result}` wrapper, and this
         // one has never itself been observed to fail.
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"error":{"code":6001,"message":"invalid argument"},"id":null,"result":null}"#,
-            ))
-            .mount(&server)
-            .await;
-        let source = book_source(test_client()).with_url(server.uri());
+        let server = serving(
+            br#"{"error":{"code":6001,"message":"invalid argument"},"id":null,"result":null}"#,
+            BOOK_V2,
+        )
+        .await;
+        let source = source_against(&server);
 
         let error = source.book_snapshot(&btc_usd(), 30).await.unwrap_err();
         assert!(matches!(

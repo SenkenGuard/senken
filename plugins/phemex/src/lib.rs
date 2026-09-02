@@ -26,16 +26,19 @@ use crate::api::{ProductsResponse, RawProduct};
 mod api;
 mod bars;
 mod book;
+mod feed;
+pub mod scales;
 
-pub use bars::{PhemexPerpBarSource, bar_source_perp};
+pub use bars::{PhemexBarSource, bar_source_perp, bar_source_spot};
 pub use book::{PhemexBookSource, book_source};
+pub use scales::{ScaleCatalog, Scales};
 
 /// Source id of the spot market.
 pub const SPOT_ID: &str = "phemex-spot";
 /// Source id of the perpetual market.
 pub const PERP_ID: &str = "phemex-perp";
 
-const URL: &str = "https://api.phemex.com/public/products";
+const URL: &str = crate::scales::PRODUCTS_URL;
 /// The marker Phemex puts in front of every spot symbol.
 const SPOT_PREFIX: char = 's';
 
@@ -207,34 +210,39 @@ impl Plugin for PhemexPlugin {
         let client = context.venue_client(&group)?;
         context.register_marketdata_source(Arc::new(spot_source(client.clone())));
         context.register_marketdata_source(Arc::new(perp_source(client.clone())));
-        // The bar source is deliberately **not** registered yet.
-        //
-        // Phemex returns prices as already-scaled integers whose scale is
-        // per-symbol, and this crate does not capture that `priceScale`
-        // from the product catalogue. `bars` reads the digits verbatim,
-        // which is right for `BTCUSD` — the one symbol whose scale was
-        // established from a real response — and silently wrong for any
-        // perpetual whose scale differs.
-        //
-        // Silently wrong is the operative word: nothing would fail, no
-        // error would be raised, and mispriced bars would be written to
-        // Parquet looking exactly like good ones. A venue absent from the
-        // chart is a visible gap a user can report; a venue quoting
-        // BTC at 7.8246 is data this project cannot afford to have
-        // persisted. Registration resumes once `api.rs` carries
-        // `priceScale` per symbol and `bars` reads it from there.
-        //
-        // `book`'s order-book depth carries the identical gap and is
-        // registered nowhere for the identical reason — see that module's
-        // own docs. A venue missing from the depth panel is a visible
-        // absence; BTC quoted at 7.8246 a level is not.
-        //
-        // A live feed is absent for the same reason and not a separate
-        // one: Phemex's stream quotes prices as scaled integers too, so a
-        // tick decoded without the symbol's own scale would be wrong in
-        // exactly the same way a bar would be — and a wrong live price is
-        // what a reader trusts most immediately.
-        let _ = &client;
+
+        // Every Phemex number is written at a scale the venue publishes
+        // per symbol, so all three capabilities below share one catalogue
+        // of those scales rather than each fetching the product list.
+        let scales = crate::scales::ScaleCatalog::new(client.clone());
+        context.register_bar_source(Arc::new(crate::bars::bar_source_spot(
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_bar_source(Arc::new(crate::bars::bar_source_perp(
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_book_source(Arc::new(crate::book::book_source(
+            SPOT_ID,
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_book_source(Arc::new(crate::book::book_source(
+            PERP_ID,
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_feed_source(Arc::new(crate::feed::PhemexFeedSource::new(
+            SPOT_ID,
+            client.clone(),
+            scales.clone(),
+        )));
+        context.register_feed_source(Arc::new(crate::feed::PhemexFeedSource::new(
+            PERP_ID,
+            client.clone(),
+            scales,
+        )));
         Ok(())
     }
 }
@@ -321,10 +329,13 @@ mod tests {
         // `quoteTickSize` instead. Reading only `tickSize` dropped every
         // spot pair the venue lists.
         let instruments = parse_spot(FIXTURE).unwrap();
+        // Named rather than "the first spot pair": the fixture now holds
+        // several, deliberately including two that quote in TRY, and each
+        // writes a different increment.
         let spot = instruments
             .iter()
-            .find(|i| i.kind == InstrumentKind::Spot)
-            .expect("the fixture carries a spot pair");
+            .find(|i| i.kind == InstrumentKind::Spot && i.symbol == "BTCUSDT")
+            .expect("the fixture carries BTC/USDT spot");
 
         assert!(spot.contract.is_none());
         assert_eq!((spot.price_scale, spot.tick_size), (2, 1));

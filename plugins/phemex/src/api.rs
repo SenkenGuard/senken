@@ -59,6 +59,26 @@ pub(crate) struct RawProduct {
     pub(crate) lot_size: Num,
     #[serde(default)]
     pub(crate) contract_size: Num,
+    /// The power of ten this symbol's **price** fields are pre-multiplied
+    /// by, published on every one of the venue's 1177 products.
+    ///
+    /// `0` is not "missing": it is the venue saying this symbol's numbers
+    /// are ordinary decimal text. See [`crate::scales`] for the three
+    /// families this distinguishes.
+    #[serde(default)]
+    pub(crate) price_scale: u8,
+    /// The power of ten a *turnover* field is pre-multiplied by. Verified
+    /// numerically against a real kline row: `BTCUSD` publishes
+    /// `ratioScale: 8`, and that row's turnover of `10129906427` read at
+    /// `10^8` is 101.299 BTC — which at the same row's close of ~$78,700
+    /// is $7.97M, matching its contract volume of 7,989,441 $1 contracts.
+    #[serde(default)]
+    pub(crate) ratio_scale: u8,
+    /// The `baseTickSize` above, repeated as an already-scaled integer.
+    /// The ratio between the two is this symbol's quantity scale — the
+    /// venue publishes no `qtyScale` to read directly.
+    #[serde(default)]
+    pub(crate) base_tick_size_ev: Option<i64>,
     /// `Listed` while the product trades.
     #[serde(default)]
     pub(crate) status: String,

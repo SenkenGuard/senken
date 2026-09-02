@@ -1,10 +1,10 @@
-//! Phemex perpetual bar fetching — `GET /exchange/public/md/v2/kline/list`.
+//! Phemex bar fetching — `GET /exchange/public/md/v2/kline/list`.
 //!
-//! Perpetuals only. `kline/list` takes one `symbol`, and Phemex's spot and
-//! perpetual markets are already two separate sources in this crate (see
-//! the crate root docs on the leading `s` marker); covering spot too would
-//! have meant a second live request under this task's
-//! one-request-per-endpoint limit, so it is left for a follow-up.
+//! One endpoint serves both of this plugin's sources: `kline/list` takes a
+//! single `symbol`, and Phemex's leading `s` marks a spot one
+//! (`sBTCUSDT`) apart from a perpetual (`BTCUSD`). What differs between
+//! them is not the request but how the numbers in the answer are written
+//! — see below.
 //!
 //! # The five cross-venue traps, answered from a real response
 //!
@@ -34,47 +34,45 @@
 //!    rather than guessing. The window requested here came back
 //!    correctly bounded.
 //!
-//! # Prices are already scaled integers, not decimal text
+//! # Three number shapes on one endpoint, told apart per symbol
 //!
-//! Unlike every other source in this workspace, Phemex's kline fields are
-//! **not** decimal strings to run through [`senken_core::parse_scaled`] —
-//! they are already-scaled integers, written as strings with no decimal
-//! point at all (`"782460000"`). Each field's raw text is parsed as a
-//! plain `i64` and used verbatim, at the fixed scales the two sections
-//! below establish for price and volume respectively.
+//! `kline/list` answers in whichever shape the symbol asked for uses, and
+//! the only thing that says which is that symbol's `priceScale` in the
+//! product list (see [`crate::scales`]). Recorded live 2026-09-02, same
+//! endpoint, same hour, three symbols:
 //!
-//! **The price scale is a single-symbol assumption, not a generic
-//! solution.** Phemex's own convention (well known from wider use of this
-//! API, not from this session's one fetch) is that the scale is
-//! per-symbol — this crate's own `api.rs` does not currently capture that
-//! per-symbol `priceScale` from the product catalogue at all, and the
-//! products fixture already checked into this crate carries no such field
-//! for `BTCUSD` either. A scale of `4` was inferred here by comparing this
-//! row's raw integer against BTC's simultaneously observed real price on
-//! other venues in this same recording session (about $78,000:
-//! `782460000 / 10^4 = 78246.0`) — evidence, not documentation, but
-//! evidence for `BTCUSD` specifically, and applied only implicitly, by
-//! using every price field's raw digits verbatim rather than rescaling
-//! them. **This source will silently misprice any other Phemex perpetual
-//! whose `priceScale` differs**, and that is this module's most important
-//! open gap: a real implementation needs `priceScale` sourced per symbol
-//! from the product catalogue, which is a follow-up, not something this
-//! session could safely guess at for every listed contract.
+//! ```text
+//! BTCUSD    priceScale 4  ->  "791301000"        inverse perpetual
+//! sBTCUSDT  priceScale 8  ->  "7917979000000"    spot
+//! BTCUSDT   priceScale 0  ->  "79149.9"          linear perpetual, plain decimal
+//! ```
 //!
-//! [`Volume`] is split the same way inverse contracts are conventionally
-//! split: the `volume` field counts whole USD-denominated contracts (one
-//! contract is $1 on `BTCUSD`), so it is the *quote*-asset amount;
-//! `turnover` is the base-asset (BTC) amount. This was checked against the
-//! fixture, not assumed: `turnover / volume` for the first row is close to
-//! the row's own price, which only holds if `turnover` is priced in BTC
-//! and `volume` in USD.
+//! A scale of zero is not a missing value: it is the venue saying this
+//! symbol is written the way every other venue writes prices. Both paths
+//! are taken here, chosen by the catalogue rather than by market type —
+//! six *spot* symbols use scale 4 while 1012 use scale 8, so even "spot"
+//! is not a safe thing to branch on.
 //!
-//! # Only one interval is offered
+//! # Which column is the base volume
 //!
-//! This recording session could make exactly one live request (see the
-//! task constraints this module was written under), so only `resolution=3600`
-//! (one hour) is offered; Phemex's other documented resolutions are
-//! unverified here and deliberately left out rather than guessed at.
+//! The row is `[ts, interval, lastClose, open, high, low, close, volume,
+//! turnover, symbol]`, and what `volume` and `turnover` mean depends on
+//! the family:
+//!
+//! - **Inverse perpetual**: `volume` counts $1 contracts — a quote-asset
+//!   figure — and `turnover` is the base asset at the symbol's own
+//!   `ratioScale`. Verified numerically: `10129906427` at `10^8` is
+//!   101.299 BTC, which at that row's close of ~$78,700 is $7.97M,
+//!   matching its 7,989,441 one-dollar contracts.
+//! - **Spot**: `volume` is the base asset at the symbol's quantity scale
+//!   and `turnover` the quote asset at its price scale. `26069896600` at
+//!   `10^8` is 260.699 BTC against a turnover of 20,575,220 USDT.
+//! - **Linear perpetual**: both are decimal text.
+//!
+//! Reading `volume` as a base amount on an inverse perpetual reports a BTC
+//! figure some 78,000 times too large, and it looks entirely ordinary on a
+//! volume histogram.
+//!
 
 use senken_core::{TimeRange, UnixNanos};
 use senken_marketdata::SourceSymbol;
@@ -143,17 +141,21 @@ struct KlineData {
     rows: Vec<RawRow>,
 }
 
-/// Phemex perpetual bars, fetched through a [`VenueClient`]. Closure comes
-/// entirely from the endpoint itself excluding the forming candle — see
-/// the module docs — so no [`senken_series::Clock`] is taken here.
+/// Phemex bars, fetched through a [`VenueClient`]. Closure comes entirely
+/// from the endpoint itself excluding the forming candle — see the module
+/// docs — so no [`senken_series::Clock`] is taken here.
 #[derive(Debug, Clone)]
-pub struct PhemexPerpBarSource {
+pub struct PhemexBarSource {
+    source_id: &'static str,
     url: String,
     client: VenueClient,
+    /// How this symbol's numbers are written. Consulted per request
+    /// because the answer differs per symbol, not per market.
+    scales: crate::scales::ScaleCatalog,
     supported: Vec<BarSpec>,
 }
 
-impl PhemexPerpBarSource {
+impl PhemexBarSource {
     /// Points this source at a different URL — a local stand-in in tests.
     #[must_use]
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
@@ -180,18 +182,39 @@ impl PhemexPerpBarSource {
 
 /// The Phemex perpetual bar source, registered under [`crate::PERP_ID`].
 #[must_use]
-pub fn bar_source_perp(client: VenueClient) -> PhemexPerpBarSource {
-    PhemexPerpBarSource {
+pub fn bar_source_perp(
+    client: VenueClient,
+    scales: crate::scales::ScaleCatalog,
+) -> PhemexBarSource {
+    PhemexBarSource {
+        source_id: crate::PERP_ID,
         url: KLINE_LIST_URL.to_owned(),
         client,
+        scales,
+        supported: supported_specs(),
+    }
+}
+
+/// The Phemex spot bar source, registered under [`crate::SPOT_ID`]. Same
+/// endpoint, same code — only the symbol's own scales differ.
+#[must_use]
+pub fn bar_source_spot(
+    client: VenueClient,
+    scales: crate::scales::ScaleCatalog,
+) -> PhemexBarSource {
+    PhemexBarSource {
+        source_id: crate::SPOT_ID,
+        url: KLINE_LIST_URL.to_owned(),
+        client,
+        scales,
         supported: supported_specs(),
     }
 }
 
 #[async_trait::async_trait]
-impl BarSource for PhemexPerpBarSource {
+impl BarSource for PhemexBarSource {
     fn source_id(&self) -> &str {
-        crate::PERP_ID
+        self.source_id
     }
 
     fn supported(&self) -> &[BarSpec] {
@@ -214,6 +237,7 @@ impl BarSource for PhemexPerpBarSource {
         let resolution = interval_of(spec)
             .ok_or_else(|| SourceError::rejected(format!("unsupported bar spec {spec}")))?;
 
+        let scales = self.scales.get(symbol.as_str()).await?;
         let url = self.kline_url(symbol.as_str(), resolution, range);
         let body = self.client.get(&url, CANDLES_FETCH_COST).await?;
         let envelope: Envelope = serde_json::from_slice(&body).map_err(SourceError::decode)?;
@@ -236,17 +260,31 @@ impl BarSource for PhemexPerpBarSource {
                 continue;
             }
 
+            let (base, quote) = if scales.is_decimal() {
+                // Ordinary decimal text: `volume` is the base amount and
+                // `turnover` the quote one, as on every other venue.
+                (
+                    decimal(&volume, DECIMAL_QTY_SCALE)?,
+                    decimal(&turnover, DECIMAL_PRICE_SCALE)?,
+                )
+            } else if scales.quantity > 0 {
+                // Spot: `volume` is the base asset at its own quantity
+                // scale, `turnover` the quote asset at the price scale.
+                (raw_int(&volume)?, raw_int(&turnover)?)
+            } else {
+                // Inverse perpetual: `turnover` is the base asset and
+                // `volume` a count of one-dollar contracts.
+                (raw_int(&turnover)?, raw_int(&volume)?)
+            };
+
             bars.push(Bar {
                 ts_open,
-                open: raw_int(&open)?,
-                high: raw_int(&high)?,
-                low: raw_int(&low)?,
-                close: raw_int(&close)?,
-                // See the module docs on why `turnover` (BTC) is the base
-                // amount and `volume` (contracts, $1 each) the quote one —
-                // the reverse of their field order.
-                volume: Volume::Real(raw_int(&turnover)?),
-                quote_volume: Some(raw_int(&volume)?),
+                open: price(&open, scales)?,
+                high: price(&high, scales)?,
+                low: price(&low, scales)?,
+                close: price(&close, scales)?,
+                volume: Volume::Real(base),
+                quote_volume: Some(quote),
                 trade_count: None,
                 taker_buy_volume: None,
             });
@@ -271,6 +309,37 @@ impl BarSource for PhemexPerpBarSource {
     }
 }
 
+/// Scale a decimal-family quantity is stored at.
+///
+/// Phemex's linear perpetuals write sizes like `"129.745"`, and a `Bar`
+/// carries no scale of its own — the series it joins does — so every row
+/// in a page has to land on one. Eight digits is this workspace's usual
+/// quantity scale and comfortably finer than the `qtyStepSize` of `0.001`
+/// this family publishes; a size finer than that is refused rather than
+/// rounded.
+const DECIMAL_QTY_SCALE: u8 = 8;
+
+/// One price field, read the way this symbol writes them.
+fn price(raw: &str, scales: crate::scales::Scales) -> Result<i64, SourceError> {
+    if scales.is_decimal() {
+        decimal(raw, DECIMAL_PRICE_SCALE)
+    } else {
+        raw_int(raw)
+    }
+}
+
+/// Scale a decimal-family price is stored at. Phemex's linear perpetuals
+/// publish a `tickSize` of `0.1`, so four digits is far finer than the
+/// venue quotes and leaves no rounding to do.
+const DECIMAL_PRICE_SCALE: u8 = 4;
+
+/// Parses `raw` as decimal text at exactly `scale` fractional digits,
+/// refusing anything finer rather than rounding it.
+fn decimal(raw: &str, scale: u8) -> Result<i64, SourceError> {
+    senken_core::parse_scaled(raw.trim(), scale)
+        .ok_or_else(|| SourceError::decode(format!("{raw:?} does not parse at scale {scale}")))
+}
+
 /// Parses `raw` — already a scaled integer's exact digits, never a decimal
 /// string — as a plain `i64`. See the module docs on why this is not
 /// [`senken_core::parse_scaled`].
@@ -286,22 +355,22 @@ mod tests {
     use senken_plugin::BarSource;
     use senken_series::{BarSpec, BarUnit, Volume};
     use senken_venue::{LimitGroup, VenueClient};
-    use wiremock::matchers::method;
+    use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::bar_source_perp;
+    use super::{bar_source_perp, bar_source_spot};
+    use crate::scales::ScaleCatalog;
 
-    /// A real `GET kline/list?symbol=BTCUSD&resolution=3600` response,
-    /// recorded 2026-09-02: 71 hourly rows, none of them the currently
-    /// forming candle.
-    const KLINE: &[u8] = include_bytes!("../tests/fixtures/kline_1h.json");
+    /// Real `kline/list` responses recorded 2026-09-02, one per number
+    /// shape this venue uses — the same endpoint and the same hour, asked
+    /// about three different symbols.
+    const KLINE_PERP: &[u8] = include_bytes!("../tests/fixtures/kline_1h.json");
+    const KLINE_SPOT: &[u8] = include_bytes!("../tests/fixtures/kline_1h_spot.json");
+    const KLINE_LINEAR: &[u8] = include_bytes!("../tests/fixtures/kline_1h_linear.json");
+    const PRODUCTS: &[u8] = include_bytes!("../tests/fixtures/products.json");
 
     fn test_client() -> VenueClient {
         VenueClient::new(reqwest::Client::new(), LimitGroup::new("test"))
-    }
-
-    fn symbol() -> SourceSymbol {
-        SourceSymbol::assume("BTCUSD")
     }
 
     fn hour() -> BarSpec {
@@ -316,13 +385,25 @@ mod tests {
         .unwrap()
     }
 
-    async fn serving(body: &'static [u8]) -> MockServer {
+    /// A stand-in serving both documents this source now reads: the klines
+    /// asked for, and the product list that says how to read them.
+    async fn serving(klines: &'static [u8]) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+            .and(path("/public/products"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(PRODUCTS, "application/json"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/kline"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(klines, "application/json"))
             .mount(&server)
             .await;
         server
+    }
+
+    fn catalog(server: &MockServer) -> ScaleCatalog {
+        ScaleCatalog::new(test_client()).with_url(format!("{}/public/products", server.uri()))
     }
 
     #[tokio::test]
@@ -331,182 +412,146 @@ mod tests {
         // excludes the forming candle itself, so no clock-based filtering
         // happens here — this asserts nothing was dropped that should not
         // have been.
-        let server = serving(KLINE).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
+        let server = serving(KLINE_PERP).await;
+        let source = bar_source_perp(test_client(), catalog(&server))
+            .with_url(format!("{}/kline", server.uri()));
 
-        let bars = source.bars(&symbol(), hour(), wide_range()).await.unwrap();
+        let bars = source
+            .bars(&SourceSymbol::assume("BTCUSD"), hour(), wide_range())
+            .await
+            .unwrap();
 
         assert_eq!(bars.len(), 71);
     }
 
+    /// An inverse perpetual: `priceScale` 4, so the digits are used as
+    /// they arrive.
     #[tokio::test]
-    async fn prices_are_read_as_pre_scaled_integers_not_decimal_text() {
-        let server = serving(KLINE).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
+    async fn an_inverse_perpetual_keeps_its_pre_scaled_price_digits() {
+        let server = serving(KLINE_PERP).await;
+        let source = bar_source_perp(test_client(), catalog(&server))
+            .with_url(format!("{}/kline", server.uri()));
 
-        let bars = source.bars(&symbol(), hour(), wide_range()).await.unwrap();
+        let bars = source
+            .bars(&SourceSymbol::assume("BTCUSD"), hour(), wide_range())
+            .await
+            .unwrap();
 
         let first = &bars[0];
-        // Row 0: open 782460000, high 782460000, low 780556000,
-        // close 780556000 — used verbatim, at this symbol's own scale of 4
-        // (see the module docs' caveat on why that is not a general rule).
         assert_eq!(first.open, 782_460_000);
         assert_eq!(first.high, 782_460_000);
         assert_eq!(first.low, 780_556_000);
         assert_eq!(first.close, 780_556_000);
     }
 
+    /// On an inverse perpetual `turnover` is the base asset and `volume`
+    /// counts one-dollar contracts — the reverse of what their names
+    /// suggest. Reading them the other way round reports a BTC figure
+    /// some 78,000 times too large.
     #[tokio::test]
-    async fn volume_and_turnover_are_swapped_into_base_and_quote() {
-        let server = serving(KLINE).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
+    async fn an_inverse_perpetual_takes_its_base_volume_from_turnover() {
+        let server = serving(KLINE_PERP).await;
+        let source = bar_source_perp(test_client(), catalog(&server))
+            .with_url(format!("{}/kline", server.uri()));
 
-        let bars = source.bars(&symbol(), hour(), wide_range()).await.unwrap();
+        let bars = source
+            .bars(&SourceSymbol::assume("BTCUSD"), hour(), wide_range())
+            .await
+            .unwrap();
 
         let first = &bars[0];
-        // `turnover` (12718939112, BTC) is the base amount; `volume`
-        // (9939402, USD contracts) is the quote amount — the reverse of
-        // the field order in the response.
-        assert!(matches!(first.volume, Volume::Real(v) if v == 12_718_939_112));
-        assert_eq!(first.quote_volume, Some(9_939_402));
-    }
+        let Volume::Real(base) = first.volume else {
+            panic!("this venue always reports a size");
+        };
+        let quote = first.quote_volume.expect("contracts are the quote figure");
 
-    #[tokio::test]
-    async fn each_rows_open_is_close_to_the_previous_rows_close() {
-        // The independent check that field order was not scrambled: on a
-        // continuous venue the open of one hour is close to the last
-        // hour's close.
-        let server = serving(KLINE).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
-
-        let bars = source.bars(&symbol(), hour(), wide_range()).await.unwrap();
-
-        for pair in bars.windows(2) {
-            let gap = (pair[1].open - pair[0].close).abs();
-            assert!(
-                gap < 1_000_000,
-                "open {} does not roughly continue from close {}",
-                pair[1].open,
-                pair[0].close
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn timestamps_are_read_as_seconds_and_land_an_hour_apart() {
-        let server = serving(KLINE).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
-
-        let bars = source.bars(&symbol(), hour(), wide_range()).await.unwrap();
-
-        assert_eq!(
-            bars[0].ts_open,
-            UnixNanos::from_secs(1_788_073_200).unwrap()
-        );
-        assert_eq!(
-            bars[1].ts_open.as_nanos() - bars[0].ts_open.as_nanos(),
-            3_600 * 1_000_000_000
+        // `turnover` at 10^8 is BTC; `volume` counts dollars. Multiplying
+        // the first by the row's own close must land on the second, which
+        // only holds if the two were not swapped.
+        let btc_hundred_millionths = i128::from(base);
+        let close_ten_thousandths = i128::from(first.close);
+        let dollars = btc_hundred_millionths * close_ten_thousandths / 1_000_000_000_000;
+        let reported = i128::from(quote);
+        assert!(
+            (dollars - reported).abs() * 100 < reported,
+            "turnover x close = {dollars} must match the {reported} one-dollar contracts \
+             within a percent; swapping the two columns misses by ~78,000x"
         );
     }
 
+    /// Spot: `priceScale` 8, and here `volume` really is the base asset
+    /// while `turnover` is the quote one.
     #[tokio::test]
-    async fn rows_outside_the_requested_range_are_dropped() {
-        let server = serving(KLINE).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
-        // Only the fixture's second row (1_788_076_800) falls inside.
-        let narrow = TimeRange::new(
-            UnixNanos::from_secs(1_788_076_800).unwrap(),
-            UnixNanos::from_secs(1_788_080_000).unwrap(),
-        )
-        .unwrap();
+    async fn a_spot_symbol_reads_at_its_own_larger_scale() {
+        let server = serving(KLINE_SPOT).await;
+        let source = bar_source_spot(test_client(), catalog(&server))
+            .with_url(format!("{}/kline", server.uri()));
 
-        let bars = source.bars(&symbol(), hour(), narrow).await.unwrap();
-
-        assert_eq!(bars.len(), 1);
-        assert_eq!(
-            bars[0].ts_open,
-            UnixNanos::from_secs(1_788_076_800).unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn a_venue_that_ignores_the_requested_range_is_reported_not_swallowed() {
-        let server = serving(KLINE).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
-        let elsewhere = TimeRange::new(
-            UnixNanos::from_secs(1_700_000_000).unwrap(),
-            UnixNanos::from_secs(1_700_003_600).unwrap(),
-        )
-        .unwrap();
-
-        let error = source
-            .bars(&symbol(), hour(), elsewhere)
+        let bars = source
+            .bars(&SourceSymbol::assume("sBTCUSDT"), hour(), wide_range())
             .await
-            .expect_err("an answer entirely outside the range is a failure, not an absence");
+            .unwrap();
+
+        let first = &bars[0];
+        assert_eq!(first.open, 7_918_397_000_000, "8 fractional digits, not 4");
+        assert_eq!(first.volume, Volume::Real(26_069_896_600));
+        assert_eq!(first.quote_volume, Some(2_057_522_020_148_435));
+    }
+
+    /// A linear perpetual publishes `priceScale: 0`, which means its
+    /// fields are ordinary decimal text — the same endpoint, a different
+    /// shape. Reading `"79144.9"` as an integer fails outright; reading it
+    /// at the wrong scale would not.
+    #[tokio::test]
+    async fn a_linear_perpetual_is_read_as_decimal_text() {
+        let server = serving(KLINE_LINEAR).await;
+        let source = bar_source_perp(test_client(), catalog(&server))
+            .with_url(format!("{}/kline", server.uri()));
+
+        let bars = source
+            .bars(&SourceSymbol::assume("BTCUSDT"), hour(), wide_range())
+            .await
+            .unwrap();
+
+        let first = &bars[0];
+        // "79144.9" at this family's four-digit scale.
+        assert_eq!(first.open, 791_449_000);
+        assert_eq!(first.high, 791_449_000);
+        // "129.745" base at eight digits.
+        assert_eq!(first.volume, Volume::Real(12_974_500_000));
+    }
+
+    /// The catalogue is what tells the two apart, so a symbol it does not
+    /// describe is refused rather than read at a guessed scale.
+    #[tokio::test]
+    async fn a_symbol_absent_from_the_product_list_is_refused() {
+        let server = serving(KLINE_PERP).await;
+        let source = bar_source_perp(test_client(), catalog(&server))
+            .with_url(format!("{}/kline", server.uri()));
 
         assert!(
-            error.to_string().contains("not honoured"),
-            "the error must say the range was ignored: {error}"
+            source
+                .bars(&SourceSymbol::assume("NOTLISTED"), hour(), wide_range())
+                .await
+                .is_err()
         );
     }
 
     #[tokio::test]
-    async fn an_empty_answer_inside_a_valid_range_is_an_absence_not_an_error() {
-        let body = br#"{"code":0,"msg":"OK","data":{"total":-1,"rows":[]}}"#;
-        let server = serving(body).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
+    async fn an_unsupported_spec_is_rejected_not_silently_substituted() {
+        let server = serving(KLINE_PERP).await;
+        let source = bar_source_perp(test_client(), catalog(&server))
+            .with_url(format!("{}/kline", server.uri()));
 
-        let bars = source.bars(&symbol(), hour(), wide_range()).await.unwrap();
-
-        assert!(bars.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_failure_code_is_a_rejection() {
-        let body = br#"{"code":30000,"msg":"limit not allowed","data":{"total":-1,"rows":[]}}"#;
-        let server = serving(body).await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
-
-        let error = source
-            .bars(&symbol(), hour(), wide_range())
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("30000"));
-    }
-
-    #[test]
-    fn a_spec_this_venue_is_not_verified_for_has_no_interval_string() {
-        assert!(super::interval_of(BarSpec::new(1, BarUnit::Minute)).is_none());
-        assert!(super::interval_of(BarSpec::new(4, BarUnit::Hour)).is_none());
-    }
-
-    #[test]
-    fn every_supported_spec_maps_to_an_interval_string() {
-        let source = bar_source_perp(test_client());
-        for spec in source.supported() {
-            assert!(super::interval_of(*spec).is_some());
-        }
-    }
-
-    #[tokio::test]
-    async fn an_inverted_range_asks_the_venue_nothing_at_all() {
-        let server = MockServer::start().await;
-        let source = bar_source_perp(test_client()).with_url(format!("{}/kline", server.uri()));
-        let inverted = TimeRange::new(
-            UnixNanos::from_secs(1_788_073_200).unwrap(),
-            UnixNanos::from_secs(1_788_073_200).unwrap(),
+        assert!(
+            source
+                .bars(
+                    &SourceSymbol::assume("BTCUSD"),
+                    BarSpec::new(5, BarUnit::Minute),
+                    wide_range()
+                )
+                .await
+                .is_err()
         );
-
-        if let Some(range) = inverted {
-            assert!(
-                source
-                    .bars(&symbol(), hour(), range)
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

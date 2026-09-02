@@ -27,6 +27,8 @@ senken-venue = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+tokio = { workspace = true, features = ["sync"] }
+
 [dev-dependencies]
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
