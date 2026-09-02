@@ -403,6 +403,40 @@ pub fn common_scale<'a>(values: impl IntoIterator<Item = &'a str>) -> u8 {
         .unwrap_or(0)
 }
 
+/// [`common_scale`], but `None` when a value in the batch cannot actually
+/// be represented as a scaled `i64` at it.
+///
+/// [`common_scale`] answers "how many fractional digits did the venue
+/// write", which is the right question for every venue whose precision
+/// fits — and most do. Some do not: KuCoin reports quantities with twenty
+/// decimal places, which at that scale is 8.9e21 against an `i64` ceiling
+/// of 9.2e18.
+///
+/// There is deliberately no smaller scale to fall back to.
+/// [`senken_core::parse_scaled`] refuses a value with more decimals than
+/// the scale it is given rather than dropping them, so this project never
+/// silently rounds a price or a quantity; walking the scale down until it
+/// fits would be circumventing that guard from the outside. The batch
+/// either fits or it does not, and a caller that gets `None` reports an
+/// honest absence — never a rounded number.
+///
+/// # Examples
+/// ```
+/// use senken_venue::exact_common_scale;
+///
+/// assert_eq!(exact_common_scale(["78169.48", "1"]), Some(2));
+/// // Twenty decimal places overflow an `i64` at their own scale.
+/// assert_eq!(exact_common_scale(["89.56968223943530450117"]), None);
+/// ```
+#[must_use]
+pub fn exact_common_scale<'a>(values: impl IntoIterator<Item = &'a str> + Clone) -> Option<u8> {
+    let scale = common_scale(values.clone());
+    values
+        .into_iter()
+        .all(|value| senken_core::parse_scaled(value, scale).is_some())
+        .then_some(scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

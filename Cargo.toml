@@ -101,6 +101,10 @@ clap = { version = "4.6.6", features = ["derive", "env"] }
 # must never be copied across a network on login.
 dirs = "6.0.0"
 divan = "0.1.21"
+# HTX and BingX gzip every WebSocket frame they send, so their plugins have
+# to inflate one synchronously before it can be parsed. `reqwest`'s own
+# `gzip` feature does not help — it decodes HTTP bodies, not WS frames.
+flate2 = "1.1.5"
 futures = { version = "0.3.34", default-features = false, features = ["std"] }
 # Byte-bounded caches in `senken-loader`: verified available and
 # MSRV-compatible so a hand-rolled LRU is not reinvented.
@@ -117,6 +121,9 @@ rand = "0.10.2"
 # Plugins decode bodies themselves (`bytes()` + serde_json) for error
 # control, so the `json` feature is not needed.
 reqwest = { version = "0.13.4", features = ["gzip"] }
+# Only for the `Proxy-Authorization: Basic …` header on a WebSocket CONNECT
+# tunnel — the one place this project encodes base64 itself.
+base64 = "0.22"
 # `senken-identity`: the accounts database.
 # `bundled` vendors SQLite so the build does not depend on a system library.
 rusqlite = { version = "0.40.2", features = ["bundled"] }

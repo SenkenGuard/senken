@@ -143,6 +143,8 @@ mod tests {
 
     #[async_trait]
     impl VenueConnection for FakeConnection {
+        async fn shutdown(&self) {}
+
         async fn subscribe(&self, _instrument: &InstrumentId) -> Result<(), ConnectionError> {
             Ok(())
         }

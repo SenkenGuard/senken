@@ -23,18 +23,20 @@
 //! # Ok(()) }
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use senken_identity::IdentityStore;
 use senken_marketdata::MarketData;
+use senken_marketdata::book::BookSource;
 use senken_plugin::{
     ActivationContext, BarSource, Plugin, PluginError, PluginManifest, reconcile_plugin_permissions,
 };
 use senken_storage::Storage;
 use senken_store::Store;
+use senken_subscription::FeedSource;
 
 /// Error types.
 pub mod error;
@@ -151,7 +153,7 @@ impl RuntimeBuilder {
 
         let mut records: Vec<PluginRecord> = Vec::with_capacity(self.plugins.len());
         let mut seen = HashSet::with_capacity(self.plugins.len());
-        let mut bar_sources: Vec<Arc<dyn BarSource>> = Vec::new();
+        let mut registered = Registrations::default();
         // One context for the whole run, so resources it caches (the shared
         // HTTP client) are shared by every plugin.
         let mut context = ActivationContext::new();
@@ -163,7 +165,7 @@ impl RuntimeBuilder {
                 &manifest,
                 &mut context,
                 &mut marketdata,
-                &mut bar_sources,
+                &mut registered,
                 &mut seen,
                 self.identity.as_deref(),
             ) {
@@ -194,7 +196,7 @@ impl RuntimeBuilder {
         series_store
             .init()
             .map_err(|source| RuntimeError::SeriesStoreInit { source })?;
-        let series = SeriesData::build(&series_store, &marketdata, bar_sources);
+        let series = SeriesData::build(&series_store, &marketdata, registered.bars);
 
         Ok(Runtime {
             storage,
@@ -202,8 +204,24 @@ impl RuntimeBuilder {
             marketdata,
             series,
             series_store,
+            book_sources: registered
+                .book
+                .into_iter()
+                .map(|source| (source.source_id().to_owned(), source))
+                .collect(),
+            feed_sources: registered.feeds,
         })
     }
+}
+
+/// Everything one activation pass accumulates across plugins, bundled so
+/// [`activate`] takes one argument for it rather than one per capability —
+/// a count that grows every time the plugin contract does.
+#[derive(Default)]
+struct Registrations {
+    bars: Vec<Arc<dyn BarSource>>,
+    book: Vec<Arc<dyn BookSource>>,
+    feeds: Vec<Arc<dyn FeedSource>>,
 }
 
 fn activate(
@@ -211,7 +229,7 @@ fn activate(
     manifest: &PluginManifest,
     context: &mut ActivationContext,
     marketdata: &mut MarketData,
-    bar_sources: &mut Vec<Arc<dyn BarSource>>,
+    registered: &mut Registrations,
     seen: &mut HashSet<String>,
     identity: Option<&IdentityStore>,
 ) -> Result<(), RuntimeError> {
@@ -286,7 +304,23 @@ fn activate(
             source = source.source_id(),
             "registering bar source"
         );
-        bar_sources.push(source);
+        registered.bars.push(source);
+    }
+    for source in context.take_book_sources() {
+        tracing::info!(
+            plugin = manifest.id,
+            source = source.source_id(),
+            "registering book source"
+        );
+        registered.book.push(source);
+    }
+    for source in context.take_feed_sources() {
+        tracing::info!(
+            plugin = manifest.id,
+            sources = ?source.source_ids(),
+            "registering live feed"
+        );
+        registered.feeds.push(source);
     }
     Ok(())
 }
@@ -327,9 +361,43 @@ pub struct Runtime {
     /// instance rather than constructing a second `Store` pointed at the
     /// same directory. Cheap to clone (a path plus an `Arc`'d lock table).
     series_store: Store,
+    /// Every order-book source the active plugins registered, keyed by the
+    /// source id each one states it serves.
+    ///
+    /// Owned here rather than assembled by whatever serves HTTP, for the
+    /// same reason bar sources are: registration is the capability
+    /// declaration, and a headless caller must be able to read it without
+    /// an HTTP layer to inherit it from. This replaced a hardcoded map in
+    /// `senken-api` that could only ever hold one venue.
+    book_sources: HashMap<String, Arc<dyn BookSource>>,
+    /// Every live feed the active plugins registered. Not yet connected:
+    /// a [`FeedSource`] is the means to build a protocol once a catalog
+    /// exists, and whoever runs live data decides when that happens.
+    feed_sources: Vec<Arc<dyn FeedSource>>,
 }
 
 impl Runtime {
+    /// The order-book source registered for `source_id`, if any.
+    ///
+    /// `None` is a real answer — the venue serves no depth in this build —
+    /// not a lookup failure, and a caller reporting capabilities reads it
+    /// as such.
+    #[must_use]
+    pub fn book_source(&self, source_id: &str) -> Option<&Arc<dyn BookSource>> {
+        self.book_sources.get(source_id)
+    }
+
+    /// Whether any plugin registered depth for `source_id`.
+    #[must_use]
+    pub fn has_book_source(&self, source_id: &str) -> bool {
+        self.book_sources.contains_key(source_id)
+    }
+
+    /// Every live feed the active plugins registered.
+    #[must_use]
+    pub fn feed_sources(&self) -> &[Arc<dyn FeedSource>] {
+        &self.feed_sources
+    }
     /// Starts configuring a runtime.
     #[must_use]
     pub fn builder() -> RuntimeBuilder {

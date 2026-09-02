@@ -212,6 +212,8 @@ mod tests {
 
     #[async_trait]
     impl VenueConnection for FakeConnection {
+        async fn shutdown(&self) {}
+
         async fn subscribe(&self, instrument: &InstrumentId) -> Result<(), ConnectionError> {
             self.subscribed
                 .lock()

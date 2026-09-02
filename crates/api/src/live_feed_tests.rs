@@ -12,22 +12,27 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use senken_core::UnixNanos;
 use senken_feed::LiveUpdate;
 use senken_identity::DEFAULT_ADMIN_EMAIL;
-use senken_marketdata::InstrumentId;
-use senken_subscription::{ConnectionError, PriceUpdate, QuoteUpdate, SubscriptionPool};
+use senken_marketdata::{InstrumentId, SourceError, SourceSymbol};
+use senken_subscription::{
+    BookLevel, BookSessionRegistry, BookSnapshot, BookSource, ConnectionError, PriceUpdate,
+    QuoteUpdate, SubscriptionPool,
+};
 use senken_venue::LimitGroup;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::test_support::{
     ADMIN_TEST_PASSWORD, body_json, get_auth, post_json, post_json_auth,
-    serve_unfenced_test_server_with_feed, temp_empty_runtime,
+    serve_unfenced_test_server_with_book, serve_unfenced_test_server_with_feed, temp_empty_runtime,
 };
 
 const TEST_SOURCE: &str = "test-venue";
@@ -616,4 +621,327 @@ async fn an_alert_outlives_its_chart_pane_and_records_a_fire_over_http() {
     drop(conn);
     drop(server);
     handle.shutdown().await.unwrap();
+}
+
+/// The refresh cadence every book test in this module runs its registry at.
+///
+/// Fast enough that three refreshes land inside a fraction of a second, and
+/// deliberately no faster: these tests share a test binary with timing-
+/// sensitive live-feed tests, and a hotter loop spends the machine's CPU on
+/// nothing the assertions need. Every book test here waits on a frame
+/// actually arriving, never on this elapsing, so the figure only sets how
+/// long they take — not whether they pass.
+const BOOK_TEST_INTERVAL: Duration = Duration::from_millis(40);
+
+/// A fake venue book-depth endpoint: a fresh, distinct best bid on every
+/// call, and a call counter published on a `watch` channel so a test can
+/// wait for the poll loop to have actually run rather than sleep towards it
+/// (`asked_at_least`, mirroring `senken_subscription::book_session`'s own
+/// test fake of the same shape — reproduced here because it is private to
+/// that crate's own test module).
+struct ScriptedBookSource {
+    calls: watch::Sender<usize>,
+}
+
+impl ScriptedBookSource {
+    fn new() -> Arc<Self> {
+        let (calls, _) = watch::channel(0);
+        Arc::new(Self { calls })
+    }
+
+    /// Resolves once the fake venue has been asked at least `n` times —
+    /// establishes the precondition a test's assertion is about, rather
+    /// than sleeping towards it.
+    async fn asked_at_least(&self, n: usize) {
+        let mut calls = self.calls.subscribe();
+        while *calls.borrow_and_update() < n {
+            calls
+                .changed()
+                .await
+                .expect("the counter outlives the test");
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl BookSource for ScriptedBookSource {
+    fn source_id(&self) -> &'static str {
+        TEST_SOURCE
+    }
+
+    async fn book_snapshot(
+        &self,
+        _symbol: &SourceSymbol,
+        _depth: usize,
+    ) -> Result<BookSnapshot, SourceError> {
+        let mut call = 0usize;
+        self.calls.send_modify(|count| {
+            *count += 1;
+            call = *count;
+        });
+        // A fresh best bid on every call: the property under test is that a
+        // client sees the price *change* across frames, not merely that a
+        // frame arrives — the fetch-once behaviour this whole change
+        // replaces could produce identical repeats forever and still pass a
+        // weaker test.
+        let bid = 100 + i64::try_from(call).expect("test call counts stay well under i64::MAX");
+        Ok(BookSnapshot::new(
+            UnixNanos::EPOCH,
+            vec![BookLevel {
+                price: bid,
+                size: 1,
+            }],
+            2,
+            0,
+            vec![BookLevel {
+                price: bid + 1,
+                size: 1,
+            }],
+            2,
+            0,
+        )
+        .expect("bid and ask sides share one scale"))
+    }
+}
+
+/// Reads WS frames until one has `"type": kind`, discarding anything else —
+/// `Pending` book states forward nothing, so a subscriber's very first
+/// message may be an unrelated frame rather than the one under test.
+async fn next_frame_of_type(
+    client: &mut WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+    kind: &str,
+) -> serde_json::Value {
+    loop {
+        let text = client
+            .next()
+            .await
+            .expect("the connection stays open")
+            .expect("not a transport error")
+            .to_text()
+            .expect("a text frame")
+            .to_owned();
+        let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if frame["type"] == kind {
+            return frame;
+        }
+    }
+}
+
+/// The property this whole change exists for: a client subscribes to a
+/// `book:` topic once and the depth keeps refreshing on its own. A test that
+/// only checked the first frame would pass unchanged against the old
+/// fetch-once-per-subscribe behaviour — this asserts at least three `book`
+/// frames arrive from one `subscribe`, and that the prices they carry
+/// actually differ, which a fetch-once implementation could never produce
+/// (see `ScriptedBookSource`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_book_subscription_keeps_yielding_fresh_frames_without_the_client_asking_again() {
+    use crate::bars_handlers::test_support::{TEST_SYMBOL, runtime_with_fake_venue_serving};
+
+    let runtime_dir = tempfile::TempDir::new().unwrap();
+    let source = ScriptedBookSource::new();
+    let (runtime, _bar_source) = runtime_with_fake_venue_serving(
+        runtime_dir.path(),
+        Some(Arc::clone(&source) as Arc<dyn BookSource>),
+    );
+    let registry = Arc::new(BookSessionRegistry::new(20).with_interval(BOOK_TEST_INTERVAL));
+
+    let (handle, _identity, _dir) =
+        serve_unfenced_test_server_with_book(runtime, HashMap::new(), Arc::clone(&registry)).await;
+    let addr = handle.local_addr();
+    let token = admin_token(addr).await;
+    let ticket = ws_ticket(addr, &token).await;
+
+    let (mut client, _resp) = within(
+        "the WebSocket handshake",
+        Box::pin(tokio_tungstenite::connect_async(format!(
+            "ws://{addr}/api/ws?ticket={ticket}"
+        ))),
+    )
+    .await
+    .unwrap();
+    let _ = within("the `connected` frame", client.next())
+        .await
+        .unwrap()
+        .unwrap();
+
+    client
+        .send(WsMessage::text(format!(
+            r#"{{"type":"subscribe","topic":"book:{TEST_SOURCE}:{TEST_SYMBOL}"}}"#
+        )))
+        .await
+        .unwrap();
+    let ack = within(
+        "the `subscribed` ack",
+        next_frame_of_type(&mut client, "subscribed"),
+    )
+    .await;
+    assert_eq!(ack["topic"], format!("book:{TEST_SOURCE}:{TEST_SYMBOL}"));
+
+    let mut prices = Vec::new();
+    while prices.len() < 3 {
+        let frame = within("a `book` frame", next_frame_of_type(&mut client, "book")).await;
+        prices.push(frame["bids"][0]["price"].as_i64().unwrap());
+    }
+
+    assert!(
+        prices.windows(2).any(|pair| pair[0] != pair[1]),
+        "three `book` frames arrived but every price was identical — \
+         not proof of a live poll, only of repeated delivery: {prices:?}"
+    );
+
+    drop(client);
+    handle.shutdown().await.unwrap();
+}
+
+/// `unsubscribe` on a book topic must stop the frames themselves, not only
+/// acknowledge the request. The negative window below is only meaningful
+/// once the `unsubscribed` ack has actually been seen — per `AGENTS.md`, a
+/// test must establish the state it is about rather than race towards it.
+#[tokio::test(flavor = "multi_thread")]
+async fn unsubscribing_from_a_book_topic_stops_further_frames() {
+    use crate::bars_handlers::test_support::{TEST_SYMBOL, runtime_with_fake_venue_serving};
+
+    let runtime_dir = tempfile::TempDir::new().unwrap();
+    let source = ScriptedBookSource::new();
+    let (runtime, _bar_source) = runtime_with_fake_venue_serving(
+        runtime_dir.path(),
+        Some(Arc::clone(&source) as Arc<dyn BookSource>),
+    );
+    let interval = BOOK_TEST_INTERVAL;
+    let registry = Arc::new(BookSessionRegistry::new(20).with_interval(interval));
+
+    let (handle, _identity, _dir) =
+        serve_unfenced_test_server_with_book(runtime, HashMap::new(), registry).await;
+    let addr = handle.local_addr();
+    let token = admin_token(addr).await;
+    let ticket = ws_ticket(addr, &token).await;
+
+    let (mut client, _resp) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws?ticket={ticket}"))
+            .await
+            .unwrap();
+    let _ = within("the `connected` frame", client.next())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let topic = format!("book:{TEST_SOURCE}:{TEST_SYMBOL}");
+    client
+        .send(WsMessage::text(format!(
+            r#"{{"type":"subscribe","topic":"{topic}"}}"#
+        )))
+        .await
+        .unwrap();
+    let ack = within(
+        "the `subscribed` ack",
+        next_frame_of_type(&mut client, "subscribed"),
+    )
+    .await;
+    assert_eq!(ack["topic"], topic);
+
+    // Establish that frames are actually flowing before proving they stop —
+    // the negative assertion below is only worth having once this is true.
+    let _ = within(
+        "the first `book` frame",
+        next_frame_of_type(&mut client, "book"),
+    )
+    .await;
+
+    client
+        .send(WsMessage::text(format!(
+            r#"{{"type":"unsubscribe","topic":"{topic}"}}"#
+        )))
+        .await
+        .unwrap();
+    let unsub_ack = within(
+        "the `unsubscribed` ack",
+        next_frame_of_type(&mut client, "unsubscribed"),
+    )
+    .await;
+    assert_eq!(unsub_ack["topic"], topic);
+
+    // Only meaningful now that the ack (proof the forwarder task was
+    // aborted) has actually been seen: a window several polls wide with no
+    // `book` frame is a real negative, not a guess about scheduler timing.
+    let window = interval * 10;
+    let further = tokio::time::timeout(window, next_frame_of_type(&mut client, "book")).await;
+    assert!(
+        further.is_err(),
+        "a `book` frame arrived after unsubscribe: {further:?}"
+    );
+
+    drop(client);
+    handle.shutdown().await.unwrap();
+}
+
+/// Two WS connections watching the same instrument's book must share one
+/// poll loop — checked directly against the registry (kept via a clone of
+/// the same `Arc` the server itself runs on) rather than inferred from call
+/// counts.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_connections_on_the_same_book_share_one_poll_loop() {
+    use crate::bars_handlers::test_support::{TEST_SYMBOL, runtime_with_fake_venue_serving};
+
+    let runtime_dir = tempfile::TempDir::new().unwrap();
+    let source = ScriptedBookSource::new();
+    let (runtime, _bar_source) = runtime_with_fake_venue_serving(
+        runtime_dir.path(),
+        Some(Arc::clone(&source) as Arc<dyn BookSource>),
+    );
+    let registry = Arc::new(BookSessionRegistry::new(20).with_interval(BOOK_TEST_INTERVAL));
+
+    let (handle, _identity, _dir) =
+        serve_unfenced_test_server_with_book(runtime, HashMap::new(), Arc::clone(&registry)).await;
+    let addr = handle.local_addr();
+    let topic = format!("book:{TEST_SOURCE}:{TEST_SYMBOL}");
+
+    let client_a = Box::pin(within(
+        "connection A's first `book` frame",
+        subscribe_and_wait_for_a_book_frame(addr, &topic),
+    ))
+    .await;
+    let client_b = Box::pin(within(
+        "connection B's first `book` frame",
+        subscribe_and_wait_for_a_book_frame(addr, &topic),
+    ))
+    .await;
+
+    assert_eq!(
+        registry.live_sessions().await,
+        1,
+        "two connections on the same instrument must share one poll loop"
+    );
+    // Both connections having already seen a live snapshot proves the fake
+    // venue was actually asked, not just that the registry says one session
+    // exists before any work has happened.
+    source.asked_at_least(1).await;
+
+    drop(client_a);
+    drop(client_b);
+    handle.shutdown().await.unwrap();
+}
+
+/// Logs in, subscribes `topic`, and waits for its first `book` frame —
+/// shared by [`two_connections_on_the_same_book_share_one_poll_loop`]'s two
+/// connections.
+async fn subscribe_and_wait_for_a_book_frame(
+    addr: std::net::SocketAddr,
+    topic: &str,
+) -> WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>> {
+    let token = admin_token(addr).await;
+    let ticket = ws_ticket(addr, &token).await;
+    let (mut client, _resp) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws?ticket={ticket}"))
+            .await
+            .unwrap();
+    let _ = client.next().await.unwrap().unwrap();
+    client
+        .send(WsMessage::text(format!(
+            r#"{{"type":"subscribe","topic":"{topic}"}}"#
+        )))
+        .await
+        .unwrap();
+    let _ = next_frame_of_type(&mut client, "book").await;
+    client
 }

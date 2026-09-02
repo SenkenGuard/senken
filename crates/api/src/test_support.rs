@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use senken_identity::{DEFAULT_ADMIN_EMAIL, IdentityStore};
 use senken_runtime::Runtime;
-use senken_subscription::SubscriptionPool;
+use senken_subscription::{BookSessionRegistry, SubscriptionPool};
 use tempfile::TempDir;
 
 use crate::{ServeOptions, ServerHandle};
@@ -102,6 +102,36 @@ pub(crate) async fn serve_unfenced_test_server_with_feed(
         Arc::clone(&store),
         Arc::new(runtime),
         feed_pools,
+    )
+    .await
+    .unwrap();
+    (handle, store, dir)
+}
+
+/// As [`serve_unfenced_test_server_with_feed`], but with an explicit
+/// [`BookSessionRegistry`] — the seam `live_feed_tests` uses to run the
+/// depth poll loop on a fast, test-scale cadence
+/// (`BookSessionRegistry::with_interval`) rather than waiting a full second
+/// per snapshot.
+///
+/// The depth *source* is not injected here: it reaches the server the only
+/// way it can in production, by a plugin registering it into `runtime`.
+pub(crate) async fn serve_unfenced_test_server_with_book(
+    runtime: Runtime,
+    feed_pools: HashMap<String, SubscriptionPool>,
+    book_sessions: Arc<BookSessionRegistry>,
+) -> (ServerHandle, Arc<IdentityStore>, TempDir) {
+    let (dir, store) = temp_identity_store();
+    store
+        .set_password(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD, None)
+        .unwrap();
+    let store = Arc::new(store);
+    let handle = crate::serve_with_feed_pools_and_book(
+        localhost_any_port(),
+        Arc::clone(&store),
+        Arc::new(runtime),
+        feed_pools,
+        book_sessions,
     )
     .await
     .unwrap();

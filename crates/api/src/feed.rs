@@ -1,30 +1,26 @@
-//! Live price feed wiring: one [`SubscriptionPool`] per source
-//! this build actually has a live [`senken_feed::VenueProtocol`] for.
+//! Live price feed wiring: one [`SubscriptionPool`] per live feed the
+//! active plugins actually registered.
 //!
-//! Only OKX's public trades channel is implemented and verified live
-//! (`senken_feed::okx`'s own module docs) — every other registered
-//! marketdata source has no live-price protocol in this build at all, so an
-//! open pane or an alert on one of them simply has no pool to lease from
-//! (see `ws::subscribe`/`senken_alerts::AlertEngine`, which both skip a
-//! topic/alert with no matching pool rather than failing loudly for a gap
-//! this crate cannot close). Extending live coverage to another venue is a
-//! matter of implementing its own `VenueProtocol` in `senken-feed` and
-//! adding one more branch below — the dial/reconnect engine underneath is
-//! already generic across venues.
+//! Nothing here names a venue. A plugin declares that it can stream by
+//! registering a [`FeedSource`] (`senken_plugin::ActivationContext::register_feed_source`),
+//! and this builds a pool for each one. A source with no registered feed
+//! has no pool, and `ws::subscribe`/`AlertEngine` both treat that as
+//! "nothing to lease" rather than an error — an absence a client is told
+//! about, not one it has to infer.
+//!
+//! This replaced a hardcoded `if has_okx_spot { … }`: for as long as live
+//! streaming was wired here rather than declared by a plugin, exactly one
+//! venue could ever have it, however many plugins the build contained.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use senken_feed::okx::OkxTradesProtocol;
-use senken_feed::{SymbolMap, VenueProtocol, WsVenueConnector};
+use senken_feed::WsVenueConnector;
 use senken_marketdata::{InstrumentId, InstrumentQuery, MarketData};
-use senken_subscription::SubscriptionPool;
+use senken_subscription::{FeedSource, SubscriptionPool, SymbolMap};
 use senken_venue::LimitGroup;
 
-/// The one source id this build streams live prices for.
-const OKX_SPOT_SOURCE: &str = "okx-spot";
-
-/// Resolves an instrument's OKX-native symbol from a snapshot of that
+/// Resolves an instrument's venue-native symbol from a snapshot of that
 /// source's catalog taken when the pool was built.
 ///
 /// [`senken_feed::SymbolMap::source_symbol`] is synchronous (a subscribe
@@ -47,61 +43,93 @@ impl SymbolMap for CatalogSymbolMap {
     }
 }
 
-async fn warm_symbol_map(marketdata: &MarketData, source_id: &str) -> CatalogSymbolMap {
-    let page = marketdata
-        .instruments(InstrumentQuery::all().with_source(source_id))
-        .await;
-    if !page.is_complete() {
-        tracing::warn!(
-            source = source_id,
-            "some sources failed while warming the live-feed symbol catalog; \
-             affected instruments will not be leaseable this run"
+async fn warm_symbol_map(marketdata: &MarketData, source_ids: &[String]) -> CatalogSymbolMap {
+    let mut symbols = HashMap::new();
+    for source_id in source_ids {
+        let page = marketdata
+            .instruments(InstrumentQuery::all().with_source(source_id.as_str()))
+            .await;
+        if !page.is_complete() {
+            tracing::warn!(
+                source = source_id.as_str(),
+                "some sources failed while warming the live-feed symbol catalog; \
+                 affected instruments will not be leaseable this run"
+            );
+        }
+        symbols.extend(
+            page.matches
+                .into_iter()
+                .map(|hit| (hit.id, hit.instrument.source_symbol)),
         );
     }
-    let symbols = page
-        .matches
-        .into_iter()
-        .map(|hit| (hit.id, hit.instrument.source_symbol))
-        .collect();
     CatalogSymbolMap { symbols }
 }
 
-/// Builds one [`SubscriptionPool`] per source this build can stream live
-/// prices for, keyed by source id. Called once, at server startup —
-/// [`SubscriptionPool::new`] spawns a background actor task per pool
-/// , not something to call per request.
-pub(crate) async fn build_feed_pools(marketdata: &MarketData) -> HashMap<String, SubscriptionPool> {
+/// Builds one [`SubscriptionPool`] per registered live feed, keyed by every
+/// source id that feed serves.
+///
+/// Called once, at server startup — [`SubscriptionPool::new`] spawns a
+/// background actor task per pool, not something to call per request.
+///
+/// A feed serving several source ids gets one pool shared by all of them:
+/// a venue's physical socket is rarely split the way its markets are, and
+/// opening one connection per market for the same wire would multiply the
+/// venue's connection count for nothing.
+pub(crate) async fn build_feed_pools(
+    marketdata: &MarketData,
+    feeds: &[Arc<dyn FeedSource>],
+) -> HashMap<String, SubscriptionPool> {
     let mut pools = HashMap::new();
 
-    let has_okx_spot = marketdata
-        .sources()
-        .iter()
-        .any(|source| source.id == OKX_SPOT_SOURCE);
-    if has_okx_spot {
-        let symbols = warm_symbol_map(marketdata, OKX_SPOT_SOURCE).await;
-        let protocol = OkxTradesProtocol::new(OKX_SPOT_SOURCE, Arc::new(symbols));
-        // `SubscriptionPool` must be built with the *protocol's own* venue
-        // name ("okx"), not the marketdata source id ("okx-spot") this pool
-        // is keyed by below: `WsVenueConnector::connect` refuses to dial
-        // when the pool's venue and `VenueProtocol::venue()` disagree (a
-        // caller-bug guard against exactly this kind of drift), and OKX's
-        // one physical venue serves several marketdata sources (spot, swap,
-        // futures) under distinct source ids for exactly one instrument
-        // stream today.
+    // Every feed's catalog is warmed concurrently, and that matters more
+    // the more plugins a build carries: warming them one after another
+    // makes startup the *sum* of every venue's catalog fetch, and a server
+    // does not accept connections until this returns. One venue hides
+    // that; twenty would not.
+    let warmed = futures::future::join_all(feeds.iter().map(|feed| async move {
+        let known: Vec<String> = feed
+            .source_ids()
+            .iter()
+            .filter(|id| marketdata.sources().iter().any(|source| &source.id == *id))
+            .cloned()
+            .collect();
+        let symbols = if known.is_empty() {
+            None
+        } else {
+            Some(warm_symbol_map(marketdata, &known).await)
+        };
+        (feed, known, symbols)
+    }))
+    .await;
+
+    for (feed, known, symbols) in warmed {
+        let Some(symbols) = symbols else {
+            // A feed for sources this build's catalog does not carry is not
+            // an error — a plugin may register markets whose catalog fetch
+            // failed — but it has nothing to lease, so it gets no pool.
+            continue;
+        };
+        let protocol = feed.protocol(Arc::new(symbols));
+        // The pool must be built with the *protocol's own* venue name, not
+        // a source id: `WsVenueConnector::connect` refuses to dial when the
+        // pool's venue and `VenueProtocol::venue()` disagree (a caller-bug
+        // guard against exactly this kind of drift), and one physical venue
+        // commonly serves several marketdata sources under distinct ids.
         let venue_name = protocol.venue().to_owned();
-        // A dedicated dial/reconnect budget for this one WS connection.
-        // `senken_runtime::Runtime` does not expose the `LimitGroup` the OKX
-        // plugin's own REST client dials through — it lives inside
-        // `senken_plugin::ActivationContext`, local to plugin activation and
+        // A dedicated dial/reconnect budget for this venue's WS
+        // connections. `senken_runtime::Runtime` does not expose the
+        // `LimitGroup` a plugin's own REST client dials through — it lives
+        // inside `senken_plugin::ActivationContext`, local to activation and
         // dropped once `RuntimeBuilder::build` returns — so this is a
-        // second, independent budget for the same venue rather than the
-        // literally shared one `senken-feed`'s own module docs describe as
-        // the ideal. Flagged here rather than silently claimed as shared.
+        // second, independent budget for the same venue rather than a
+        // literally shared one. Flagged rather than silently claimed.
         let group = LimitGroup::new(&venue_name);
-        let connector = WsVenueConnector::new(protocol, group);
+        let connector = WsVenueConnector::from_arc(protocol, group);
         let pool = SubscriptionPool::new(venue_name, connector.clone());
         connector.bind_pool(pool.clone());
-        pools.insert(OKX_SPOT_SOURCE.to_owned(), pool);
+        for id in known {
+            pools.insert(id, pool.clone());
+        }
     }
 
     pools

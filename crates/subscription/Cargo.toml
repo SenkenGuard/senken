@@ -34,8 +34,10 @@ senken-indicators = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 # `sync` for the actor's mpsc/oneshot channels, `rt` because the actor task
-# is spawned with `tokio::spawn` (any executor flavour; none is forced).
-tokio = { workspace = true, features = ["sync", "rt"] }
+# is spawned with `tokio::spawn` (any executor flavour; none is forced), and
+# `time` because a live book session sleeps between polls — a snapshot port
+# has nothing to await, so the cadence has to come from a timer.
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -117,6 +117,21 @@ Two symptoms name it. **State that shrinks back after growing**, and **a
 derived value that disagrees with the state it is derived from.** When either
 appears, look for the opening value being asked for a second time.
 
+### A venue's symbol is normalised once, by one rule
+
+A plugin normalises a venue symbol in two places — when it builds the
+instrument catalog, and again when it decodes a live frame — and the two
+must strip exactly the same separators. They are easy to let drift, and the
+failure is silent: the decoder builds `BTC_USDT` where the catalog holds
+`BTCUSDT`, so every frame is attributed to an instrument nobody leased and
+dropped with no error. Deribit and Crypto.com both shipped that way and
+were found only by comparing the two call sites across all 22 plugins.
+
+When a venue writes more than one market shape (Deribit's `BTC-PERPETUAL`
+beside `BTC_USDT`, Crypto.com's `BTCUSD-PERP` beside `BTC_USDT`), the
+separator set must cover every shape the source serves — not just the one
+the capture happened to use.
+
 ### Fixtures are recorded, never hand-written
 
 Every venue adapter's test data comes from a real response. This is not
@@ -148,25 +163,53 @@ reverse; the runtime depends on everything and nothing depends on it.
 |---|---|
 | `core` | `UnixNanos`, scaled integers, path encoding, `TimeRange` — zero I/O |
 | `storage` | atomic, versioned JSON snapshots |
-| `marketdata` | instruments, the `MarketDataSource` contract, cached search |
+| `marketdata` | instruments, cached search, and the `MarketDataSource` and `BookSource` contracts |
 | `series` | `Bar`, `BarSpec`, `Origin`, aggregation, `Clock` — pure computation |
 | `store` | Parquet series storage; coverage derived from filenames |
 | `loader` | resolution ladder, caches, the job model |
-| `subscription` | lease pool with `Drop` guards, reference counted |
-| `feed` | venue WebSocket implementations behind the pool's ports |
+| `subscription` | lease pool with `Drop` guards, reference counted; the live-feed ports (`VenueProtocol`, `SymbolMap`, `FeedSource`) |
+| `feed` | the WebSocket dial/reconnect engine — generic across venues, no venue in it |
 | `indicators` | ten incremental indicators |
 | `alerts` | standalone alert evaluation |
 | `venue` | HTTP, retry, rate limiting |
 | `plugin` | the plugin contract |
 | `acl` | `Action`, `Resource`, `Scope`, `decide` — no I/O |
 | `identity` | users, roles, sessions (SQLite) |
-| `workspace` | workspaces, layouts, panes, layers |
+| `chart` | workspaces, layouts, panes, layers |
+| `watchlist` | watchlist groups and their instruments |
+| `notes` | notes, stored globally and shown per workspace |
 | `api` | HTTP surface — transport only |
-| `runtime` | composition and lifecycle |
+| `runtime` | composition and lifecycle; owns what the plugins registered |
 
 **Arrow and Parquet appear in `senken-store` and nowhere else**, behind a
 feature. Someone who wants bar types, or only wants to inspect what data exists,
 never compiles a columnar dependency.
+
+### A port lives in the lowest crate that can express it
+
+Four capabilities are registered through `senken_plugin::ActivationContext`:
+`MarketDataSource` (instruments), `BarSource` (bars), `BookSource` (depth) and
+`FeedSource` (a live price/quote stream). A venue plugin declares what it can
+do by registering; **registration is the capability declaration**, and whatever
+reports capabilities to a client reads that absence rather than guessing.
+
+Where each port lives is decided by what it actually needs, and getting this
+wrong has already cost this project a whole feature. `VenueProtocol` and
+`SymbolMap` sat in `senken-feed` — a crate for *implementations* — which meant
+`senken-plugin` could not name them, which meant live streaming could not be a
+plugin capability at all, which meant it was hardcoded in `senken-api` for one
+venue while twenty-two plugins existed. `BookSource` was one crate too high for
+the same reason: it needs only a `SourceSymbol` and a `SourceError`, so leaving
+it in `senken-subscription` would have made every venue plugin compile a
+subscription pool, a tokio runtime and the indicator crate just to say it can
+serve depth.
+
+`FeedSource` is deliberately a **factory**, unlike its three siblings. A
+`VenueProtocol` needs a `SymbolMap` built from the instrument catalog, and that
+catalog does not exist during activation — assembling it is what activation is
+for. So a plugin hands over the means to build a protocol and the runtime calls
+it once it holds a catalog. The runtime decides when live data starts; the
+plugin only says that it can.
 
 ### Where a rule belongs
 

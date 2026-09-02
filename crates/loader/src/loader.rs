@@ -156,9 +156,46 @@ impl SeriesLoaderBuilder {
     }
 }
 
+/// How long a job stays queryable after it stops running.
+///
+/// Not zero, and that matters: `GET /api/bars/jobs/{id}` is a poll, so a
+/// caller that started a job has to be able to see it reach
+/// [`Phase::Done`] at least once. Dropping the record the instant the work
+/// ended would answer "no such job" — which, to that caller, is
+/// indistinguishable from an id it made up. Past this window nobody is
+/// waiting on the answer any more, and keeping it is only a slower memory
+/// leak.
+const FINISHED_JOB_RETENTION_NANOS: i64 = 60 * 1_000_000_000;
+
+/// Drops every job that finished more than [`FINISHED_JOB_RETENTION_NANOS`]
+/// ago. Running jobs are never touched, whatever their age — a long
+/// backfill is not stale, it is busy.
+///
+/// A free function over the map so the retention rule can be tested against
+/// a table built by hand, without driving real fetches to produce finished
+/// jobs first.
+fn retire_finished(jobs: &mut HashMap<JobId, Arc<JobRecord>>, now: senken_core::UnixNanos) {
+    jobs.retain(|_, record| {
+        let finished = *record
+            .finished_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(finished) = finished else {
+            return true;
+        };
+        now.as_nanos().saturating_sub(finished.as_nanos()) < FINISHED_JOB_RETENTION_NANOS
+    });
+}
+
 struct JobRecord {
     snapshot: Mutex<JobSnapshot>,
     cancelled: AtomicBool,
+    /// When this job stopped running, per this loader's [`Clock`] — `None`
+    /// while it is still going. Kept on the record rather than in
+    /// [`JobSnapshot`] because it answers a question about the *record*
+    /// (how long to keep it), not about the job's progress, which is what
+    /// the snapshot reports.
+    finished_at: Mutex<Option<senken_core::UnixNanos>>,
 }
 
 /// `price_scale`/`qty_scale`/`priority`, bundled purely to keep `run_job`
@@ -364,12 +401,21 @@ impl SeriesLoader {
                 priority,
             }),
             cancelled: AtomicBool::new(false),
+            finished_at: Mutex::new(None),
         });
-        self.inner
-            .jobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, Arc::clone(&record));
+        {
+            let mut jobs = self
+                .inner
+                .jobs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            // The only place this map can grow, and therefore the place to
+            // shrink it. Before this, a job record was inserted and never
+            // removed — one per `ensure()`, which a chart calls on every
+            // scroll, prefetch and closed bar, for the life of the process.
+            retire_finished(&mut jobs, self.inner.clock.now());
+            jobs.insert(id, Arc::clone(&record));
+        }
         self.publish_jobs(true);
 
         let (tx, rx) = oneshot::channel();
@@ -396,6 +442,10 @@ impl SeriesLoader {
                     .unwrap_or_else(PoisonError::into_inner);
                 snap.phase = Phase::Done;
             }
+            *record
+                .finished_at
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(loader.inner.clock.now());
             loader.publish_jobs(true);
             let _ = tx.send(outcome);
         });
@@ -934,6 +984,123 @@ async fn run_blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
             Ok(payload) => std::panic::resume_unwind(payload),
             Err(error) => panic!("blocking loader task cancelled: {error}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod job_retention {
+    // Every `ensure()` used to insert a job record that was never removed —
+    // and a chart calls `ensure()` on every scroll, prefetch and closed bar.
+    // What matters here is that the table *shrinks*, which no caller of this
+    // crate can observe, so these exercise the retention rule directly.
+    use super::{FINISHED_JOB_RETENTION_NANOS, JobId, JobRecord, Phase, Priority, retire_finished};
+    use crate::job::JobSnapshot;
+    use senken_core::{TimeRange, UnixNanos};
+    use senken_series::{BarSpec, BarUnit, SeriesKey};
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    fn key() -> SeriesKey {
+        SeriesKey::new(
+            "test-venue",
+            "BTCUSDT",
+            senken_series::Origin::Venue,
+            BarSpec::new(1, BarUnit::Minute),
+        )
+    }
+
+    /// A record in whatever state the test needs: still running (`None`) or
+    /// finished at a given instant.
+    fn record(id: JobId, finished_at: Option<UnixNanos>) -> Arc<JobRecord> {
+        Arc::new(JobRecord {
+            snapshot: Mutex::new(JobSnapshot {
+                id,
+                key: key(),
+                range: TimeRange::new(UnixNanos::EPOCH, UnixNanos::EPOCH).expect("empty is valid"),
+                phase: if finished_at.is_some() {
+                    Phase::Done
+                } else {
+                    Phase::Downloading
+                },
+                chunks_total: 1,
+                chunks_done: 0,
+                bars_written: 0,
+                started_at: None,
+                estimate: None,
+                last_error: None,
+                priority: Priority::Visible,
+            }),
+            cancelled: AtomicBool::new(false),
+            finished_at: Mutex::new(finished_at),
+        })
+    }
+
+    fn nanos(n: i64) -> UnixNanos {
+        UnixNanos::from_nanos(n)
+    }
+
+    #[test]
+    fn a_job_that_finished_long_ago_is_dropped() {
+        let now = nanos(FINISHED_JOB_RETENTION_NANOS * 10);
+        let mut jobs: HashMap<JobId, Arc<JobRecord>> = (0..500)
+            .map(|i| {
+                let id = JobId(i);
+                (id, record(id, Some(nanos(0))))
+            })
+            .collect();
+
+        retire_finished(&mut jobs, now);
+
+        assert!(jobs.is_empty(), "{} finished jobs were kept", jobs.len());
+    }
+
+    #[test]
+    fn a_job_that_just_finished_can_still_be_polled() {
+        // `GET /api/bars/jobs/{id}` is a poll. A caller that started a job
+        // has to see it reach `Done` at least once — dropping the record the
+        // instant the work ended answers "no such job", which is what a made
+        // up id also answers.
+        let finished = nanos(FINISHED_JOB_RETENTION_NANOS * 10);
+        let now = nanos(FINISHED_JOB_RETENTION_NANOS * 10 + 1);
+        let id = JobId(1);
+        let mut jobs = HashMap::from([(id, record(id, Some(finished)))]);
+
+        retire_finished(&mut jobs, now);
+
+        assert!(jobs.contains_key(&id));
+    }
+
+    #[test]
+    fn a_running_job_is_never_retired_however_long_it_takes() {
+        // A multi-day backfill is not stale, it is busy. Retiring by age
+        // alone would drop the one job a caller is most likely waiting on.
+        let now = nanos(FINISHED_JOB_RETENTION_NANOS * 1_000);
+        let id = JobId(7);
+        let mut jobs = HashMap::from([(id, record(id, None))]);
+
+        retire_finished(&mut jobs, now);
+
+        assert!(jobs.contains_key(&id), "a still-running job was retired");
+    }
+
+    #[test]
+    fn retiring_keeps_the_running_jobs_and_drops_only_the_stale_ones() {
+        let now = nanos(FINISHED_JOB_RETENTION_NANOS * 10);
+        let running = JobId(1);
+        let fresh = JobId(2);
+        let stale = JobId(3);
+        let mut jobs = HashMap::from([
+            (running, record(running, None)),
+            (fresh, record(fresh, Some(now))),
+            (stale, record(stale, Some(nanos(0)))),
+        ]);
+
+        retire_finished(&mut jobs, now);
+
+        let mut kept: Vec<u64> = jobs.keys().map(|id| id.0).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, vec![1, 2]);
     }
 }
 

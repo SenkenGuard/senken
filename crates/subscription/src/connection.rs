@@ -58,6 +58,22 @@ pub trait VenueConnection: Send + Sync + 'static {
     /// [`crate::SubscriptionPool::lease`]'s docs) — bookkeeping must not stay
     /// pinned on a leaseholder that has already dropped its guard.
     async fn unsubscribe(&self, instrument: &InstrumentId) -> Result<(), ConnectionError>;
+
+    /// Closes this connection for good: nothing will be subscribed on it
+    /// again, and any background task owning its socket must stop.
+    ///
+    /// Called by the pool when the last instrument on a connection's shard
+    /// is released. Without it a venue socket outlives everyone watching
+    /// it — an implementation that owns its socket from a spawned task
+    /// typically holds a strong reference to itself for as long as that
+    /// task runs, so nothing else dropping its handle can ever end it. That
+    /// is not hypothetical: it is exactly what this method was added to
+    /// fix.
+    ///
+    /// Must be safe to call more than once, and must not fail: a caller
+    /// retiring a connection has already stopped using it and has nothing
+    /// to do with an error.
+    async fn shutdown(&self);
 }
 
 /// Opens new [`VenueConnection`]s for one venue, on demand.

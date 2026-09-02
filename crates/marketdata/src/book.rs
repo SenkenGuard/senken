@@ -1,6 +1,6 @@
 //! A fixed-depth order-book snapshot from a venue that reports one.
 //!
-//! Unlike [`crate::QuoteUpdate`], a [`BookSnapshot`] is not something a
+//! Unlike a live quote, a [`BookSnapshot`] is not something a
 //! caller leases from an always-open connection: it is one venue-reported
 //! instant, fetched fresh on request. A book maintained locally from venue
 //! deltas — reconciling out-of-order updates, replaying a resync after a
@@ -10,8 +10,9 @@
 //! them.
 
 use senken_core::UnixNanos;
-use senken_marketdata::SourceSymbol;
-use senken_marketdata::source::SourceError;
+
+use crate::instrument::SourceSymbol;
+use crate::source::SourceError;
 
 /// One resting order level, either side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +53,7 @@ pub struct BookSnapshot {
 
 impl BookSnapshot {
     /// Constructs a snapshot, rejecting a bid side and ask side that cannot
-    /// share one scale — the same invariant [`crate::QuoteUpdate::new`]
+    /// share one scale — the same invariant `senken_subscription::QuoteUpdate::new`
     /// enforces for a top-of-book quote, generalised to a whole ladder.
     ///
     /// # Errors
@@ -87,7 +88,7 @@ impl BookSnapshot {
 /// A source that can fetch a fixed-depth order-book snapshot for one
 /// instrument.
 ///
-/// Registered independently of [`crate::QuoteSource`] and any bar source —
+/// Registered independently of `senken_subscription::QuoteSource` and any bar source —
 /// a venue implements this only when it actually has book depth to serve.
 /// There is deliberately no default method that answers with an empty book:
 /// a venue with no implementation here has **no** capability, not an empty
@@ -95,6 +96,17 @@ impl BookSnapshot {
 /// to a client.
 #[async_trait::async_trait]
 pub trait BookSource: Send + Sync {
+    /// The source id this serves depth for — e.g. `okx-spot`, the same
+    /// left half of an [`InstrumentId`](crate::InstrumentId) a caller
+    /// addresses through it.
+    ///
+    /// Present for the same reason
+    /// `senken_plugin::BarSource::source_id` is: a plugin hands the runtime
+    /// a registration, not a map entry, so the source it serves has to be
+    /// something the implementation states rather than something the caller
+    /// remembers to key it by.
+    fn source_id(&self) -> &str;
+
     /// Fetches a fresh snapshot for `symbol`, at most `depth` levels per
     /// side. Never a locally-maintained book updated from deltas — every
     /// call is a fresh request to the venue.
@@ -108,6 +120,14 @@ pub trait BookSource: Send + Sync {
         symbol: &SourceSymbol,
         depth: usize,
     ) -> Result<BookSnapshot, SourceError>;
+}
+
+impl std::fmt::Debug for dyn BookSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BookSource")
+            .field("source_id", &self.source_id())
+            .finish()
+    }
 }
 
 #[cfg(test)]

@@ -32,7 +32,7 @@ use tokio::task::AbortHandle;
 
 use senken_indicators::ConcreteIndicator;
 use senken_marketdata::InstrumentId;
-use senken_subscription::{IndicatorSessionKey, QuoteSource, SubscriptionPool};
+use senken_subscription::{BookState, IndicatorSessionKey, QuoteSource, SubscriptionPool};
 
 use crate::AppState;
 use crate::auth::Authed;
@@ -219,7 +219,12 @@ pub(crate) async fn ws_handler(
 /// How many levels a book-depth snapshot carries per side. A fixed panel
 /// choice, not a venue-documented ceiling — see `okx_book`'s own module
 /// docs in `senken-feed` for OKX's own (unconfirmed) maximum.
-const PANEL_BOOK_DEPTH: usize = 20;
+///
+/// Read by [`crate::serve_with_feed_pools`] when it builds the one
+/// [`BookSessionRegistry`] for the server: depth belongs to the registry
+/// rather than to each subscriber, so two connections sharing a session
+/// cannot disagree about it (see that type's own docs).
+pub(crate) const PANEL_BOOK_DEPTH: usize = 20;
 
 /// One order-book level on the wire: `[price, size]` at
 /// [`ServerFrame::Book`]'s shared `price_scale`/`qty_scale`.
@@ -304,13 +309,18 @@ enum ServerFrame<'a> {
         qty_scale: u8,
         ts: i64,
     },
-    /// A fixed-depth order-book snapshot from a source that reports one —
-    /// one request, one frame, never a locally-maintained book updated from
-    /// venue deltas (see `senken_subscription::BookSource`'s own docs).
+    /// A fixed-depth order-book snapshot from a source that reports one.
+    ///
+    /// Each frame is one whole venue-reported instant, never a delta to be
+    /// applied to the last one: this build maintains no local book
+    /// (`senken_subscription::BookSource`'s own docs say why). Frames keep
+    /// arriving for as long as the topic is subscribed —
+    /// `senken_subscription::BookSessionRegistry` refreshes the snapshot on
+    /// a cadence and republishes it — so a client renders the newest frame
+    /// and never has to ask for the next one.
+    ///
     /// `topic` is namespaced as `book:<source>:<symbol>`, the same
-    /// convention [`Quote`](Self::Quote) uses. Resubscribing (an explicit
-    /// `Unsubscribe` followed by `Subscribe`) is how a client asks for a
-    /// fresh one — there is nothing to "update" in between.
+    /// convention [`Quote`](Self::Quote) uses.
     Book {
         topic: &'a str,
         /// Resting bids, best price first, as the venue reported them.
@@ -492,8 +502,8 @@ async fn handle_socket(
 enum StreamTopic {
     Price(InstrumentId),
     Quote(InstrumentId),
-    /// A fixed-depth order-book snapshot, fetched once per subscribe rather
-    /// than streamed — see [`ServerFrame::Book`]'s own docs.
+    /// A fixed-depth order-book snapshot, refreshed on a cadence for as
+    /// long as it is subscribed — see [`ServerFrame::Book`]'s own docs.
     Book(InstrumentId),
 }
 
@@ -635,15 +645,20 @@ fn subscribe(
     let _ = out_tx.send(send_frame(&ServerFrame::Subscribed { topic }));
 }
 
-/// Fetches one fixed-depth book snapshot for `instrument` and forwards it as
-/// a single [`ServerFrame::Book`] frame — the book counterpart of
-/// [`subscribe`]'s continuous price/quote forwarders, except the spawned
-/// task runs once and returns rather than looping on a `watch::Receiver`:
-/// there is no live book stream to await, only one venue request.
+/// Joins (or starts) the shared live book session for `instrument` and
+/// forwards every snapshot it publishes as a [`ServerFrame::Book`] — the
+/// book counterpart of [`subscribe`]'s price/quote forwarders, and the same
+/// shape: a `watch::Receiver` read now and then awaited for changes.
 ///
-/// A repeated `Subscribe` for a topic already tracked in `subscriptions`
-/// never reaches here (see [`subscribe`]) — resubscribing after an explicit
-/// `Unsubscribe` is how a client asks for a fresh snapshot.
+/// A book source is a request/response port with nothing to await, so the
+/// cadence comes from `senken_subscription::BookSessionRegistry`'s own poll
+/// loop rather than from a venue stream. That loop is shared: every
+/// connection watching one instrument costs the venue one request per
+/// interval between them, not one each.
+///
+/// The session handle lives in the spawned task, so an `Unsubscribe` — which
+/// aborts that task — releases this connection's share of it, and the poll
+/// loop stops as soon as the last share is gone.
 fn subscribe_book(
     state: &AppState,
     instrument: InstrumentId,
@@ -651,7 +666,7 @@ fn subscribe_book(
     out_tx: &mpsc::UnboundedSender<Message>,
     subscriptions: &mut HashMap<String, AbortHandle>,
 ) {
-    let Some(source) = state.book_sources.get(instrument.source()).cloned() else {
+    let Some(source) = state.runtime.book_source(instrument.source()).cloned() else {
         let _ = out_tx.send(send_frame(&ServerFrame::Unsupported { topic }));
         return;
     };
@@ -678,23 +693,48 @@ fn subscribe_book(
             }
         };
         let symbol = hit.instrument.source_symbol();
-        match source.book_snapshot(&symbol, PANEL_BOOK_DEPTH).await {
-            Ok(snapshot) => {
-                let frame = ServerFrame::Book {
+        let session = state
+            .book_sessions
+            .get_or_create(instrument, source, symbol)
+            .await;
+        let mut updates = session.updates();
+        loop {
+            // Read what is already there before waiting for a change, for
+            // the same reason the price forwarder does: joining a session
+            // that already holds a snapshot must show it now, not one
+            // refresh interval from now.
+            let current = updates.borrow_and_update().clone();
+            let frame = match &current {
+                BookState::Pending => None,
+                BookState::Live(snapshot) => Some(ServerFrame::Book {
                     topic: &forward_topic,
-                    bids: snapshot.bids.into_iter().map(BookLevelWire::from).collect(),
-                    asks: snapshot.asks.into_iter().map(BookLevelWire::from).collect(),
+                    bids: snapshot
+                        .bids
+                        .iter()
+                        .copied()
+                        .map(BookLevelWire::from)
+                        .collect(),
+                    asks: snapshot
+                        .asks
+                        .iter()
+                        .copied()
+                        .map(BookLevelWire::from)
+                        .collect(),
                     price_scale: snapshot.price_scale,
                     qty_scale: snapshot.qty_scale,
                     ts: snapshot.ts.as_millis(),
-                };
-                let _ = forward_tx.send(send_frame(&frame));
-            }
-            Err(error) => {
-                tracing::warn!(%error, topic = %forward_topic, "could not fetch a book snapshot");
-                let _ = forward_tx.send(send_frame(&ServerFrame::Failed {
+                }),
+                BookState::Failed => Some(ServerFrame::Failed {
                     topic: &forward_topic,
-                }));
+                }),
+            };
+            if let Some(frame) = frame
+                && forward_tx.send(send_frame(&frame)).is_err()
+            {
+                return; // the connection loop has already ended
+            }
+            if updates.changed().await.is_err() {
+                return; // the session's poll task is gone; nothing left to forward
             }
         }
     });
@@ -1063,6 +1103,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl senken_subscription::VenueConnection for FakeConnection {
+        async fn shutdown(&self) {}
+
         async fn subscribe(
             &self,
             _instrument: &InstrumentId,

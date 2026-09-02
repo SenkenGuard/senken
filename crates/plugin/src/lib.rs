@@ -7,8 +7,10 @@
 //! context also provisions shared infrastructure — today one HTTP client —
 //! so plugins do not each build their own.
 //!
-//! Two capabilities exist today: [`MarketDataSource`] (instruments) and
-//! [`BarSource`] (bars). A plugin registering both for one venue
+//! Four capabilities exist today: [`MarketDataSource`] (instruments),
+//! [`BarSource`] (bars), [`BookSource`] (order-book depth) and
+//! [`FeedSource`] (a live price/quote stream). A plugin registering them
+//! for one venue
 //! must share a single [`LimitGroup`] between them (obtain it once from an
 //! [`HttpActivationContext`]) — instrument and
 //! bar traffic drawing independent budgets against one real venue quota is
@@ -52,18 +54,26 @@ use std::sync::Arc;
 use std::{collections::HashMap, time::Duration};
 
 use senken_acl::{PluginNamespace, PluginPermissionError, PluginPermissionName};
+use senken_marketdata::book::BookSource;
 use senken_marketdata::source::MarketDataSource;
+use senken_subscription::FeedSource;
 #[cfg(feature = "http")]
 use senken_venue::{LimitGroup, VenueClient};
 
 /// The bar-fetching contract.
 pub mod bar_source;
+/// The wall clock a venue adapter closes candles against.
+pub mod clock;
 /// Error types.
 pub mod error;
+
+/// Shared decoding helpers for a venue's live feed.
+pub mod live;
 /// Reconciling a plugin's permissions across activations.
 pub mod permissions;
 
 pub use crate::bar_source::BarSource;
+pub use crate::clock::SystemClock;
 pub use crate::error::{BoxError, PluginError, PluginPermissionRegistrationError};
 pub use crate::permissions::reconcile_plugin_permissions;
 
@@ -144,6 +154,8 @@ const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct ActivationContext {
     marketdata_sources: Vec<Arc<dyn MarketDataSource>>,
     bar_sources: Vec<Arc<dyn BarSource>>,
+    book_sources: Vec<Arc<dyn BookSource>>,
+    feed_sources: Vec<Arc<dyn FeedSource>>,
     #[cfg(feature = "http")]
     http_client: Option<reqwest::Client>,
     /// Groups already handed out this context's lifetime, keyed by the name
@@ -180,6 +192,30 @@ impl fmt::Debug for HttpActivationContext<'_> {
     }
 }
 
+/// The proactive budget every venue group starts with, and the window it
+/// is measured over.
+///
+/// **Not a venue-documented rate limit** — no venue this build talks to
+/// returns a rate-limit weight in a response header for the endpoints it
+/// uses. This is a conservative ceiling this project imposes on itself,
+/// deliberately well under anything a public market endpoint is likely to
+/// allow. Against the per-call costs the venue adapters charge, it admits
+/// roughly ten requests a second per venue.
+///
+/// A *default*, and that is the point. A group used only for one-shot
+/// fetches barely notices it, but order-book depth is now **polled** —
+/// once a second per watched instrument — and a plugin author cannot be
+/// expected to remember that when they write a book source. Leaving the
+/// ceiling to be set per plugin is a convention, and a convention is what
+/// gets forgotten: this project has already had one venue ban an IP.
+/// A plugin that knows better can still widen or narrow it with
+/// [`LimitGroup::per_window`], which composes rather than replaces.
+#[cfg(feature = "http")]
+const DEFAULT_LIMIT_WINDOW: Duration = Duration::from_secs(1);
+/// See [`DEFAULT_LIMIT_WINDOW`].
+#[cfg(feature = "http")]
+const DEFAULT_LIMIT_BUDGET: u32 = 50;
+
 impl HttpActivationContext<'_> {
     /// Contributes a market data source.
     pub fn register_marketdata_source(&mut self, source: Arc<dyn MarketDataSource>) {
@@ -189,6 +225,16 @@ impl HttpActivationContext<'_> {
     /// Contributes a bar source.
     pub fn register_bar_source(&mut self, source: Arc<dyn BarSource>) {
         self.inner.register_bar_source(source);
+    }
+
+    /// Contributes an order-book depth source.
+    pub fn register_book_source(&mut self, source: Arc<dyn BookSource>) {
+        self.inner.register_book_source(source);
+    }
+
+    /// Contributes a live-feed source.
+    pub fn register_feed_source(&mut self, source: Arc<dyn FeedSource>) {
+        self.inner.register_feed_source(source);
     }
 
     /// Registers a permission in the namespace bound by the runtime.
@@ -234,6 +280,49 @@ impl ActivationContext {
     #[must_use]
     pub fn take_bar_sources(&mut self) -> Vec<Arc<dyn BarSource>> {
         std::mem::take(&mut self.bar_sources)
+    }
+
+    /// Contributes an order-book depth source, mirroring
+    /// [`register_bar_source`](Self::register_bar_source) exactly.
+    ///
+    /// Registration *is* the capability declaration, the same way it is for
+    /// instruments and bars: a venue that serves no depth registers nothing
+    /// here, and whatever reports capabilities to a client reads that
+    /// absence rather than guessing (see
+    /// [`BookSource`]'s own docs on why
+    /// there is deliberately no default returning an empty book).
+    ///
+    /// Depth is stateless to fetch — a client and a URL — so a plugin can
+    /// build one during activation, unlike a live feed, which cannot exist
+    /// until the instrument catalog every plugin is still registering into
+    /// has been assembled.
+    pub fn register_book_source(&mut self, source: Arc<dyn BookSource>) {
+        self.book_sources.push(source);
+    }
+
+    /// Takes the book sources registered since the last call, leaving the
+    /// context ready for the next plugin.
+    #[must_use]
+    pub fn take_book_sources(&mut self) -> Vec<Arc<dyn BookSource>> {
+        std::mem::take(&mut self.book_sources)
+    }
+
+    /// Contributes a live-feed source.
+    ///
+    /// A [`FeedSource`] rather than a finished protocol, and that
+    /// difference is the whole reason this method looks unlike its three
+    /// siblings: a live protocol cannot exist during activation, because it
+    /// needs an instrument catalog that activation is still assembling. See
+    /// [`FeedSource`]'s own docs.
+    pub fn register_feed_source(&mut self, source: Arc<dyn FeedSource>) {
+        self.feed_sources.push(source);
+    }
+
+    /// Takes the feed sources registered since the last call, leaving the
+    /// context ready for the next plugin.
+    #[must_use]
+    pub fn take_feed_sources(&mut self) -> Vec<Arc<dyn FeedSource>> {
+        std::mem::take(&mut self.feed_sources)
     }
 
     /// Binds `namespace` as the only namespace
@@ -336,7 +425,9 @@ impl HttpActivationContext<'_> {
         self.inner
             .limit_groups
             .entry(name.to_owned())
-            .or_insert_with(|| LimitGroup::new(name))
+            .or_insert_with(|| {
+                LimitGroup::new(name).per_window(DEFAULT_LIMIT_WINDOW, DEFAULT_LIMIT_BUDGET)
+            })
             .clone()
     }
 
@@ -443,7 +534,9 @@ impl fmt::Debug for dyn Plugin {
 mod tests {
     #[cfg(feature = "http")]
     use super::HttpActivationContext;
-    use super::{ActivationContext, Arc, BarSource, MarketDataSource, PluginManifest};
+    use super::{
+        ActivationContext, Arc, BarSource, BookSource, FeedSource, MarketDataSource, PluginManifest,
+    };
     use crate::error::PluginPermissionRegistrationError;
     use senken_acl::{PluginNamespace, PluginPermissionName};
     use senken_core::TimeRange;
@@ -497,6 +590,130 @@ mod tests {
         ) -> Result<Vec<Bar>, SourceError> {
             Ok(Vec::new())
         }
+    }
+
+    struct StubBook;
+
+    #[async_trait::async_trait]
+    impl BookSource for StubBook {
+        fn source_id(&self) -> &'static str {
+            "stub"
+        }
+
+        async fn book_snapshot(
+            &self,
+            _symbol: &SourceSymbol,
+            _depth: usize,
+        ) -> Result<senken_marketdata::book::BookSnapshot, SourceError> {
+            Err(SourceError::rejected("stub"))
+        }
+    }
+
+    struct StubFeed {
+        source_ids: Vec<String>,
+    }
+
+    impl FeedSource for StubFeed {
+        fn source_ids(&self) -> &[String] {
+            &self.source_ids
+        }
+
+        fn serves_quotes(&self) -> bool {
+            false
+        }
+
+        fn protocol(
+            &self,
+            _symbols: Arc<dyn senken_subscription::SymbolMap>,
+        ) -> Arc<dyn senken_subscription::VenueProtocol> {
+            unreachable!("no test here builds a live protocol")
+        }
+    }
+
+    fn stub_feed() -> Arc<StubFeed> {
+        Arc::new(StubFeed {
+            source_ids: vec!["stub-spot".to_owned(), "stub-perp".to_owned()],
+        })
+    }
+
+    #[test]
+    fn taking_feed_sources_drains_the_context() {
+        let mut context = ActivationContext::new();
+        context.register_feed_source(stub_feed());
+
+        assert_eq!(context.take_feed_sources().len(), 1);
+        assert!(
+            context.take_feed_sources().is_empty(),
+            "a drained context must not hand the same source to the next plugin"
+        );
+    }
+
+    #[test]
+    fn one_feed_can_serve_several_of_a_venues_markets() {
+        // A venue's physical stream is rarely split the way its markets
+        // are: one socket carries spot, swap and futures. Registering one
+        // feed per market would open a connection each, for the same wire.
+        let feed = stub_feed();
+        assert_eq!(feed.source_ids(), ["stub-spot", "stub-perp"]);
+    }
+
+    #[test]
+    fn a_plugin_registering_no_feed_declares_no_live_stream() {
+        let mut context = ActivationContext::new();
+        context.register_marketdata_source(Arc::new(Stub));
+        context.register_bar_source(Arc::new(StubBars));
+
+        assert!(context.take_feed_sources().is_empty());
+    }
+
+    #[test]
+    fn taking_book_sources_drains_the_context() {
+        let mut context = ActivationContext::new();
+        context.register_book_source(Arc::new(StubBook));
+
+        assert_eq!(context.take_book_sources().len(), 1);
+        assert!(
+            context.take_book_sources().is_empty(),
+            "a drained context must not hand the same source to the next plugin"
+        );
+    }
+
+    #[test]
+    fn a_book_source_states_which_source_it_serves() {
+        // The runtime keys registrations by this, so a plugin that returned
+        // something other than one of its own source ids would have its
+        // depth filed under a venue it does not serve — or under nothing.
+        let source = StubBook;
+        assert_eq!(BookSource::source_id(&source), "stub");
+    }
+
+    #[test]
+    fn a_plugin_registering_no_book_source_declares_no_depth() {
+        // Registration *is* the capability declaration. A venue with no
+        // depth must produce an empty list, never an entry serving empty
+        // books — whatever reports capabilities reads this absence.
+        let mut context = ActivationContext::new();
+        context.register_marketdata_source(Arc::new(Stub));
+        context.register_bar_source(Arc::new(StubBars));
+
+        assert!(context.take_book_sources().is_empty());
+    }
+
+    #[test]
+    fn the_four_capabilities_drain_independently() {
+        // One plugin registering several must not have taking one of them
+        // disturb the others — the runtime drains them separately, per
+        // plugin, and a shared buffer would leak a venue's source into the
+        // next plugin's registrations.
+        let mut context = ActivationContext::new();
+        context.register_marketdata_source(Arc::new(Stub));
+        context.register_bar_source(Arc::new(StubBars));
+        context.register_book_source(Arc::new(StubBook));
+
+        assert_eq!(context.take_book_sources().len(), 1);
+        assert_eq!(context.take_bar_sources().len(), 1);
+        assert_eq!(context.take_marketdata_sources().len(), 1);
+        assert!(context.take_feed_sources().is_empty());
     }
 
     #[test]
@@ -554,6 +771,50 @@ mod tests {
             .per_window(std::time::Duration::from_secs(1), 10)
             .max_concurrent(2);
         assert_eq!(group.name(), "test-venue");
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_group_a_plugin_never_configures_still_has_a_ceiling() {
+        // The regression this catches, which already happened once: a
+        // proactive budget lived at one call site, that call site was
+        // deleted in a refactor, and every venue's traffic — including
+        // order-book depth, which *polls* — was left with no ceiling at
+        // all. Nothing failed, nothing warned; it would have surfaced as a
+        // ban.
+        let mut context = ActivationContext::new();
+        let mut http = HttpActivationContext {
+            inner: &mut context,
+        };
+        let group = http.limit_group("silent-venue");
+
+        let windows = group.windows();
+        assert!(
+            !windows.is_empty(),
+            "a plugin that configures nothing must still be bounded"
+        );
+        assert!(
+            windows
+                .iter()
+                .all(|&(window, budget)| { window > Duration::ZERO && budget > 0 })
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_plugins_own_window_composes_with_the_default_rather_than_replacing_it() {
+        // `per_window` adds; a request must fit inside *every* window. A
+        // plugin narrowing its own budget must not accidentally widen the
+        // one it was given.
+        let mut context = ActivationContext::new();
+        let mut http = HttpActivationContext {
+            inner: &mut context,
+        };
+        let group = http
+            .limit_group("careful-venue")
+            .per_window(Duration::from_mins(1), 5);
+
+        assert_eq!(group.windows().len(), 2);
     }
 
     #[cfg(feature = "http")]

@@ -9,7 +9,7 @@ use senken_subscription::{ConnectionError, SubscriptionPool, VenueConnection, Ve
 use senken_venue::LimitGroup;
 
 use crate::connection::WsVenueConnection;
-use crate::protocol::VenueProtocol;
+use senken_subscription::VenueProtocol;
 
 /// Opens [`WsVenueConnection`]s for one venue's protocol `P`, sharing one
 /// [`LimitGroup`] budget and publishing every decoded price into one
@@ -40,7 +40,7 @@ use crate::protocol::VenueProtocol;
 /// (`LimitGroup`, `SubscriptionPool`): every clone opens connections under
 /// the same budget, publishes into the same pool once bound, and shares the
 /// same not-yet-bound state until then.
-pub struct WsVenueConnector<P: VenueProtocol> {
+pub struct WsVenueConnector<P: VenueProtocol + ?Sized> {
     protocol: Arc<P>,
     group: LimitGroup,
     pool: Arc<OnceLock<SubscriptionPool>>,
@@ -50,7 +50,7 @@ pub struct WsVenueConnector<P: VenueProtocol> {
 // `P: Clone` bound even though only `Arc<P>` is ever stored, which would
 // force every `VenueProtocol` implementation to also implement `Clone` for
 // no reason this type actually needs.
-impl<P: VenueProtocol> Clone for WsVenueConnector<P> {
+impl<P: VenueProtocol + ?Sized> Clone for WsVenueConnector<P> {
     fn clone(&self) -> Self {
         Self {
             protocol: Arc::clone(&self.protocol),
@@ -60,15 +60,29 @@ impl<P: VenueProtocol> Clone for WsVenueConnector<P> {
     }
 }
 
-impl<P: VenueProtocol> WsVenueConnector<P> {
+impl<P: VenueProtocol + ?Sized> WsVenueConnector<P> {
     /// A connector for `protocol`, dialling through `group`'s shared
     /// budget. Not yet usable to open a connection — call
     /// [`bind_pool`](Self::bind_pool) with the pool this connector is being
     /// built for before that pool's first [`SubscriptionPool::lease`] call.
     #[must_use]
-    pub fn new(protocol: P, group: LimitGroup) -> Self {
+    pub fn new(protocol: P, group: LimitGroup) -> Self
+    where
+        P: Sized,
+    {
+        Self::from_arc(Arc::new(protocol), group)
+    }
+
+    /// As [`new`](Self::new), but over a protocol the caller already holds
+    /// behind an [`Arc`] — including an `Arc<dyn VenueProtocol>`, which is
+    /// what a plugin's `FeedSource` hands the runtime. Without this,
+    /// `WsVenueConnector` could only ever be built over a statically known
+    /// protocol type, which is exactly what a registry of plugins cannot
+    /// provide.
+    #[must_use]
+    pub fn from_arc(protocol: Arc<P>, group: LimitGroup) -> Self {
         Self {
-            protocol: Arc::new(protocol),
+            protocol,
             group,
             pool: Arc::new(OnceLock::new()),
         }
@@ -106,7 +120,7 @@ impl<P: VenueProtocol> WsVenueConnector<P> {
 }
 
 #[async_trait]
-impl<P: VenueProtocol> VenueConnector for WsVenueConnector<P> {
+impl<P: VenueProtocol + ?Sized> VenueConnector for WsVenueConnector<P> {
     async fn connect(&self, venue: &str) -> Result<Arc<dyn VenueConnection>, ConnectionError> {
         if venue != self.protocol.venue() {
             // A caller bug, not a venue failure: this connector was built
