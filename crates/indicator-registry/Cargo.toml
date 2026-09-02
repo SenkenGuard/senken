@@ -1,0 +1,33 @@
+[package]
+name = "senken-indicator-registry"
+description = "Registry for the indicator language: publishes source (never a binary), namespaced by author account, and compiles fresh on every install"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+senken-acl = { workspace = true }
+senken-identity = { workspace = true }
+# The only thing this crate ever trusts to say whether source compiles: it
+# is called at publish time (to reject junk before it is stored) and again
+# at install time (the actual "compiled on the installing machine" step —
+# see this crate's README for why a build farm and a signed-binary format
+# are both unnecessary here).
+senken-indicator-lang = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
