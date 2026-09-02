@@ -981,6 +981,270 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trade/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/trade/accounts`. Scoped by the store itself, `total` included. */
+        get: operations["list_accounts"];
+        put?: never;
+        /**
+         * `POST /api/trade/accounts`: attaches an account and asks its adapter to
+         *     prepare it.
+         * @description The adapter's `open_account` runs after the row is written, so a
+         *     credential the venue rejects is reported with the account already
+         *     saved — the alternative is a user re-typing every other field because
+         *     one key had a typo.
+         */
+        post: operations["create_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/trade/accounts/{account_id}`: the account, its resolved access
+         *     and its health, in one round trip — what an account screen needs on
+         *     open, where three separate requests answered the same question before.
+         */
+        get: operations["account_state"];
+        put?: never;
+        post?: never;
+        /**
+         * `DELETE /api/trade/accounts/{account_id}`.
+         * @description The adapter is told first, but a refusal does not block the deletion: a
+         *     user removing an account must not be held hostage by a venue that is
+         *     down.
+         */
+        delete: operations["delete_account"];
+        options?: never;
+        head?: never;
+        /** `PATCH /api/trade/accounts/{account_id}`: rename, or enable/disable. */
+        patch: operations["update_account"];
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/actions/{action_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/trade/accounts/{account_id}/actions/{action_id}`: runs one of
+         *     the adapter's own operations.
+         * @description The parameters are validated against the action's declared form here,
+         *     server-side, whatever the client already checked. Owner-only: an
+         *     adapter's actions can move money (the simulator's own deposit does).
+         */
+        post: operations["run_action"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/balances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/trade/accounts/{account_id}/balances`. */
+        get: operations["account_balances"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/trade/accounts/{account_id}/close`: closes an open position
+         *     by sending an opposite market order for exactly the size the adapter
+         *     reports right now.
+         * @description Owner-only, through `account_for_trading`, exactly like `place_order` —
+         *     this is itself an order, and moves money the same way.
+         */
+        post: operations["close_position"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/fills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/trade/accounts/{account_id}/fills`. */
+        get: operations["account_fills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/trade/accounts/{account_id}/health`. */
+        get: operations["account_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/trade/accounts/{account_id}/orders`. */
+        get: operations["account_orders"];
+        put?: never;
+        /**
+         * `POST /api/trade/accounts/{account_id}/orders`: places an order.
+         * @description Owner-only, through `account_for_trading` — an operator holding
+         *     `Account`/`All` can see this account exists and still cannot spend from
+         *     it.
+         */
+        post: operations["place_order"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/orders/{order_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * `DELETE /api/trade/accounts/{account_id}/orders/{order_id}`: cancels a
+         *     resting order.
+         */
+        delete: operations["cancel_order"];
+        options?: never;
+        head?: never;
+        /**
+         * `PATCH /api/trade/accounts/{account_id}/orders/{order_id}`: amends a
+         *     resting order's size, limit price or trigger price in place.
+         */
+        patch: operations["amend_order"];
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/positions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/trade/accounts/{account_id}/positions`. */
+        get: operations["account_positions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/accounts/{account_id}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/trade/accounts/{account_id}/settings`: the stored settings,
+         *     **credentials redacted to `null`**, for the account's own owner.
+         */
+        get: operations["get_settings"];
+        /**
+         * `PUT /api/trade/accounts/{account_id}/settings`.
+         * @description A secret left absent or blank keeps whatever is stored — the store
+         *     applies that before validating, so a required credential already on file
+         *     does not have to be re-typed to save an unrelated change.
+         */
+        put: operations["replace_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trade/adapters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/trade/adapters`: every registered adapter, with its settings
+         *     schema, actions and capabilities.
+         * @description Needs a session but no grant: this is the catalogue of what *could* be
+         *     attached, carries no account data at all, and a client has to render the
+         *     "attach an account" screen before it can know whether the user may use
+         *     one.
+         */
+        get: operations["list_adapters"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users": {
         parameters: {
             query?: never;
@@ -1506,6 +1770,63 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description One account's resolved access — `senken_trade::AccountAccess` over the
+         *     wire, narrower than [`AdapterDto::capabilities`] when the venue
+         *     distinguishes a restricted login (MetaTrader 5's investor password, an
+         *     exchange key minted without trade scope).
+         */
+        AccountAccessDto: {
+            /** @description The adapter's capabilities, narrowed to this account. */
+            capabilities: Record<string, never>;
+            /** @description `trade` or `read_only`. */
+            level: string;
+            /**
+             * @description Product copy explaining a restriction, shown to the user. Absent
+             *     when the account is unrestricted.
+             */
+            note?: string | null;
+        };
+        /**
+         * @description `POST /api/trade/accounts/{account_id}/actions/{action_id}` response
+         *     body.
+         */
+        ActionOutcomeDto: {
+            /** @description One line of product copy describing what happened. */
+            message: string;
+        };
+        /**
+         * @description One registered adapter, with everything a client needs to render its
+         *     card, its settings form and its order ticket.
+         */
+        AdapterDto: {
+            /** @description The custom operations it offers per account. */
+            actions: Record<string, never>;
+            /** @description What it can do. */
+            capabilities: Record<string, never>;
+            /** @description Which instruments it trades. */
+            coverage: Record<string, never>;
+            /** @description One line for its card. */
+            description: string;
+            /** @description The adapter's id. */
+            id: string;
+            /** @description Simulation, broker or exchange. */
+            kind: string;
+            /** @description Its display name. */
+            name: string;
+            /** @description The form an account on it is configured through. */
+            settings_schema: Record<string, never>;
+            /**
+             * @description `false` only for the simulator: whether orders through it reach a
+             *     real venue. The one fact a client must not get wrong.
+             */
+            trades_real_money: boolean;
+        };
+        /** @description `GET /api/trade/adapters` response body. */
+        AdaptersResponse: {
+            /** @description Every registered adapter, in id order. */
+            adapters: components["schemas"]["AdapterDto"][];
+        };
         /** @description `POST /api/watchlists/{group_id}/members` request body. */
         AddWatchlistMemberRequest: {
             /** @description The instrument to add, `source:symbol`. */
@@ -1566,10 +1887,48 @@ export interface components {
              */
             total: number;
         };
+        /**
+         * @description `PATCH /api/trade/accounts/{account_id}/orders/{order_id}` request body.
+         *
+         *     Every field is optional; a field left absent leaves that part of the
+         *     order alone, exactly as [`senken_trade::OrderAmendment`] does — this is
+         *     that type's own shape over the wire, not a re-declaration of it.
+         */
+        AmendOrderRequest: {
+            limit_price?: null | components["schemas"]["ScaledDto"];
+            quantity?: null | components["schemas"]["ScaledDto"];
+            trigger_price?: null | components["schemas"]["ScaledDto"];
+        };
+        /** @description One asset's balance. */
+        AssetBalanceDto: {
+            /** @description The asset's ticker. */
+            asset: string;
+            /** @description The part that can be spent. */
+            available: components["schemas"]["ScaledDto"];
+            /** @description The part held against orders and margin. */
+            reserved: components["schemas"]["ScaledDto"];
+            /** @description Everything held. */
+            total: components["schemas"]["ScaledDto"];
+        };
         /** @description `POST /api/users/{user_id}/roles` request body. */
         AssignRoleRequest: {
             /** @description The role to assign, as its id's `Display` form. */
             role_id: string;
+        };
+        /** @description `GET /api/trade/accounts/{account_id}/balances` response body. */
+        BalancesDto: {
+            /** @description Per-asset rows, for venues that have them. */
+            assets: components["schemas"]["AssetBalanceDto"][];
+            /** @description Cash, excluding unrealised profit. */
+            balance: components["schemas"]["ScaledDto"];
+            /** @description The currency the figures below are in. */
+            currency: string;
+            /** @description Cash plus unrealised profit. */
+            equity: components["schemas"]["ScaledDto"];
+            margin_available?: null | components["schemas"]["ScaledDto"];
+            margin_used?: null | components["schemas"]["ScaledDto"];
+            /** @description Unrealised profit across every open position. */
+            unrealized_pnl: components["schemas"]["ScaledDto"];
         };
         /**
          * @description One OHLCV bar, on the wire: plain scaled integers, exactly
@@ -1758,6 +2117,18 @@ export interface components {
             supported: boolean;
         };
         /**
+         * @description `POST /api/trade/accounts/{account_id}/close` request body.
+         *
+         *     The instrument travels in the body rather than the path: an
+         *     [`senken_marketdata::InstrumentId`] contains a colon, and path-encoding
+         *     it invites exactly the double-decoding mistakes that make one endpoint
+         *     disagree with another about the same instrument.
+         */
+        CloseRequest: {
+            /** @description The instrument to close, as `source:symbol`. */
+            instrument: string;
+        };
+        /**
          * @description `POST /api/indicators/compile`'s error body for a mistake in the
          *     trader's own source (a `senken_indicator_lang::CompileError::Syntax` or
          *     `::Type`) — line and column and message exactly as the compiler reports
@@ -1884,6 +2255,18 @@ export interface components {
             grants?: components["schemas"]["GrantDto"][];
             /** @description The role's name. */
             name: string;
+        };
+        /** @description `POST /api/trade/accounts` request body. */
+        CreateTradeAccountRequest: {
+            /** @description Which adapter to attach to. */
+            adapter_id: string;
+            /** @description What to call it. */
+            label: string;
+            /**
+             * @description The settings form's values, validated server-side against the
+             *     adapter's own schema.
+             */
+            settings?: Record<string, never>;
         };
         /** @description `POST /api/users` request body. */
         CreateUserRequest: {
@@ -2382,6 +2765,34 @@ export interface components {
              */
             error: string;
         };
+        /** @description One execution. */
+        FillDto: {
+            /** @description The account. */
+            account_id: string;
+            /**
+             * Format: int64
+             * @description When it executed, as Unix nanoseconds.
+             */
+            executed_at: number;
+            /** @description The fee charged. */
+            fee: components["schemas"]["ScaledDto"];
+            /** @description The asset the fee was charged in. */
+            fee_currency: string;
+            /** @description The execution's own id. */
+            id: string;
+            /** @description The instrument, as `source:symbol`. */
+            instrument: string;
+            /** @description `maker` or `taker`. */
+            liquidity: string;
+            /** @description The order it filled. */
+            order_id: string;
+            /** @description At what price. */
+            price: components["schemas"]["ScaledDto"];
+            /** @description How much traded. */
+            quantity: components["schemas"]["ScaledDto"];
+            /** @description `buy` or `sell`. */
+            side: string;
+        };
         /**
          * @description A `senken_acl::Grant` as this crate serialises it: three fields, each
          *     carrying its `senken_acl` enum value directly (already `Serialize`,
@@ -2439,6 +2850,14 @@ export interface components {
             needs_setup: boolean;
             status: string;
             version: string;
+        };
+        /** @description `GET /api/trade/accounts/{account_id}/health` response body. */
+        HealthDto: {
+            /**
+             * @description `connected`, `degraded` or `disconnected`, with a reason for the
+             *     latter two.
+             */
+            health: Record<string, never>;
         };
         /** @description A response body carrying only a freshly created row's id (`POST /api/users`, `POST /api/roles`). */
         IdResponse: {
@@ -3104,6 +3523,46 @@ export interface components {
              */
             total: number;
         };
+        /** @description One order. */
+        OrderDto: {
+            /** @description The account. */
+            account_id: string;
+            average_price?: null | components["schemas"]["ScaledDto"];
+            /** @description The idempotency key it was sent with. */
+            client_order_id?: string | null;
+            /** @description How much has filled. */
+            filled_quantity: components["schemas"]["ScaledDto"];
+            /** @description The venue's own id. */
+            id: string;
+            /** @description The instrument, as `source:symbol`. */
+            instrument: string;
+            /** @description `market`, `limit`, `stop` or `stop_limit`. */
+            kind: string;
+            limit_price?: null | components["schemas"]["ScaledDto"];
+            /** @description The size asked for. */
+            quantity: components["schemas"]["ScaledDto"];
+            /** @description Whether it may only shrink a position. */
+            reduce_only: boolean;
+            /** @description Why it was rejected, when it was. */
+            reject_reason?: string | null;
+            /** @description `buy` or `sell`. */
+            side: string;
+            /** @description Where it has got to. */
+            status: string;
+            /**
+             * Format: int64
+             * @description When it was submitted, as Unix nanoseconds.
+             */
+            submitted_at: number;
+            /** @description How long it lives. */
+            time_in_force: string;
+            trigger_price?: null | components["schemas"]["ScaledDto"];
+            /**
+             * Format: int64
+             * @description When it last changed, as Unix nanoseconds.
+             */
+            updated_at: number;
+        };
         /** @description One pane, as read back from a layout. */
         PaneDto: {
             /** @description This pane's drawings, in stacking order. */
@@ -3150,6 +3609,27 @@ export interface components {
             settings?: string;
             /** @description The main instrument's bar timeframe, e.g. `"1h"`. */
             timeframe: string;
+        };
+        /** @description `POST /api/trade/accounts/{account_id}/orders` request body. */
+        PlaceOrderRequest: {
+            /** @description A caller-chosen idempotency key. */
+            client_order_id?: string | null;
+            /** @description The instrument to trade, as `source:symbol`. */
+            instrument: string;
+            /** @description `market`, `limit`, `stop` or `stop_limit`. */
+            kind: string;
+            limit_price?: null | components["schemas"]["ScaledDto"];
+            /** @description Refuse the order rather than let it take liquidity. */
+            post_only?: boolean;
+            /** @description How much, in the adapter's own quantity unit. */
+            quantity: components["schemas"]["ScaledDto"];
+            /** @description Only allowed to shrink an existing position. */
+            reduce_only?: boolean;
+            /** @description `buy` or `sell`. */
+            side: string;
+            /** @description How long the order lives. */
+            time_in_force?: string;
+            trigger_price?: null | components["schemas"]["ScaledDto"];
         };
         /**
          * @description A circuit breaker's current state, on the wire — mirrors
@@ -3222,6 +3702,30 @@ export interface components {
          * @enum {string}
          */
         PluginLogSeverityDto: "info" | "warn";
+        /** @description One open position. */
+        PositionDto: {
+            /** @description The account holding it. */
+            account_id: string;
+            /** @description Volume-weighted entry. */
+            average_entry: components["schemas"]["ScaledDto"];
+            /** @description The instrument, as `source:symbol`. */
+            instrument: string;
+            leverage?: null | components["schemas"]["ScaledDto"];
+            margin?: null | components["schemas"]["ScaledDto"];
+            mark_price?: null | components["schemas"]["ScaledDto"];
+            /**
+             * Format: int64
+             * @description When it was opened, as Unix nanoseconds.
+             */
+            opened_at: number;
+            /** @description Size held. */
+            quantity: components["schemas"]["ScaledDto"];
+            /** @description Profit already banked on this instrument. */
+            realized_pnl: components["schemas"]["ScaledDto"];
+            /** @description `long` or `short`. */
+            side: string;
+            unrealized_pnl?: null | components["schemas"]["ScaledDto"];
+        };
         /**
          * @description The forming bar a client is drawing, as scaled integers at the
          *     instrument's own price scale — the same wire form [`super::BarDto`] uses.
@@ -3354,6 +3858,14 @@ export interface components {
              */
             preset: string;
         };
+        /** @description `PUT /api/trade/accounts/{account_id}/settings` request body. */
+        ReplaceSettingsRequest: {
+            /**
+             * @description The form's values. A secret left absent or blank keeps whatever is
+             *     stored.
+             */
+            settings?: Record<string, never>;
+        };
         /**
          * @description A role row as the user/role management endpoints report it, including the grants it carries so the client can render the grant
          *     matrix `access-section.svelte` already built, disabled, against this
@@ -3383,6 +3895,24 @@ export interface components {
              * @description How many rows exist in total, under the same scope as `rows`.
              */
             total: number;
+        };
+        /** @description `POST /api/trade/accounts/{account_id}/actions/{action_id}` request body. */
+        RunActionRequest: {
+            /**
+             * @description The action form's values, validated server-side against the action's
+             *     own form.
+             */
+            params?: Record<string, never>;
+        };
+        /** @description A fixed-point number: `value × 10^-scale`. */
+        ScaledDto: {
+            /**
+             * Format: int32
+             * @description How many of `value`'s digits are fractional.
+             */
+            scale: number;
+            /** @description The integer itself, as a decimal string — see [`WireInt`]. */
+            value: components["schemas"]["WireInt"];
         };
         /** @description `PUT /api/registry/handle` request body. */
         SetHandleRequest: {
@@ -3593,6 +4123,80 @@ export interface components {
             to: number;
         };
         /**
+         * @description One attached account.
+         *
+         *     **Carries no settings.** A listing that included them would put every
+         *     user's API keys in a response an operator can request; reading settings
+         *     is its own endpoint, for the account's own owner.
+         */
+        TradeAccountDto: {
+            /** @description The adapter it trades through. */
+            adapter_id: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp of attachment.
+             */
+            created_at: number;
+            /** @description Whether it may be used. */
+            enabled: boolean;
+            /** @description The account's id. */
+            id: string;
+            /** @description The label its owner gave it. */
+            label: string;
+            /**
+             * @description `true` when this is the caller's own account — the only ones whose
+             *     settings they can read or trade with.
+             */
+            owned: boolean;
+            /** @description Who attached it. */
+            owner_id: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp of the last change.
+             */
+            updated_at: number;
+        };
+        /**
+         * @description `GET`/`PUT /api/trade/accounts/{account_id}/settings` response body.
+         *
+         *     Secret fields come back as `null` — that is
+         *     [`senken_trade::SecretString`]'s own serialisation and not something
+         *     this layer strips — with [`secrets_set`](Self::secrets_set) saying which
+         *     of them actually hold a credential, so a form can show "configured"
+         *     rather than an empty box that looks like the key was lost.
+         */
+        TradeAccountSettingsDto: {
+            /** @description The account. */
+            account: components["schemas"]["TradeAccountDto"];
+            /** @description Which secret fields hold a credential. */
+            secrets_set: Record<string, never>;
+            /** @description The stored values, credentials redacted to `null`. */
+            settings: Record<string, never>;
+        };
+        /**
+         * @description `GET /api/trade/accounts/{account_id}` response body: the account, its
+         *     resolved access and its health, in the one round trip a screen needs —
+         *     replacing three a client previously had to make.
+         */
+        TradeAccountStateDto: {
+            /** @description What this account may do right now. */
+            access: components["schemas"]["AccountAccessDto"];
+            /** @description The account. */
+            account: components["schemas"]["TradeAccountDto"];
+            /** @description Whether the account can be reached right now. */
+            health: Record<string, never>;
+        };
+        /** @description `GET /api/trade/accounts` response body. */
+        TradeAccountsPage: {
+            /** @description The rows for this page. */
+            rows: components["schemas"]["TradeAccountDto"][];
+            /**
+             * Format: int64
+             * @description How many rows exist in total, under the same scope as `rows`.
+             */
+            total: number;
+        };
+        /**
          * @description `PUT /api/notes/{note_id}` request body: replaces both fields, the same
          *     "full replace" shape `ReplaceLayoutRequest` uses.
          */
@@ -3601,6 +4205,16 @@ export interface components {
             body: string;
             /** @description The note's new title. */
             title: string;
+        };
+        /**
+         * @description `PATCH /api/trade/accounts/{account_id}` request body: whichever fields
+         *     are present are changed, the rest are left alone.
+         */
+        UpdateTradeAccountRequest: {
+            /** @description Whether the account may be used. */
+            enabled?: boolean | null;
+            /** @description A new label. */
+            label?: string | null;
         };
         /**
          * @description `PATCH /api/workspaces/{id}/settings` request body. `settings` is opaque
@@ -3859,6 +4473,16 @@ export interface components {
             /** @enum {string} */
             state: "failed";
         };
+        /**
+         * @description An `i64` that crosses the wire as a decimal string.
+         *
+         *     A JSON number would go through a double in the browser, and a quantity
+         *     at scale 8 can exceed what a double holds exactly. A size that changes
+         *     in its last digit on the way to a venue is the class of bug the whole
+         *     scaled-integer contract exists to prevent, so the digits travel as text.
+         * @example 150
+         */
+        WireInt: string;
         /** @description A workspace row (list/create/rename/delete). */
         WorkspaceDto: {
             /**
@@ -6176,6 +6800,829 @@ export interface operations {
                 };
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_accounts: {
+        parameters: {
+            query?: {
+                /** @description page size, default 50, max 200 */
+                limit?: number;
+                /** @description rows to skip, default 0 */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradeAccountsPage"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTradeAccountRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    account_state: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradeAccountStateDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTradeAccountRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    run_action: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+                action_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunActionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionOutcomeDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    account_balances: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BalancesDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    close_position: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloseRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    account_fills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillDto"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    account_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    account_orders: {
+        parameters: {
+            query?: {
+                /** @description `open` (default) or `all` */
+                status?: string;
+            };
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDto"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    place_order: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaceOrderRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    cancel_order: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    amend_order: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendOrderRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    account_positions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PositionDto"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradeAccountSettingsDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    replace_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceSettingsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradeAccountSettingsDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_adapters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdaptersResponse"];
+                };
+            };
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

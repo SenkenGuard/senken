@@ -61,6 +61,11 @@ serde_json = { workspace = true }
 # so hashing the compiled bytes gives a stable id for free — the same crate
 # `senken-identity` already uses to hash session tokens before storing them.
 sha2 = { workspace = true }
+# The registry half: the runtime is where plugin-registered adapters are
+# assembled into one `TradeEngine`, so it asks for that feature. `accounts`
+# stays off — the attached-accounts database belongs to the HTTP layer that
+# already holds an `IdentityStore`, not here.
+senken-trade = { workspace = true, features = ["engine"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

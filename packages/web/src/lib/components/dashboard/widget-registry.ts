@@ -35,49 +35,54 @@ import PositionsPanel from '$lib/components/terminal/positions-panel.svelte';
 import RiskPanel from '$lib/components/terminal/risk-panel.svelte';
 import SignalFeed from '$lib/components/terminal/signal-feed.svelte';
 import WatchlistPanel from '$lib/components/terminal/watchlist-panel.svelte';
-import {
-	EQUITY,
-	FEED,
-	FLOW_BARS,
-	HEAT_CELLS,
-	POSITIONS,
-	RISK_BARS,
-	SIGNALS,
-	WATCHLIST
-} from '$lib/mock/dashboard';
+import { FEED, FLOW_BARS, HEAT_CELLS, SIGNALS, WATCHLIST } from '$lib/mock/dashboard';
+// Equity, positions and risk stopped being fixtures: they are derived from
+// the accounts and portfolios the trade engine actually holds, through the
+// same three functions the trade dashboard itself renders from. A widget
+// showing invented numbers beside one showing real ones is worse than no
+// widget at all.
+import { tradeStore } from '$lib/state/trade.svelte';
+import { dashboardEquity, dashboardPositions, dashboardRisk } from '$lib/trade/view';
 
 /** One registered widget type's render binding: the component that draws
- * it, and the (fixed, for now) props it is mounted with. A widget with
- * real per-instance config would read it from a placed widget's own
- * `config` field instead of a fixture import — none of today's built-ins
- * take any config yet, so every entry's props are the same fixture data
- * `routes/+page.svelte`'s own demo already uses. */
+ * it, and a function producing the props it is mounted with.
+ *
+ * A function rather than a fixed object, because three of these widgets now
+ * read live account and portfolio state: evaluating their props once, when
+ * this module is first imported, would freeze whatever the trade engine
+ * happened to hold at that moment and never update again. */
 export interface ClientWidgetRenderer {
 	// Each entry's component has its own distinct props type; the map
 	// itself is necessarily heterogeneous, the same way the server's own
 	// catalog is untyped past `widget_type_id`.
 	component: Component<any>;
-	props: Record<string, unknown>;
+	props: () => Record<string, unknown>;
 }
 
 /** The render binding for every built-in widget this build ships,
  * keyed by the exact `widget_type_id` `senken_dashboard::WidgetRegistry::builtin`
  * assigns each one (`<provider_id>/<widget>`, provider `"senken"`). */
 const BUILTIN_RENDERERS: Record<string, ClientWidgetRenderer> = {
-	'senken/equity': { component: EquityCard as Component<any>, props: { equity: EQUITY } },
+	'senken/equity': {
+		component: EquityCard as Component<any>,
+		props: () => ({ data: dashboardEquity(tradeStore.ownAccounts, tradeStore.portfolios) })
+	},
 	'senken/watchlist': {
 		component: WatchlistPanel as Component<any>,
-		props: { rows: WATCHLIST }
+		props: () => ({ rows: WATCHLIST })
 	},
 	'senken/positions': {
 		component: PositionsPanel as Component<any>,
-		props: { rows: POSITIONS }
+		props: () => ({ table: dashboardPositions(tradeStore.ownAccounts, tradeStore.portfolios) })
 	},
-	'senken/risk': { component: RiskPanel as Component<any>, props: { bars: RISK_BARS } },
-	'senken/heatmap': { component: HeatPanel as Component<any>, props: { cells: HEAT_CELLS } },
-	'senken/signals': { component: SignalFeed as Component<any>, props: { signals: SIGNALS } },
-	'senken/flow': { component: FlowPanel as Component<any>, props: { bars: FLOW_BARS } },
-	'senken/feed': { component: NewsFeed as Component<any>, props: { items: FEED } }
+	'senken/risk': {
+		component: RiskPanel as Component<any>,
+		props: () => ({ data: dashboardRisk(tradeStore.ownAccounts, tradeStore.portfolios) })
+	},
+	'senken/heatmap': { component: HeatPanel as Component<any>, props: () => ({ cells: HEAT_CELLS }) },
+	'senken/signals': { component: SignalFeed as Component<any>, props: () => ({ signals: SIGNALS }) },
+	'senken/flow': { component: FlowPanel as Component<any>, props: () => ({ bars: FLOW_BARS }) },
+	'senken/feed': { component: NewsFeed as Component<any>, props: () => ({ items: FEED }) }
 };
 
 /** Every widget a currently active widget plugin package contributes,
@@ -124,11 +129,11 @@ export function rendererFor(
 	if (!plugin) return undefined;
 	return {
 		component: PluginWidgetFrame as Component<any>,
-		props: {
+		props: () => ({
 			entryUrl: plugin.entry_url,
 			widgetTypeId: widget.widget_type_id,
 			config: widget.config,
 			onConfigChange
-		}
+		})
 	};
 }

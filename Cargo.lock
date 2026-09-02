@@ -4668,10 +4668,13 @@ dependencies = [
  "senken-notes",
  "senken-plugin",
  "senken-plugin-host",
+ "senken-plugin-simulator",
  "senken-runtime",
  "senken-series",
+ "senken-storage",
  "senken-store",
  "senken-subscription",
+ "senken-trade",
  "senken-venue",
  "senken-watchlist",
  "serde",
@@ -4754,10 +4757,12 @@ dependencies = [
  "senken-plugin-okx",
  "senken-plugin-phemex",
  "senken-plugin-poloniex",
+ "senken-plugin-simulator",
  "senken-plugin-upbit",
  "senken-plugin-whitebit",
  "senken-runtime",
  "senken-series",
+ "senken-storage",
 ]
 
 [[package]]
@@ -4921,6 +4926,7 @@ dependencies = [
  "senken-marketdata",
  "senken-series",
  "senken-storage",
+ "senken-trade",
  "senken-venue",
  "serde",
  "serde_json",
@@ -5251,6 +5257,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "senken-plugin-simulator"
+version = "0.0.5"
+dependencies = [
+ "async-trait",
+ "senken-core",
+ "senken-marketdata",
+ "senken-plugin",
+ "senken-storage",
+ "senken-trade",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "senken-plugin-upbit"
 version = "0.0.5"
 dependencies = [
@@ -5294,6 +5317,7 @@ dependencies = [
  "senken-series",
  "senken-storage",
  "senken-store",
+ "senken-trade",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
@@ -5349,6 +5373,25 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "senken-trade"
+version = "0.0.5"
+dependencies = [
+ "async-trait",
+ "rusqlite",
+ "senken-acl",
+ "senken-core",
+ "senken-identity",
+ "senken-marketdata",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

@@ -65,6 +65,15 @@ pub(crate) enum HandlerError {
     Conflict(String),
     /// `429 Too Many Requests`: the login rate limit.
     TooManyRequests,
+    /// `502 Bad Gateway`: an upstream this server depends on could not be
+    /// reached, so **the request's outcome is unknown**.
+    ///
+    /// Distinct from [`Internal`](Self::Internal), which says this server
+    /// failed and nothing happened. A trading request that timed out on its
+    /// way to a venue may still have been accepted there, and a client must
+    /// reconcile rather than retry — which it can only do if the two cases
+    /// are told apart.
+    BadGateway(String),
     /// `500 Internal Server Error`: a storage failure or similar, logged
     /// here (so the cause is not lost) and reported to the client with no
     /// detail beyond the status.
@@ -247,6 +256,91 @@ impl From<senken_watchlist::WatchlistError> for HandlerError {
     }
 }
 
+/// `trade_handlers`' translation from `senken_trade`'s error type.
+///
+/// Three of these arms are worth more than the status they map to.
+/// `UnknownAccount` is deliberately not a `403`: an account someone else
+/// owns must be indistinguishable from one that does not exist, which is
+/// why the store returns that variant rather than a forbidden in the first
+/// place. `Transport` gets its own status and its own wording because the
+/// request's fate is genuinely unknown — reporting it as an ordinary
+/// failure would tell a user nothing happened when an order may well have
+/// reached the venue. And `NoMarkPrice` names the fix, because loading
+/// history for the instrument is something the user can actually do.
+///
+/// A missing account or order is `BadRequest`, not a `404`, the same choice
+/// this crate already makes for every other store — see
+/// [`From<senken_watchlist::WatchlistError>`]'s own note on why.
+impl From<senken_trade::TradeError> for HandlerError {
+    fn from(error: senken_trade::TradeError) -> Self {
+        use senken_trade::TradeError;
+        match error {
+            TradeError::Identity(source) => source.into(),
+            TradeError::Settings(source) => Self::BadRequest(source.to_string()),
+            TradeError::UnknownAccount => Self::BadRequest("no such trading account".to_owned()),
+            TradeError::UnknownOrder => Self::BadRequest("no such order".to_owned()),
+            TradeError::UnknownPosition(instrument) => {
+                Self::BadRequest(format!("no open position for {instrument}"))
+            }
+            TradeError::UnknownAdapter(id) => {
+                Self::BadRequest(format!("no trade adapter `{id}` is registered"))
+            }
+            TradeError::DuplicateLabel => Self::Conflict(
+                "you already have an account with that name on this adapter".to_owned(),
+            ),
+            TradeError::AccountDisabled => {
+                Self::Forbidden("this account is switched off".to_owned())
+            }
+            TradeError::ReadOnly { note, .. } => {
+                Self::Forbidden(note.unwrap_or_else(|| "this account is read-only".to_owned()))
+            }
+            TradeError::OrderNotOpen => Self::Conflict("that order is no longer open".to_owned()),
+            TradeError::NoMarkPrice(instrument) => Self::BadRequest(format!(
+                "no price is available for {instrument} yet — load some history for it first"
+            )),
+            TradeError::UnknownInstrument(instrument) => {
+                Self::BadRequest(format!("no instrument `{instrument}` is catalogued"))
+            }
+            TradeError::InstrumentNotTradable {
+                adapter,
+                instrument,
+            } => Self::BadRequest(format!("`{adapter}` does not trade {instrument}")),
+            // Both are the caller's request being wrong in a way only the
+            // adapter could know, and both already carry wording written
+            // for the person reading it.
+            TradeError::InvalidRequest(reason) | TradeError::InsufficientBalance(reason) => {
+                Self::BadRequest(reason)
+            }
+            TradeError::Unsupported {
+                adapter,
+                capability,
+            } => Self::BadRequest(format!("`{adapter}` does not support {capability}")),
+            TradeError::Rejected(reason) => {
+                Self::BadRequest(format!("the venue refused this: {reason}"))
+            }
+            TradeError::Transport { source } => {
+                tracing::error!(%source, "trade adapter transport failure");
+                Self::BadGateway(
+                    "the venue could not be reached, so this request's outcome is unknown —                      check the account before retrying"
+                        .to_owned(),
+                )
+            }
+            TradeError::Database(source) => {
+                tracing::error!(%source, "trade account store: database error");
+                Self::Internal
+            }
+            TradeError::Adapter { source } => {
+                tracing::error!(%source, "trade adapter failure");
+                Self::Internal
+            }
+            other => {
+                tracing::error!(?other, "trade engine: unmapped error variant");
+                Self::Internal
+            }
+        }
+    }
+}
+
 /// `notes_handlers`' translation from `senken_notes::NoteStore`'s error
 /// type, mirroring [`From<senken_watchlist::WatchlistError>`] exactly.
 impl From<senken_notes::NoteError> for HandlerError {
@@ -418,6 +512,7 @@ impl axum::response::IntoResponse for HandlerError {
             ),
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, message),
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
+            Self::BadGateway(message) => (StatusCode::BAD_GATEWAY, message),
             Self::TooManyRequests => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many attempts, try again later".to_owned(),

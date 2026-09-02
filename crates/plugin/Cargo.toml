@@ -38,6 +38,11 @@ senken-acl = { workspace = true }
 senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
 senken-series = { workspace = true }
+# The `TradeAdapter` contract. Taken at its default (no features): this
+# crate registers adapters, it does not run an engine or open a database,
+# so neither `senken-trade`'s `engine` nor its `accounts` feature is asked
+# for here — the runtime that assembles them turns `engine` on for itself.
+senken-trade = { workspace = true }
 senken-venue = { workspace = true, optional = true }
 thiserror = { workspace = true }
 # The dynamic widget UI package contract (`widget_package` module): its

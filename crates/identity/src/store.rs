@@ -39,13 +39,14 @@ const ALL_ACTIONS: [Action; 5] = [
 
 /// Every `Resource` this crate knows about, for the same seeding purpose as
 /// [`ALL_ACTIONS`].
-const ALL_RESOURCES: [Resource; 15] = [
+const ALL_RESOURCES: [Resource; 16] = [
     Resource::ChartWorkspace,
     Resource::ChartLayout,
     Resource::DashboardWorkspace,
     Resource::Alert,
     Resource::Strategy,
     Resource::Account,
+    Resource::Order,
     Resource::Adapter,
     Resource::User,
     Resource::Role,

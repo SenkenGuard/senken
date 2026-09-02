@@ -303,7 +303,7 @@
 			>
 				{#if renderer}
 					{@const Renderer = renderer.component}
-					<Renderer {...renderer.props} />
+					<Renderer {...renderer.props()} />
 				{/if}
 			</WidgetFrame>
 		</div>

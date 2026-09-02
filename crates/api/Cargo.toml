@@ -20,6 +20,9 @@ default = []
 web = ["dep:rust-embed"]
 
 [dependencies]
+# `MarkPriceSource`/`InstrumentSource` — the trade engine's ports — are
+# `#[async_trait]`, and this crate implements both.
+async-trait = { workspace = true }
 axum = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 # The permission vocabulary: `EndpointPermission::Acl` names
@@ -81,6 +84,10 @@ senken-store = { workspace = true }
 # The lease pool itself: the WS endpoint takes a `Lease` per
 # subscribed topic, exactly the way a chart pane or an alert would.
 senken-subscription = { workspace = true }
+# Both halves: `engine` for the adapter registry the runtime hands over,
+# `accounts` for the attached-account store this crate builds on the
+# identity connection it already holds.
+senken-trade = { workspace = true, features = ["engine", "accounts"] }
 # `LimitGroup` for the OKX WS connection's own dial/reconnect budget
 # (see `feed.rs`'s doc on why this is a dedicated budget
 # rather than the OKX plugin's own REST one), and for `source_handlers`'s
@@ -138,11 +145,11 @@ uuid = { workspace = true }
 utoipa = { workspace = true }
 
 [dev-dependencies]
-# Test-only: implementing `senken_plugin::{MarketDataSource, BarSource}` for
-# the fake venue the bars/indicators integration tests register through a
-# `senken_runtime::Runtime`, instead of ever touching a real one (tests must
-# not hit the network).
-async-trait = { workspace = true }
+# Test-only: the built-in simulator, registered through a real
+# `senken_runtime::Runtime` so the trade tests exercise the plugin
+# activation path as well as the HTTP one.
+senken-plugin-simulator = { workspace = true }
+senken-storage = { workspace = true }
 reqwest = { workspace = true }
 # Test-only: building a widget plugin package archive in memory for
 # `widget_plugin_handlers`'s own tests, the same way

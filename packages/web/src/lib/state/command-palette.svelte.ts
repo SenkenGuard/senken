@@ -20,7 +20,7 @@
 // multi-tenant SSR server, so the usual reason to prefer context (isolating
 // state per request) does not apply here.
 import type { Component } from 'svelte';
-import type { Tone } from '$lib/mock/engine';
+import type { Tone } from '$lib/trade/view';
 
 export type CommandMode = 'symbol' | 'account' | 'adapter' | 'widget' | 'layer';
 

@@ -13,33 +13,38 @@
 use utoipa::OpenApi;
 
 use crate::dto::{
-    AddWatchlistMemberRequest, AlertDto, AlertsPage, AssignRoleRequest, BarDto, BarJobDto,
-    BarRangeResponse, BarsRequirementDto, BookCapabilityDto, CompileIndicatorErrorDto,
-    CompileIndicatorRequest, ComputeIndicatorRequest, ComputeIndicatorResponse, ConditionDto,
-    CreateAlertRequest, CreateDashboardWorkspaceRequest, CreateNoteRequest, CreateRoleRequest,
-    CreateUserRequest, CreateWatchlistGroupRequest, CreateWorkspaceRequest, DashboardDataSourceDto,
+    AccountAccessDto, ActionOutcomeDto, AdapterDto, AdaptersResponse, AddWatchlistMemberRequest,
+    AlertDto, AlertsPage, AmendOrderRequest, AssetBalanceDto, AssignRoleRequest, BalancesDto,
+    BarDto, BarJobDto, BarRangeResponse, BarsRequirementDto, BookCapabilityDto, CloseRequest,
+    CompileIndicatorErrorDto, CompileIndicatorRequest, ComputeIndicatorRequest,
+    ComputeIndicatorResponse, ConditionDto, CreateAlertRequest, CreateDashboardWorkspaceRequest,
+    CreateNoteRequest, CreateRoleRequest, CreateTradeAccountRequest, CreateUserRequest,
+    CreateWatchlistGroupRequest, CreateWorkspaceRequest, DashboardDataSourceDto,
     DashboardGridSizeDto, DashboardLayoutDto, DashboardWidgetCatalogResponse,
     DashboardWidgetDefinitionDto, DashboardWidgetDto, DashboardWidgetPlacementRequest,
     DashboardWorkspaceDto, DashboardWorkspacesPage, DefaultDashboardWorkspaceResponse,
     DefaultWorkspaceResponse, DeleteStorageRequest, DeleteStorageResponse, DownloadM1Request,
     DrawingDto, DrawingInputDto, DrawingKindDto, DrawingLineStyleDto, DrawingPointDto,
-    EnsureBarsRequest, EnsureBarsResponse, ErrorBody, GrantDto, IdResponse, IndicatorCatalogEntry,
-    IndicatorDrawableDto, IndicatorDrawablePointDto, IndicatorExtendDto, IndicatorLabelAnchorDto,
-    IndicatorParamDefaultDto, IndicatorParamDto, IndicatorPlacementDto, IndicatorPlotDto,
-    IndicatorPluginDto, IndicatorPluginOriginDto, IndicatorPluginStateDto, IndicatorPointDto,
-    IndicatorPriceCoordDto, IndicatorScaleDto, IndicatorScaledPriceDto, IndicatorSpecDto,
-    InstrumentSummaryDto, InstrumentsPage, LayerDto, LayerInputDto, LayerKindDto, LayoutDetailDto,
-    LayoutSummaryDto, LoginRequest, LoginResponse, MarketDataUsageDto, MeResponse, NoteDto,
-    NoteSummaryDto, NotesPage, PaneDto, PaneInputDto, PluginCircuitStateDto, PluginGrantRequest,
-    PluginHealthDto, PluginLogLineDto, PluginLogSeverityDto, ProvisionalBarDto,
-    RenameDashboardWorkspaceRequest, RenameWatchlistGroupRequest, RenameWorkspaceRequest,
-    ReorderWatchlistGroupsRequest, ReorderWatchlistMembersRequest, ReplaceDashboardLayoutRequest,
-    ReplaceLayoutRequest, RoleSummaryDto, RolesPage, SetIndicatorPluginEnabledRequest,
-    SetPasswordRequest, SetZoneRequest, SourceCapabilityDto, SourcesResponse, StorageDatabaseDto,
-    StorageInstrumentDto, StorageReportDto, StorageSeriesDto, StorageSeriesKindDto,
-    StorageSourceDto, TimeRangeDto, UpdateNoteRequest, UpdateWorkspaceSettingsRequest,
-    UserSummaryDto, UserZoneResponse, UsersPage, WatchlistGroupDto, WatchlistGroupsPage,
-    WatchlistMemberDto, WorkspaceDto, WorkspacesPage, WsTicketResponse,
+    EnsureBarsRequest, EnsureBarsResponse, ErrorBody, FillDto, GrantDto, HealthDto, IdResponse,
+    IndicatorCatalogEntry, IndicatorDrawableDto, IndicatorDrawablePointDto, IndicatorExtendDto,
+    IndicatorLabelAnchorDto, IndicatorParamDefaultDto, IndicatorParamDto, IndicatorPlacementDto,
+    IndicatorPlotDto, IndicatorPluginDto, IndicatorPluginOriginDto, IndicatorPluginStateDto,
+    IndicatorPointDto, IndicatorPriceCoordDto, IndicatorScaleDto, IndicatorScaledPriceDto,
+    IndicatorSpecDto, InstrumentSummaryDto, InstrumentsPage, LayerDto, LayerInputDto, LayerKindDto,
+    LayoutDetailDto, LayoutSummaryDto, LoginRequest, LoginResponse, MarketDataUsageDto, MeResponse,
+    NoteDto, NoteSummaryDto, NotesPage, OrderDto, PaneDto, PaneInputDto, PlaceOrderRequest,
+    PluginCircuitStateDto, PluginGrantRequest, PluginHealthDto, PluginLogLineDto,
+    PluginLogSeverityDto, PositionDto, ProvisionalBarDto, RenameDashboardWorkspaceRequest,
+    RenameWatchlistGroupRequest, RenameWorkspaceRequest, ReorderWatchlistGroupsRequest,
+    ReorderWatchlistMembersRequest, ReplaceDashboardLayoutRequest, ReplaceLayoutRequest,
+    ReplaceSettingsRequest, RoleSummaryDto, RolesPage, RunActionRequest, ScaledDto,
+    SetIndicatorPluginEnabledRequest, SetPasswordRequest, SetZoneRequest, SourceCapabilityDto,
+    SourcesResponse, StorageDatabaseDto, StorageInstrumentDto, StorageReportDto, StorageSeriesDto,
+    StorageSeriesKindDto, StorageSourceDto, TimeRangeDto, TradeAccountDto, TradeAccountSettingsDto,
+    TradeAccountStateDto, TradeAccountsPage, UpdateNoteRequest, UpdateTradeAccountRequest,
+    UpdateWorkspaceSettingsRequest, UserSummaryDto, UserZoneResponse, UsersPage, WatchlistGroupDto,
+    WatchlistGroupsPage, WatchlistMemberDto, WireInt, WorkspaceDto, WorkspacesPage,
+    WsTicketResponse,
 };
 use crate::registry_handlers::{
     HandleResponse, IndicatorEntryDto, IndicatorSummaryDto, PublishIndicatorRequest, RegistryPage,
@@ -53,7 +58,8 @@ use crate::widget_plugin_handlers::{
 use crate::{
     Health, admin_handlers, alert_handlers, bars_handlers, dashboard_handlers, identity_handlers,
     indicator_handlers, instrument_handlers, notes_handlers, registry_handlers, source_handlers,
-    storage_handlers, watchlist_handlers, widget_plugin_handlers, workspace_handlers, ws,
+    storage_handlers, trade_handlers, watchlist_handlers, widget_plugin_handlers,
+    workspace_handlers, ws,
 };
 
 #[derive(OpenApi)]
@@ -150,9 +156,50 @@ use crate::{
         widget_plugin_handlers::set_widget_plugin_enabled,
         widget_plugin_handlers::uninstall_widget_plugin,
         widget_plugin_handlers::refresh_widget_plugins,
+        trade_handlers::list_adapters,
+        trade_handlers::list_accounts,
+        trade_handlers::create_account,
+        trade_handlers::account_state,
+        trade_handlers::update_account,
+        trade_handlers::delete_account,
+        trade_handlers::get_settings,
+        trade_handlers::replace_settings,
+        trade_handlers::account_health,
+        trade_handlers::account_balances,
+        trade_handlers::account_positions,
+        trade_handlers::account_orders,
+        trade_handlers::account_fills,
+        trade_handlers::place_order,
+        trade_handlers::cancel_order,
+        trade_handlers::amend_order,
+        trade_handlers::close_position,
+        trade_handlers::run_action,
     ),
     components(schemas(
         Health,
+        ScaledDto,
+        WireInt,
+        AdapterDto,
+        AdaptersResponse,
+        TradeAccountDto,
+        TradeAccountsPage,
+        CreateTradeAccountRequest,
+        AccountAccessDto,
+        TradeAccountStateDto,
+        UpdateTradeAccountRequest,
+        TradeAccountSettingsDto,
+        ReplaceSettingsRequest,
+        AssetBalanceDto,
+        BalancesDto,
+        PositionDto,
+        OrderDto,
+        FillDto,
+        PlaceOrderRequest,
+        AmendOrderRequest,
+        CloseRequest,
+        HealthDto,
+        RunActionRequest,
+        ActionOutcomeDto,
         LoginRequest,
         LoginResponse,
         SetPasswordRequest,
@@ -291,4 +338,27 @@ pub(crate) struct ApiDoc;
 /// `GET /api/openapi.json`.
 pub(crate) async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
     axum::Json(ApiDoc::openapi())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiDoc;
+    use utoipa::OpenApi;
+
+    /// Writes the document to `SENKEN_OPENAPI_OUT` when that variable is
+    /// set, so `openapi-typescript` can regenerate the browser's types
+    /// without a server to point at.
+    ///
+    /// Silent otherwise, so an ordinary `cargo test` neither writes a file
+    /// nor needs a network port. This is a maintenance tool that lives in
+    /// the test binary because that is the only place `ApiDoc` — a private
+    /// item — can be reached from.
+    #[test]
+    fn the_document_serialises_and_can_be_dumped_for_type_generation() {
+        let json = serde_json::to_string_pretty(&ApiDoc::openapi()).unwrap();
+        assert!(json.contains("/api/trade/adapters"));
+        if let Ok(path) = std::env::var("SENKEN_OPENAPI_OUT") {
+            std::fs::write(path, json).unwrap();
+        }
+    }
 }

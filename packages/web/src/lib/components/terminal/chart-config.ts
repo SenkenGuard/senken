@@ -258,7 +258,7 @@ export function scaledToDisplay(value: number, scale: number): string {
 /** Formats an already-decimal price/quantity the same way `scaledToDisplay`
  * formats a scaled integer, for values that never went through the
  * `price_scale` wire encoding in the first place (e.g. the trade-engine
- * demo's own derived prices — see `terminal/trade-demo.ts`). */
+ * demo's own derived prices). */
 export function fmtDecimal(decimal: number): string {
 	if (decimal >= 1000) return decimal.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 	if (decimal >= 10) return decimal.toFixed(2);
