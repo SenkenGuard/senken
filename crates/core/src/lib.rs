@@ -13,6 +13,7 @@ pub mod decimal;
 pub mod path_key;
 pub mod range;
 pub mod time;
+pub mod zone;
 
 pub use crate::decimal::{
     Scaled, checked_rescale, decimal_places, format_scaled, increment_from_precision,
@@ -20,4 +21,8 @@ pub use crate::decimal::{
 };
 pub use crate::path_key::{PathKeyError, path_key, symbol_from_path};
 pub use crate::range::TimeRange;
-pub use crate::time::{UnixNanos, civil_from_days, days_from_civil};
+pub use crate::time::{
+    CivilDateTime, CivilDateTimeError, TimeError, UnixNanos, civil_from_days, days_from_civil,
+    instant_from_civil,
+};
+pub use crate::zone::{IanaZone, UnknownZone};
