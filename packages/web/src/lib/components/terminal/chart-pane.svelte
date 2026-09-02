@@ -37,10 +37,13 @@
 		type Timeframe,
 		type ToolKey,
 		isIntradaySpec,
-		timeAxisFormatter
+		buildTimeLabelOptions,
+		timeLabelOptionsSignature
 	} from './chart-config';
+	import { userZoneStore } from '$lib/state/user-zone.svelte';
 	import { loadBars, loadIndicatorSeries, type BarLoadProgress } from '$lib/charts/bars';
 	import { objectDrawablesFromIndicatorDisplay } from '$lib/charts/indicator-display';
+	import { fetchIndicatorCatalog } from '$lib/charts/indicator-catalog';
 	import { GenerationGuard } from '$lib/charts/generation-guard';
 	import { indicatorFieldScale, plotsForLayer, LINE_STYLE_MAP, OVERLAY_INSTRUMENT_PLOT } from '$lib/charts/layer-style';
 	import {
@@ -387,6 +390,23 @@
 	// still-resolving indicator fetch can be told apart from the current one.
 	const indicatorGeneration = new GenerationGuard();
 	const subPaneGeneration = new GenerationGuard();
+	/** Indicator names `GET /api/indicators` currently reports — the ten
+	 * built-ins (always present) plus every dynamic indicator loaded from
+	 * an uploaded `.wasm` component that is not currently disabled.
+	 * Refreshed on mount and periodically after (`refreshIndicatorCatalog`
+	 * in `onMount`), so a plugin someone disables or re-enables elsewhere
+	 * is picked up here without reloading this chart. A layer whose
+	 * `indicatorName` is outside this set is excluded from both batch
+	 * reconciliation effects below — never removed, never mutated, just
+	 * left out of the fetch — which is what turns it into a placeholder:
+	 * its plot disappears through the exact same "not seen -> removed"
+	 * cleanup a deleted layer already goes through, and the moment its
+	 * name reappears here the same effects pick it back up with its
+	 * stored `params` untouched. Reassigned wholesale on every refresh
+	 * (never mutated in place), the same convention `liveIndicatorTopics`
+	 * below uses.
+	 */
+	let indicatorCatalog = $state<Set<string>>(new Set());
 	// The overlay-instrument reconciliation effect's own generation guard —
 	// same reasoning as `indicatorGeneration` just above: a layer
 	// hidden/shown/added/removed begins a new generation here without
@@ -657,6 +677,24 @@
 		// from — idempotent and shared across every pane, see
 		// `$lib/api/sources.svelte.ts`'s own doc.
 		void ensureSourcesLoaded();
+		// See `indicatorCatalog`'s own doc comment. A plain interval, not a
+		// live-updating subscription: enabling/disabling a dynamic
+		// indicator is an infrequent, out-of-band administrative action,
+		// not something this chart needs to react to within a tick the way
+		// a live price does.
+		const refreshIndicatorCatalog = () => {
+			fetchIndicatorCatalog()
+				.then((names) => {
+					if (!destroyed) indicatorCatalog = names;
+				})
+				.catch(() => {
+					// Transient — keep whatever was already known rather than
+					// treating a network blip as "every dynamic indicator was
+					// just disabled".
+				});
+		};
+		refreshIndicatorCatalog();
+		const indicatorCatalogPoll = setInterval(refreshIndicatorCatalog, 15_000);
 		const T = themeColors(isDark());
 		chart = createChart(container, {
 			layout: {
@@ -911,6 +949,7 @@
 
 		return () => {
 			destroyed = true;
+			clearInterval(indicatorCatalogPoll);
 			ro?.disconnect();
 			paneRo?.disconnect();
 			mo?.disconnect();
@@ -973,7 +1012,12 @@
 		const currentInstrument = instrument;
 		const currentSpec = spec;
 		const currentPriceScale = priceScale;
-		const layers = subPaneLayers.filter((layer) => layer.indicatorName);
+		// See the overlay-indicator effect's own comment on `indicatorCatalog`
+		// for why a layer outside it is excluded here rather than plotted.
+		const catalog = indicatorCatalog;
+		const layers = subPaneLayers.filter(
+			(layer) => layer.indicatorName && catalog.has(layer.indicatorName)
+		);
 		const token = subPaneGeneration.begin();
 		const { from, to } = range;
 
@@ -1397,24 +1441,32 @@
 		});
 	});
 
-	// Time-axis labels: 24h or 12h, with or without the weekday. The library
-	// formats ticks itself unless given a formatter, and its default is the
-	// 24h one with no weekday.
-	/** What the tick formatter was last built for. A function's identity
-	 * always differs, so there is nothing to compare against — and writing
-	 * the time scale discards where the user has scrolled to, so this effect
-	 * must not fire on every unrelated settings change. */
+	// Time-axis labels and the crosshair's own time label: 24h or 12h, with
+	// or without the weekday, and always in the viewer's chosen display zone
+	// (`userZoneStore.zone`) rather than the browser's. The library formats
+	// both itself unless given formatters, and its defaults are the 24h axis
+	// with no weekday and a crosshair label that ignores this app's zone
+	// entirely.
+	/** What `buildTimeLabelOptions` was last built for, `spec`/`dayOfWeek`/
+	 * `timeFormat`/zone folded into one comparable string
+	 * (`timeLabelOptionsSignature`) since a formatter closure's identity
+	 * always differs and is nothing to compare against. `buildTimeLabelOptions`'s
+	 * return type only ever carries the two label-formatting fields
+	 * (`TimeLabelOptions`), so re-running this on a zone change cannot reach
+	 * for `timeScale.rightOffset` or a visible-range field the way an editor
+	 * of this block might otherwise be tempted to — writing either of those
+	 * here would discard where the reader has scrolled to, exactly the
+	 * `applyTheme` history this file's own comments already warn about. */
 	let tickFormatSignature = '';
 
 	$effect(() => {
 		if (!chart) return;
 		const cs = paneSettings;
-		const intraday = isIntradaySpec(spec);
-		const signature = `${intraday}|${cs.dayOfWeek}|${cs.timeFormat}`;
+		const zoneId = userZoneStore.zone;
+		const signature = timeLabelOptionsSignature(spec, cs.dayOfWeek, cs.timeFormat, zoneId);
 		if (signature === tickFormatSignature) return;
-		chart.applyOptions({
-			timeScale: { tickMarkFormatter: timeAxisFormatter(spec, cs.dayOfWeek, cs.timeFormat) }
-		});
+		tickFormatSignature = signature;
+		chart.applyOptions(buildTimeLabelOptions(spec, cs.dayOfWeek, cs.timeFormat, zoneId));
 	});
 
 	/** What the overlay set actually is, as a value rather than an array
@@ -1965,10 +2017,19 @@
 		const currentQtyScale = qtyScale;
 		// Tracked by value; the array is read untracked below.
 		const signature = overlaySignature;
+		// Tracked so this effect re-runs the moment a dynamic indicator's
+		// plugin is enabled or disabled elsewhere — see `indicatorCatalog`'s
+		// own doc comment. A layer outside this set is filtered out below,
+		// which lets the existing "not seen -> removed" cleanup already in
+		// this effect turn it into a placeholder with no code of its own:
+		// its series (if any) is torn down the same way a deleted layer's
+		// already is, and its own `indicatorName`/`params` are untouched
+		// (they live on the layer itself, never on this component's state).
+		const catalog = indicatorCatalog;
 		const token = indicatorGeneration.begin();
 		const layers = untrack(() =>
 			overlayLayers.filter((l) => l.kind === 'indicator_overlay' && l.indicatorName)
-		);
+		).filter((l) => catalog.has(l.indicatorName as string));
 		const range = loadedRange;
 		if (!range) return;
 		const { from, to } = range;
@@ -2358,7 +2419,7 @@
 	 * permanent badge in the header. */
 	const liveChip = $derived.by(() => {
 		const label = liveChipLabel(liveState);
-		const message = overlayMessage(liveState);
+		const message = overlayMessage(liveState, userZoneStore.zone);
 		return label && message ? { label, message } : null;
 	});
 	$effect(() => {

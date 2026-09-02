@@ -7,6 +7,7 @@
 // questions. In particular, a closed instrument is not evidence that its
 // venue lacks a feed. The optional reopen instant is carried only when a
 // source supplied it; omitting it is more honest than inventing a schedule.
+import { formatInstant } from '$lib/time';
 
 /** `#f2f2ef` — the same off-white this app already treats as its neutral
  * default (`chart-pane.svelte`'s `DEFAULT_DRAWING_STYLE.color`, a freshly
@@ -69,17 +70,23 @@ export function priceLineColorFor(state: LiveState): string {
  * header's own flow, not hovering over the chips that already live there).
  * Exhaustively matched (the same discipline `Resource` gets server-side):
  * adding a fourth `LiveState` variant fails this function to compile until
- * it says what the reason text is for it. */
-export function overlayMessage(state: LiveState): string | null {
+ * it says what the reason text is for it.
+ *
+ * `zoneId` is the viewer's chosen display zone: `state.opensAt` is a stored
+ * instant (Unix nanoseconds), and rendering it as wall-clock text is exactly
+ * what `$lib/time`'s `formatInstant` exists for — never a second, unzoned
+ * `Date`/`toLocaleString` call here. */
+export function overlayMessage(state: LiveState, zoneId: string): string | null {
 	switch (state.status) {
 		case 'live':
 			return null;
 		case 'no-feed':
 			return 'This venue has no live feed. Showing stored history.';
-		case 'closed':
-			return state.opensAt == null
-				? 'Market closed.'
-				: `Market closed. Reopens ${new Date(state.opensAt / 1_000_000).toLocaleString()}.`;
+		case 'closed': {
+			if (state.opensAt == null) return 'Market closed.';
+			const reopensAt = formatInstant(state.opensAt, zoneId);
+			return `Market closed. Reopens ${reopensAt.text} ${reopensAt.zoneLabel}.`;
+		}
 		default: {
 			const exhaustive: never = state;
 			return exhaustive;

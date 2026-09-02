@@ -47,6 +47,7 @@
 	import { apiClient, setSessionExpiredHandler } from '$lib/api/client';
 	import { primeSessionPresence, sessionStore } from '$lib/api/session.svelte';
 	import { wsClient } from '$lib/api/websocket';
+	import { loadUserZone } from '$lib/state/user-zone.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -77,6 +78,15 @@
 	$effect(() => {
 		apiClient.startHeartbeat();
 		return () => apiClient.stopHeartbeat();
+	});
+
+	// The display zone every chart and clock reads (`$lib/state/user-zone.svelte`)
+	// only means anything once a session exists (`GET /api/me/zone` needs
+	// one), so it loads on the same login/logout transition the live-price
+	// socket below reacts to — an unauthenticated visitor keeps whatever
+	// browser-default zone the store already had.
+	$effect(() => {
+		if (authorized) void loadUserZone();
 	});
 
 	// the live-price socket only means anything once a session

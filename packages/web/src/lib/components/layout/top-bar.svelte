@@ -13,6 +13,8 @@
 	import { Switch } from '$lib/components/ui/switch/index.js';
 	import ConnectionStatus from './connection-status.svelte';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
+	import { formatInstant } from '$lib/time';
+	import { userZoneStore } from '$lib/state/user-zone.svelte';
 
 	let navPickerOpen = $state(false);
 	let visibleHudKeys = $state<string[]>([...DEFAULT_HUD_KEYS]);
@@ -24,13 +26,15 @@
 			: [...visibleHudKeys, key];
 	}
 
+	// "Now", in the viewer's chosen display zone rather than the machine's
+	// own — the same door every other on-screen instant in this app renders
+	// through (`$lib/time`'s `formatInstant`), so this clock and a chart's
+	// time axis never disagree about what zone "now" is in.
 	let clock = $state('00:00:00');
 	$effect(() => {
+		const zoneId = userZoneStore.zone;
 		const update = () => {
-			const d = new Date();
-			clock = [d.getHours(), d.getMinutes(), d.getSeconds()]
-				.map((n) => String(n).padStart(2, '0'))
-				.join(':');
+			clock = formatInstant(Date.now() * 1_000_000, zoneId).text.slice(11);
 		};
 		update();
 		const id = setInterval(update, 1000);

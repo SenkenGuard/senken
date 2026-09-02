@@ -82,6 +82,7 @@
 	import ObjectTree from '$lib/components/terminal/object-tree.svelte';
 	import ChartSettingsDialog from '$lib/components/terminal/chart-settings-dialog.svelte';
 	import LayerDialog from '$lib/components/terminal/layer-dialog.svelte';
+	import IndicatorPanel from '$lib/components/terminal/indicator-panel.svelte';
 	import DateJumpDialog from '$lib/components/terminal/date-jump-dialog.svelte';
 	import DrawingToolbar from '$lib/components/terminal/drawing-toolbar.svelte';
 	import AlertsPanel from '$lib/components/terminal/alerts-panel.svelte';
@@ -401,6 +402,9 @@
 	 * itself the moment the user edited anything. */
 	let layerDlg = $state<{ pane: number; position: number } | null>(null);
 	let addMenuKind = $state<'instrument' | 'indicator'>('indicator');
+	/** Which pane the indicator-authoring panel is placing onto, or `null`
+	 * while it is closed. */
+	let indicatorPanelPane = $state<number | null>(null);
 
 	// Drawing objects: which one is selected, if any — set by
 	// `chart-pane.svelte`'s cursor-tool click handler, cleared by closing the
@@ -653,11 +657,24 @@
 			placeholder: 'Search instruments or indicators…',
 			footer: `ADDING TO PANE ${paneTarget + 1}`,
 			busy: () => addMenuKind === 'instrument' && instrumentSearchBusy,
-			kindTabs: (['instrument', 'indicator'] as const).map((k) => ({
-				label: k.toUpperCase(),
-				active: () => addMenuKind === k,
-				onClick: () => (addMenuKind = k)
-			})),
+			kindTabs: [
+				...(['instrument', 'indicator'] as const).map((k) => ({
+					label: k.toUpperCase(),
+					active: () => addMenuKind === k,
+					onClick: () => (addMenuKind = k)
+				})),
+				// Not a third `addMenuKind` state: picking it opens the
+				// indicator-authoring panel directly (its own dialog, not
+				// another row of this palette) and leaves `addMenuKind` alone.
+				{
+					label: 'CUSTOM',
+					active: () => false,
+					onClick: () => {
+						closeCommand();
+						indicatorPanelPane = paneTarget;
+					}
+				}
+			],
 			rows: (query) => {
 				if (addMenuKind === 'instrument') {
 					return instrumentResults.map((x) =>
@@ -1350,6 +1367,8 @@
 		onEditParams={(patch) => dialogLayer && layerDlg && void editLayerParams(layerDlg.pane, dialogLayer.id, patch)}
 		onStyleChanged={() => dialogLayer && void persistLayerStyle(dialogLayer.id)}
 	/>
+
+	<IndicatorPanel paneIndex={indicatorPanelPane} onClose={() => (indicatorPanelPane = null)} />
 
 	<DateJumpDialog
 		open={!!dateJumpDlg}
