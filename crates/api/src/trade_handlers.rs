@@ -55,7 +55,10 @@ fn context<'a>(
     marks: &'a StoredMarkPrice,
     instruments: &'a CatalogInstruments,
 ) -> TradeContext<'a> {
-    TradeContext::new(senken_loader::SystemClock.now(), marks, instruments)
+    // The same value answers for marks and for bars, so an adapter
+    // settling a book through time and one asking the current price are
+    // reading the same installation's data.
+    TradeContext::new(senken_loader::SystemClock.now(), marks, instruments).with_history(marks)
 }
 
 /// The account and the adapter behind it, for a **read**.

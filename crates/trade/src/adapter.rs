@@ -87,11 +87,57 @@ pub trait InstrumentSource: Send + Sync {
     async fn instrument(&self, id: &InstrumentId) -> Result<Option<Instrument>, TradeError>;
 }
 
+/// One bar, as settling a book through time needs it.
+///
+/// Deliberately four fields and no more. A settlement pass asks one
+/// question of a bar — did the market reach this level, and when — and
+/// carrying volume, trade counts or a spec through the trade layer would
+/// couple it to the series crate for data it never reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryBar {
+    /// When the bar opened.
+    pub opened_at: UnixNanos,
+    /// The highest price it reached.
+    pub high: Scaled,
+    /// The lowest price it reached.
+    pub low: Scaled,
+    /// Where it closed.
+    pub close: Scaled,
+}
+
+/// Where an adapter gets the bars between two instants.
+///
+/// A simulator that evaluates a resting order against whatever price
+/// happened to be current when someone read the account is not simulating
+/// resting: a stop fills at the reader's price rather than at the bar that
+/// touched it, and if nobody looks for an hour it fills an hour late. This
+/// port is what lets a book be settled *through* time instead.
+#[async_trait]
+pub trait PriceHistorySource: Send + Sync {
+    /// The bars for `instrument` opening in `(from, to]`, oldest first.
+    ///
+    /// Half-open at the start, so a book settled through an instant does
+    /// not replay the bar it already settled.
+    ///
+    /// An empty answer is normal, not a failure: an instrument nobody has
+    /// loaded history for genuinely has none.
+    ///
+    /// # Errors
+    /// [`TradeError`] only when the lookup itself failed.
+    async fn bars_between(
+        &self,
+        instrument: &InstrumentId,
+        from: UnixNanos,
+        to: UnixNanos,
+    ) -> Result<Vec<HistoryBar>, TradeError>;
+}
+
 /// Everything an adapter is given for one call.
 pub struct TradeContext<'a> {
     now: UnixNanos,
     marks: &'a dyn MarkPriceSource,
     instruments: &'a dyn InstrumentSource,
+    history: Option<&'a dyn PriceHistorySource>,
 }
 
 impl std::fmt::Debug for TradeContext<'_> {
@@ -114,7 +160,40 @@ impl<'a> TradeContext<'a> {
             now,
             marks,
             instruments,
+            history: None,
         }
+    }
+
+    /// The same context, able to answer for bars as well as for the
+    /// current mark.
+    ///
+    /// Added rather than required, because an adapter that reaches a real
+    /// venue has no use for it and should not have to supply one.
+    #[must_use]
+    pub fn with_history(mut self, history: &'a dyn PriceHistorySource) -> Self {
+        self.history = Some(history);
+        self
+    }
+
+    /// The bars for `instrument` opening in `(from, now]`.
+    ///
+    /// An empty answer covers both "this installation has no history for
+    /// it" and "no history source was supplied at all". A caller that
+    /// needs to tell those apart is asking the wrong question: either way
+    /// there are no bars to settle through, and the honest fallback is the
+    /// current mark.
+    ///
+    /// # Errors
+    /// [`TradeError`] when the lookup itself failed.
+    pub async fn bars_since(
+        &self,
+        instrument: &InstrumentId,
+        from: UnixNanos,
+    ) -> Result<Vec<HistoryBar>, TradeError> {
+        let Some(history) = self.history else {
+            return Ok(Vec::new());
+        };
+        history.bars_between(instrument, from, self.now).await
     }
 
     /// The instant this call is happening at.

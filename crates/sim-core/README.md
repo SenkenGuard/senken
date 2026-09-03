@@ -100,10 +100,16 @@ forgot to declare them would not advertise less than the adapter can do.
 An amendment keeps the order's identity: it is the same order at a new
 price, not a cancel and a replace.
 
-The current form evaluates a resting order against the mark a *read* sees,
-which is coarser than a real venue and is said plainly rather than
-implied. The bar-accurate form is in `replay` and is what this becomes
-once the adapter is handed a bar source.
+A level is reached by the **bar whose high or low actually reached it**,
+at that bar's own time. A stop hit an hour ago fills an hour ago, at its
+own stop, even though the reader arriving now sees only the current price
+and no sign anything happened. Where an installation holds no bars for the
+instrument the current mark is the honest fallback, and an order then
+fills when a read first sees it reachable.
+
+A buy stop is reached from **below** and a sell stop from **above**, so
+the two read different extremes of the same bar. Evaluating either on the
+close alone misses every level a bar traded through and came back from.
 
 ## Money
 

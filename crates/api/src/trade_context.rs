@@ -173,3 +173,61 @@ impl MarkPriceSource for StoredMarkPrice {
         Ok(None)
     }
 }
+
+#[async_trait]
+impl senken_trade::PriceHistorySource for StoredMarkPrice {
+    /// The stored bars for `instrument` opening in `(from, to]`.
+    ///
+    /// Never fetches, for the same reason a mark price never does: settling
+    /// a book must not be able to start a multi-minute backfill on the
+    /// request path of an order. Whatever this installation already holds
+    /// is the answer, and nothing is an ordinary one.
+    async fn bars_between(
+        &self,
+        instrument: &InstrumentId,
+        from: UnixNanos,
+        to: UnixNanos,
+    ) -> Result<Vec<senken_trade::HistoryBar>, TradeError> {
+        let Some(loader) = self.loader(instrument) else {
+            return Ok(Vec::new());
+        };
+        let Ok(Some(hit)) = self.state.runtime.marketdata().instrument(instrument).await else {
+            return Ok(Vec::new());
+        };
+        let Some(range) = TimeRange::new(from, to) else {
+            return Ok(Vec::new());
+        };
+        // The finest spec this installation holds for the instrument: a
+        // finer bar narrows the window in which intrabar order is
+        // unknowable, so taking the coarsest available would throw away
+        // precision that is already on disk.
+        for spec in mark_specs() {
+            let key = SeriesKey::new(
+                instrument.source(),
+                instrument.symbol(),
+                Origin::Derived,
+                spec,
+            );
+            let resolved = match loader.resolve(&key, range, Anchor::UTC).await {
+                Ok(resolved) => resolved,
+                Err(LoadError::Aggregate(AggregateError::DoesNotDivide { .. })) => continue,
+                Err(source) => return Err(TradeError::adapter(source.to_string())),
+            };
+            if resolved.bars.is_empty() {
+                continue;
+            }
+            let scale = hit.instrument.price_scale;
+            return Ok(resolved
+                .bars
+                .iter()
+                .map(|bar| senken_trade::HistoryBar {
+                    opened_at: bar.ts_open,
+                    high: Scaled::new(scale, bar.high),
+                    low: Scaled::new(scale, bar.low),
+                    close: Scaled::new(scale, bar.close),
+                })
+                .collect());
+        }
+        Ok(Vec::new())
+    }
+}

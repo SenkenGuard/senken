@@ -32,6 +32,7 @@ use serde::de::DeserializeOwned;
 
 use crate::money::CASH_SCALE;
 use crate::pricing::{Terms, apply_amendment, is_triggered, market_fill_price};
+use crate::replay::{Level, ReplayBar};
 use crate::settlement::{FillContext, Marks, SettlementModel};
 
 /// One trading system, as the shared adapter needs to know it.
@@ -306,21 +307,76 @@ impl<V: SimulatedVenue> SimAdapter<V> {
         })
     }
 
+    /// The bars each resting order needs, from its book's own
+    /// `settled_through` to now.
+    ///
+    /// Empty when this installation has no history for the instrument, or
+    /// when no history source was supplied at all — either way there is
+    /// nothing to settle through, and the mark is the honest fallback.
+    async fn bars_for(
+        &self,
+        ctx: &TradeContext<'_>,
+        account: TradeAccountId,
+    ) -> Result<BTreeMap<String, Vec<ReplayBar>>, TradeError> {
+        let (instruments, from) = {
+            let accounts = self.lock();
+            let Some(stored) = accounts.get(&account) else {
+                return Ok(BTreeMap::new());
+            };
+            let instruments: std::collections::BTreeSet<String> = stored
+                .resting
+                .iter()
+                .map(|order| order.instrument.clone())
+                .collect();
+            (
+                instruments,
+                senken_core::time::UnixNanos::from_nanos(stored.settled_through),
+            )
+        };
+        let mut bars = BTreeMap::new();
+        for raw in instruments {
+            let Ok(id) = InstrumentId::parse(&raw) else {
+                continue;
+            };
+            let history = ctx.bars_since(&id, from).await?;
+            if history.is_empty() {
+                continue;
+            }
+            bars.insert(
+                raw,
+                history
+                    .into_iter()
+                    .map(|bar| ReplayBar {
+                        opened_at: bar.opened_at,
+                        high: bar.high,
+                        low: bar.low,
+                        close: bar.close,
+                    })
+                    .collect(),
+            );
+        }
+        Ok(bars)
+    }
+
     /// Fills every resting order the market has reached.
     ///
-    /// Evaluated against the current mark. The bar-accurate form —
-    /// replaying the bars between `settled_through` and now, so a level is
-    /// reached by the bar whose extreme actually reached it — lives in
-    /// `crate::replay` and is what this becomes once the adapter is handed
-    /// a bar source. Until then the honest description is: a level is
-    /// reached when a *read* sees it reached, which is coarser than a real
-    /// venue and is stated rather than implied.
+    /// A level is reached by the **bar whose high or low actually reached
+    /// it**, at that bar's own time — not by whatever price happened to be
+    /// current when someone read the account. Where no bars are available
+    /// the current mark is the honest fallback, and an order then fills
+    /// when a read sees it reachable.
+    ///
+    /// Within one bar, whether the high or the low came first cannot be
+    /// recovered. Where that matters the resolution is
+    /// [`crate::replay`]'s: the worse-for-the-trader side is taken as
+    /// having happened first.
     fn fill_resting(
         venue: &V,
         settings: &SettingsValues,
         stored: &mut StoredAccount<V::Book>,
         model: &V::Model,
         marks: &Marks,
+        bars: &BTreeMap<String, Vec<ReplayBar>>,
         now: senken_core::time::UnixNanos,
     ) -> Result<(), TradeError> {
         let mut still_resting = Vec::with_capacity(stored.resting.len());
@@ -328,14 +384,33 @@ impl<V: SimulatedVenue> SimAdapter<V> {
         // triggers fill in the order the trader placed them rather than in
         // whatever order a map happened to hold them.
         for order in std::mem::take(&mut stored.resting) {
-            let Some(mark) = marks.get(&order.instrument).copied() else {
-                still_resting.push(order);
-                continue;
+            // The bar that reached it, in order, before falling back to
+            // the mark. A bar's own time is when the fill happened.
+            let history = bars.get(&order.instrument).map_or(&[][..], Vec::as_slice);
+            let touched = history
+                .iter()
+                .find(|bar| reached_by_bar(order.kind, order.side, bar));
+            let (fill_at, reached) = if let Some(bar) = touched {
+                (bar.opened_at, true)
+            } else {
+                let Some(mark) = marks.get(&order.instrument).copied() else {
+                    still_resting.push(order);
+                    continue;
+                };
+                (now, is_triggered(order.kind, order.side, mark))
             };
-            if !is_triggered(order.kind, order.side, mark) {
+            if !reached {
                 still_resting.push(order);
                 continue;
             }
+            let Some(mark) = marks
+                .get(&order.instrument)
+                .copied()
+                .or_else(|| touched.map(|bar| bar.close))
+            else {
+                still_resting.push(order);
+                continue;
+            };
             let Ok(instrument) = InstrumentId::parse(&order.instrument) else {
                 continue;
             };
@@ -354,7 +429,7 @@ impl<V: SimulatedVenue> SimAdapter<V> {
                     side: order.side,
                     quantity: order.quantity,
                     price,
-                    now,
+                    now: fill_at,
                 },
             )?;
             stored.fills.push(StoredFill {
@@ -365,7 +440,7 @@ impl<V: SimulatedVenue> SimAdapter<V> {
                 price: settled.fill_price,
                 fee: settled.fee,
                 fee_currency: venue.fee_currency(settings, order.side),
-                at: now.as_nanos(),
+                at: fill_at.as_nanos(),
             });
         }
         stored.resting = still_resting;
@@ -419,6 +494,7 @@ impl<V: SimulatedVenue> SimAdapter<V> {
         settings: &SettingsValues,
     ) -> Result<(), TradeError> {
         let marks = self.marks_for(ctx, account).await?;
+        let bars = self.bars_for(ctx, account).await?;
         let model = self.venue.model_for(settings)?;
         let now = ctx.now();
         let snapshot = {
@@ -433,7 +509,7 @@ impl<V: SimulatedVenue> SimAdapter<V> {
             // market reached changed the book, and enforcing against the
             // book as it stood before would liquidate a position the fill
             // had already rescued.
-            Self::fill_resting(&self.venue, settings, stored, &model, &marks, now)?;
+            Self::fill_resting(&self.venue, settings, stored, &model, &marks, &bars, now)?;
             model.enforce(&mut stored.book, &marks, now)?;
             accounts.clone()
         };
@@ -664,10 +740,14 @@ impl<V: SimulatedVenue> TradeAdapter for SimAdapter<V> {
 
     async fn fills(
         &self,
-        _ctx: &TradeContext<'_>,
+        ctx: &TradeContext<'_>,
         account: AccountRef<'_>,
         limit: usize,
     ) -> Result<Vec<Fill>, TradeError> {
+        // Settled first: a reader asking what executed must see the
+        // execution that happened while they were away, not a list that
+        // stops at the last time someone looked.
+        self.settle(ctx, account.id, account.settings).await?;
         let accounts = self.lock();
         let Some(stored) = accounts.get(&account.id) else {
             return Ok(Vec::new());
@@ -772,6 +852,39 @@ impl<V: SimulatedVenue> TradeAdapter for SimAdapter<V> {
             reject_reason: None,
         })
     }
+}
+
+/// Whether `bar` reached the level `kind` is waiting at.
+///
+/// A limit buy and a stop sell are reached by the market coming **down**
+/// to them, so the bar's low decides; a limit sell and a stop buy are
+/// reached from below, so its high does. Evaluating either on the close
+/// alone would miss every level a bar traded through and came back from.
+fn reached_by_bar(kind: OrderKind, side: senken_trade::OrderSide, bar: &ReplayBar) -> bool {
+    let (level, from_above) = match (kind, side) {
+        (OrderKind::Limit { price }, senken_trade::OrderSide::Buy) => (price, true),
+        (OrderKind::Limit { price }, senken_trade::OrderSide::Sell) => (price, false),
+        (
+            OrderKind::Stop { trigger } | OrderKind::StopLimit { trigger, .. },
+            senken_trade::OrderSide::Buy,
+        ) => (trigger, false),
+        (
+            OrderKind::Stop { trigger } | OrderKind::StopLimit { trigger, .. },
+            senken_trade::OrderSide::Sell,
+        ) => (trigger, true),
+        // `Market` has nothing to wait for, and `OrderKind` is
+        // `#[non_exhaustive]`: a kind this build has not been taught never
+        // fills rather than filling on a guessed condition.
+        _ => return false,
+    };
+    Level {
+        price: level,
+        from_above,
+        // Whether reaching it is the bad outcome is a position's question,
+        // not a resting order's; the ordering it feeds is `replay`'s.
+        adverse: false,
+    }
+    .reached_by(bar)
 }
 
 /// A per-call identifier stable within one context.

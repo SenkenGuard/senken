@@ -78,8 +78,8 @@ mod engine;
 mod store;
 
 pub use crate::adapter::{
-    AccountRef, ActionOutcome, AdapterAction, InstrumentSource, MarkPrice, MarkPriceSource,
-    TradeAdapter, TradeContext,
+    AccountRef, ActionOutcome, AdapterAction, HistoryBar, InstrumentSource, MarkPrice,
+    MarkPriceSource, PriceHistorySource, TradeAdapter, TradeContext,
 };
 pub use crate::capability::{
     AccessLevel, AccountAccess, AdapterCapabilities, AdapterFeature, AdapterKind,
