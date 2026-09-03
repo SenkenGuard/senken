@@ -21,6 +21,7 @@ import type {
 	AccountAccessDto,
 	AdapterDto,
 	AdapterHealthDto,
+	AssetBalanceDto,
 	BalancesDto,
 	FillDto,
 	OrderDto,
@@ -75,7 +76,7 @@ export interface TableRow {
 	actions?: TableRowAction[];
 }
 
-export type EngineTableTab = 'positions' | 'orders' | 'exec';
+export type EngineTableTab = 'positions' | 'orders' | 'exec' | 'assets';
 
 export interface TableTabDef {
 	key: EngineTableTab;
@@ -705,6 +706,9 @@ export function engineTable(
 	positions: (PositionDto & { accountId: string; accountLabel: string; tradable: boolean })[],
 	orders: (OrderDto & { accountId: string; accountLabel: string; tradable: boolean })[],
 	fills: (FillDto & { accountId: string; accountLabel: string })[],
+	/** Asset balances, for accounts that hold assets rather than
+	 * positions. Empty for every margined account. */
+	assets: (AssetBalanceDto & { accountId: string; accountLabel: string })[],
 	/** The reader's chosen display zone, for every `TIME` cell — see
 	 * `formatTime`. No default: a table rendered with nobody's zone is
 	 * exactly the ambiguity `$lib/time` exists to rule out. */
@@ -717,11 +721,46 @@ export function engineTable(
 	const accColumn = scope === 'all';
 	const accHead: TableColumn[] = accColumn ? [{ label: 'ACCOUNT', align: 'left' }] : [];
 	const accCell = (label: string): TableCell[] => (accColumn ? [L(label, 'dim2')] : []);
+	// A spot account holds assets, not direction, so ASSETS replaces
+	// POSITIONS for it rather than sitting beside an empty table. Decided
+	// by what the account *declares* — never by its adapter's name, which
+	// is what would need a fifth branch for a fifth system.
+	const holdsAssets = assets.length > 0;
 	const tabs: TableTabDef[] = [
-		{ key: 'positions', label: 'POSITIONS', count: positions.length },
+		...(holdsAssets
+			? [{ key: 'assets' as const, label: 'ASSETS', count: assets.length }]
+			: [{ key: 'positions' as const, label: 'POSITIONS', count: positions.length }]),
 		{ key: 'orders', label: 'ORDERS', count: orders.length },
 		{ key: 'exec', label: 'EXECUTIONS', count: fills.length }
 	];
+
+	if (tab === 'assets' || (holdsAssets && tab === 'positions')) {
+		return {
+			tabs,
+			columns: [
+				{ label: 'ASSET', align: 'left' },
+				...accHead,
+				{ label: 'TOTAL', align: 'right' },
+				{ label: 'FREE', align: 'right' },
+				{ label: 'LOCKED', align: 'right' }
+			],
+			rows: assets.map((asset) => ({
+				key: `${asset.accountId}:${asset.asset}`,
+				cells: [
+					L(asset.asset, 'fg'),
+					...accCell(asset.accountLabel),
+					R(formatScaledForDisplay(asset.total, 8)),
+					R(formatScaledForDisplay(asset.available, 8)),
+					// Held against a resting order: it is still yours, it
+					// just cannot be spent twice.
+					R(formatScaledForDisplay(asset.reserved, 8), 'dim2')
+				],
+				actions: []
+			})),
+			loading,
+			emptyLabel: 'This account holds nothing yet.'
+		};
+	}
 
 	if (tab === 'orders') {
 		return {
@@ -995,6 +1034,7 @@ export function dashboardPositions(
 		'positions',
 		'all',
 		positions,
+		[],
 		[],
 		[],
 		zoneId,

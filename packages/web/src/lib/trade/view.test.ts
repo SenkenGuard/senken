@@ -6,6 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import type {
 	AccountAccessDto,
 	AdapterCapabilitiesDto,
+	AssetBalanceDto,
 	BalancesDto,
 	OrderDto,
 	PositionDto,
@@ -115,6 +116,7 @@ describe('engineTable order actions', () => {
 			[],
 			[{ ...order(), accountId: 'acct-1', accountLabel: 'Main', tradable: true }],
 			[],
+			[],
 			'UTC'
 		);
 		expect(table.rows[0].actions?.map((a) => a.key)).toEqual(['cancel', 'amend']);
@@ -134,6 +136,7 @@ describe('engineTable order actions', () => {
 				}
 			],
 			[],
+			[],
 			'UTC'
 		);
 		expect(table.rows[0].actions).toBeUndefined();
@@ -145,6 +148,7 @@ describe('engineTable order actions', () => {
 			'account',
 			[],
 			[{ ...order(), accountId: 'acct-1', accountLabel: 'Main', tradable: false }],
+			[],
 			[],
 			'UTC'
 		);
@@ -160,6 +164,7 @@ describe('engineTable position actions', () => {
 			[{ ...position(), accountId: 'acct-1', accountLabel: 'Main', tradable: true }],
 			[],
 			[],
+			[],
 			'UTC'
 		);
 		expect(table.rows[0].actions?.map((a) => a.key)).toEqual(['close']);
@@ -170,6 +175,7 @@ describe('engineTable position actions', () => {
 			'positions',
 			'account',
 			[{ ...position(), accountId: 'acct-1', accountLabel: 'Main', tradable: false }],
+			[],
 			[],
 			[],
 			'UTC'
@@ -612,6 +618,7 @@ describe('engineTable TIME column', () => {
 				}
 			],
 			[],
+			[],
 			'America/New_York'
 		);
 		expect(table.rows[0].cells[0].value).toBe('20:00:00');
@@ -666,5 +673,69 @@ describe('accountStats — the figures a MetaTrader terminal shows', () => {
 		});
 
 		expect(stats.find((stat) => stat.label === 'MARGIN LEVEL')?.tone).toBe('loss');
+	});
+});
+
+describe('engineTable — a spot account shows what it actually holds', () => {
+	const asset = (over: Partial<AssetBalanceDto> = {}) => ({
+		asset: 'BTC',
+		total: { scale: 8, value: '9990000' },
+		available: { scale: 8, value: '9990000' },
+		reserved: { scale: 8, value: '0' },
+		accountId: 'acct-1',
+		accountLabel: 'Spot',
+		...over
+	});
+
+	test('an account reporting asset balances gets ASSETS instead of POSITIONS', () => {
+		const table = engineTable('positions', 'account', [], [], [], [asset()], 'UTC');
+
+		const labels = table.tabs.map((t) => t.label);
+		expect(labels).toContain('ASSETS');
+		// Not beside an empty positions table: a spot account has no
+		// direction, so a POSITIONS tab for it is a tab that can only ever
+		// be empty.
+		expect(labels).not.toContain('POSITIONS');
+	});
+
+	test('a margined account keeps POSITIONS and never grows an ASSETS tab', () => {
+		const table = engineTable(
+			'positions',
+			'account',
+			[{ ...position(), accountId: 'acct-1', accountLabel: 'MT5', tradable: true }],
+			[],
+			[],
+			[],
+			'UTC'
+		);
+
+		const labels = table.tabs.map((t) => t.label);
+		expect(labels).toContain('POSITIONS');
+		expect(labels).not.toContain('ASSETS');
+	});
+
+	test('the asset rows separate what is free from what a resting order holds', () => {
+		const table = engineTable(
+			'assets',
+			'account',
+			[],
+			[],
+			[],
+			[
+				asset({
+					total: { scale: 8, value: '10000000' },
+					available: { scale: 8, value: '6000000' },
+					reserved: { scale: 8, value: '4000000' }
+				})
+			],
+			'UTC'
+		);
+
+		const cells = table.rows[0].cells.map((cell) => cell.value);
+		expect(cells[0]).toBe('BTC');
+		expect(cells[1]).toContain('0.1');
+		expect(cells[2]).toContain('0.06');
+		// Locked is still yours; it just cannot be spent twice.
+		expect(cells[3]).toContain('0.04');
 	});
 });

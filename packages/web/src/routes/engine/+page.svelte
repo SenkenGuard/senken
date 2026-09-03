@@ -147,7 +147,17 @@
 				accountLabel: account.label
 			}))
 		);
-		return { positions, orders, fills, loading };
+		// An account that reports asset balances holds assets rather than
+		// direction, and the table swaps POSITIONS for ASSETS on the
+		// strength of that — not on the strength of which adapter it is.
+		const assets = inScope.flatMap((account) =>
+			(tradeStore.portfolios[account.id]?.balances?.assets ?? []).map((row) => ({
+				...row,
+				accountId: account.id,
+				accountLabel: account.label
+			}))
+		);
+		return { positions, orders, fills, assets, loading };
 	});
 
 	const currentTable = $derived(
@@ -157,6 +167,7 @@
 			scoped.positions,
 			scoped.orders,
 			scoped.fills,
+			scoped.assets,
 			userZoneStore.zone,
 			scoped.loading
 		)
