@@ -51,7 +51,14 @@ impl SimulatedVenue for SpotVenue {
 
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities::market_only()
-            .with_order_kinds(vec![OrderKindTag::Market, OrderKindTag::Limit])
+            // Spot venues carry stop-loss and stop-loss-limit too; the
+            // shared adapter rests all three the same way.
+            .with_order_kinds(vec![
+                OrderKindTag::Market,
+                OrderKindTag::Limit,
+                OrderKindTag::Stop,
+                OrderKindTag::StopLimit,
+            ])
             .with_time_in_force(vec![TimeInForce::Gtc])
             .with_quantity_unit(QuantityUnit::Base)
             // Holdings, not direction. The engine refuses `close_position`

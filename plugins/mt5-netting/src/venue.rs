@@ -53,7 +53,12 @@ impl SimulatedVenue for NettingVenue {
 
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities::market_only()
-            .with_order_kinds(vec![OrderKindTag::Market, OrderKindTag::Limit])
+            .with_order_kinds(vec![
+                OrderKindTag::Market,
+                OrderKindTag::Limit,
+                OrderKindTag::Stop,
+                OrderKindTag::StopLimit,
+            ])
             .with_time_in_force(vec![TimeInForce::Gtc])
             .with_quantity_unit(QuantityUnit::Base)
             // One position per symbol: an opposite fill meets the existing

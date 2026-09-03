@@ -57,7 +57,12 @@ impl SimulatedVenue for FuturesVenue {
 
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities::market_only()
-            .with_order_kinds(vec![OrderKindTag::Market, OrderKindTag::Limit])
+            .with_order_kinds(vec![
+                OrderKindTag::Market,
+                OrderKindTag::Limit,
+                OrderKindTag::Stop,
+                OrderKindTag::StopLimit,
+            ])
             .with_time_in_force(vec![TimeInForce::Gtc])
             .with_quantity_unit(QuantityUnit::Base)
             .with_position_mode(senken_trade::PositionMode::Netting)
