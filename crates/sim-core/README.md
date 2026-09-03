@@ -87,6 +87,24 @@ taken first — because assuming the profitable one would flatter every
 strategy replayed through it. Finer bars narrow that window; they never
 close it.
 
+## Pending orders
+
+A limit, stop or stop-limit **rests**. Filling one at the mark would make
+the capability a lie — a trader who places a limit below the market and
+watches it fill immediately has learned nothing true about their strategy.
+A resting order fills at **its own price**, never at the mark: the market
+reaching a level is not the same as the market crossing it.
+
+Cancelling and amending live here too, not in each venue, so a venue that
+forgot to declare them would not advertise less than the adapter can do.
+An amendment keeps the order's identity: it is the same order at a new
+price, not a cancel and a replace.
+
+The current form evaluates a resting order against the mark a *read* sees,
+which is coarser than a real venue and is said plainly rather than
+implied. The bar-accurate form is in `replay` and is what this becomes
+once the adapter is handed a bar source.
+
 ## Money
 
 Nothing here touches a float. Every function works in `i128` and lands back

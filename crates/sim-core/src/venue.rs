@@ -23,15 +23,15 @@ use senken_marketdata::InstrumentId;
 use senken_storage::{Snapshot, Storage};
 use senken_trade::{
     AccountAccess, AccountBalances, AccountRef, AdapterCapabilities, AdapterHealth, AdapterKind,
-    Fill, InstrumentCoverage, Liquidity, Order, OrderFilter, OrderId, OrderKind, OrderRequest,
-    OrderStatus, Position, SettingsSchema, SettingsValues, TimeInForce, TradeAccountId,
-    TradeAdapter, TradeContext, TradeError,
+    Fill, InstrumentCoverage, Liquidity, Order, OrderAmendment, OrderFilter, OrderId, OrderKind,
+    OrderRequest, OrderStatus, Position, SettingsSchema, SettingsValues, TimeInForce,
+    TradeAccountId, TradeAdapter, TradeContext, TradeError,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::money::CASH_SCALE;
-use crate::pricing::{Terms, market_fill_price};
+use crate::pricing::{Terms, apply_amendment, is_triggered, market_fill_price};
 use crate::settlement::{FillContext, Marks, SettlementModel};
 
 /// One trading system, as the shared adapter needs to know it.
@@ -134,6 +134,9 @@ struct StoredAccount<B> {
     /// accruing again.
     settled_through: i64,
     fills: Vec<StoredFill>,
+    /// Orders waiting for the market to reach them.
+    #[serde(default)]
+    resting: Vec<RestingOrder>,
 }
 
 impl<B: Default> Default for StoredAccount<B> {
@@ -142,7 +145,49 @@ impl<B: Default> Default for StoredAccount<B> {
             book: B::default(),
             settled_through: 0,
             fills: Vec::new(),
+            resting: Vec::new(),
         }
+    }
+}
+
+/// An order waiting for the market to reach it.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+struct RestingOrder {
+    id: String,
+    client_order_id: Option<String>,
+    instrument: String,
+    side: senken_trade::OrderSide,
+    kind: OrderKind,
+    quantity: Scaled,
+    time_in_force: TimeInForce,
+    reduce_only: bool,
+    submitted_at: i64,
+    updated_at: i64,
+}
+
+impl RestingOrder {
+    fn to_order(&self, account: TradeAccountId) -> Option<Order> {
+        Some(Order {
+            id: OrderId::new(self.id.clone()),
+            client_order_id: self
+                .client_order_id
+                .as_deref()
+                .and_then(|id| senken_trade::ClientOrderId::new(id).ok()),
+            account_id: account,
+            instrument: InstrumentId::parse(&self.instrument).ok()?,
+            side: self.side,
+            kind: self.kind,
+            quantity: self.quantity,
+            filled_quantity: Scaled::new(self.quantity.scale, 0),
+            average_price: None,
+            time_in_force: self.time_in_force,
+            status: OrderStatus::Open,
+            reduce_only: self.reduce_only,
+            post_only: false,
+            submitted_at: senken_core::time::UnixNanos::from_nanos(self.submitted_at),
+            updated_at: senken_core::time::UnixNanos::from_nanos(self.updated_at),
+            reject_reason: None,
+        })
     }
 }
 
@@ -205,21 +250,148 @@ impl<V: SimulatedVenue> SimAdapter<V> {
         );
     }
 
+    /// Puts a non-market order into the book to wait.
+    ///
+    /// Filling a limit at the mark would make the capability a lie: a
+    /// trader who places a limit below the market and sees it fill
+    /// immediately learned nothing true about their strategy.
+    fn rest_order(
+        &self,
+        ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+        request: OrderRequest,
+    ) -> Result<Order, TradeError> {
+        // A non-market order rests. Filling a limit at the mark would make
+        // the capability a lie: a trader who places a limit below the
+        // market and sees it fill immediately learned nothing true about
+        // their strategy.
+        let order_id = OrderId::new(format!("{}-{}", self.venue.id(), uuid_like(ctx)));
+        let snapshot = {
+            let mut accounts = self.lock();
+            let Some(stored) = accounts.get_mut(&account.id) else {
+                return Err(TradeError::UnknownAccount);
+            };
+            stored.resting.push(RestingOrder {
+                id: order_id.to_string(),
+                client_order_id: request.client_order_id.as_ref().map(ToString::to_string),
+                instrument: request.instrument.to_string(),
+                side: request.side,
+                kind: request.kind,
+                quantity: request.quantity,
+                time_in_force: request.time_in_force,
+                reduce_only: request.reduce_only,
+                submitted_at: ctx.now().as_nanos(),
+                updated_at: ctx.now().as_nanos(),
+            });
+            accounts.clone()
+        };
+        self.persist(&snapshot);
+        Ok(Order {
+            id: order_id,
+            client_order_id: request.client_order_id.clone(),
+            account_id: account.id,
+            instrument: request.instrument,
+            side: request.side,
+            kind: request.kind,
+            quantity: request.quantity,
+            filled_quantity: Scaled::new(request.quantity.scale, 0),
+            average_price: None,
+            time_in_force: request.time_in_force,
+            status: OrderStatus::Open,
+            reduce_only: request.reduce_only,
+            post_only: false,
+            submitted_at: ctx.now(),
+            updated_at: ctx.now(),
+            reject_reason: None,
+        })
+    }
+
+    /// Fills every resting order the market has reached.
+    ///
+    /// Evaluated against the current mark. The bar-accurate form —
+    /// replaying the bars between `settled_through` and now, so a level is
+    /// reached by the bar whose extreme actually reached it — lives in
+    /// `crate::replay` and is what this becomes once the adapter is handed
+    /// a bar source. Until then the honest description is: a level is
+    /// reached when a *read* sees it reached, which is coarser than a real
+    /// venue and is stated rather than implied.
+    fn fill_resting(
+        venue: &V,
+        settings: &SettingsValues,
+        stored: &mut StoredAccount<V::Book>,
+        model: &V::Model,
+        marks: &Marks,
+        now: senken_core::time::UnixNanos,
+    ) -> Result<(), TradeError> {
+        let mut still_resting = Vec::with_capacity(stored.resting.len());
+        // Taken in the order they were placed, so two orders the same read
+        // triggers fill in the order the trader placed them rather than in
+        // whatever order a map happened to hold them.
+        for order in std::mem::take(&mut stored.resting) {
+            let Some(mark) = marks.get(&order.instrument).copied() else {
+                still_resting.push(order);
+                continue;
+            };
+            if !is_triggered(order.kind, order.side, mark) {
+                still_resting.push(order);
+                continue;
+            }
+            let Ok(instrument) = InstrumentId::parse(&order.instrument) else {
+                continue;
+            };
+            // A limit fills at its own price, never better: the market
+            // reaching a level is not the same as the market crossing it,
+            // and paying the mark would hand the trader a fill they could
+            // not have had.
+            let price = match order.kind {
+                OrderKind::Limit { price } | OrderKind::StopLimit { price, .. } => price,
+                _ => mark,
+            };
+            let settled = model.settle(
+                &mut stored.book,
+                &FillContext {
+                    instrument: &instrument,
+                    side: order.side,
+                    quantity: order.quantity,
+                    price,
+                    now,
+                },
+            )?;
+            stored.fills.push(StoredFill {
+                order_id: order.id.clone(),
+                instrument: order.instrument.clone(),
+                side: order.side,
+                quantity: order.quantity,
+                price: settled.fill_price,
+                fee: settled.fee,
+                fee_currency: venue.fee_currency(settings, order.side),
+                at: now.as_nanos(),
+            });
+        }
+        stored.resting = still_resting;
+        Ok(())
+    }
+
     /// Every mark the account's positions need, gathered once.
     async fn marks_for(
         &self,
         ctx: &TradeContext<'_>,
         account: TradeAccountId,
     ) -> Result<Marks, TradeError> {
-        let instruments: Vec<String> = {
+        let instruments: std::collections::BTreeSet<String> = {
             let accounts = self.lock();
             let Some(stored) = accounts.get(&account) else {
                 return Ok(Marks::new());
             };
+            // Both the open positions and anything resting: an order
+            // waiting on an instrument the account holds no position in
+            // still needs a price, and without one it would rest for ever
+            // however far the market moved through it.
             self.venue
                 .positions(&stored.book, &Marks::new(), account)?
                 .into_iter()
                 .map(|position| position.instrument.to_string())
+                .chain(stored.resting.iter().map(|order| order.instrument.clone()))
                 .collect()
         };
         let mut marks = Marks::new();
@@ -257,6 +429,11 @@ impl<V: SimulatedVenue> SimAdapter<V> {
             let from = senken_core::time::UnixNanos::from_nanos(stored.settled_through);
             model.accrue(&mut stored.book, &marks, from, now)?;
             stored.settled_through = now.as_nanos();
+            // Resting orders fill before risk is enforced: an order the
+            // market reached changed the book, and enforcing against the
+            // book as it stood before would liquidate a position the fill
+            // had already rescued.
+            Self::fill_resting(&self.venue, settings, stored, &model, &marks, now)?;
             model.enforce(&mut stored.book, &marks, now)?;
             accounts.clone()
         };
@@ -284,7 +461,13 @@ impl<V: SimulatedVenue> TradeAdapter for SimAdapter<V> {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        self.venue.capabilities()
+        // Cancelling and amending are the shared adapter's, not each
+        // venue's, so they are added here rather than remembered four
+        // times — a venue that forgot would advertise less than it can do.
+        self.venue
+            .capabilities()
+            .with_feature(senken_trade::AdapterFeature::CancelOrders)
+            .with_feature(senken_trade::AdapterFeature::ModifyOrders)
     }
 
     fn coverage(&self) -> InstrumentCoverage {
@@ -307,6 +490,7 @@ impl<V: SimulatedVenue> TradeAdapter for SimAdapter<V> {
                 book,
                 settled_through: 0,
                 fills: Vec::new(),
+                resting: Vec::new(),
             });
             accounts.clone()
         };
@@ -319,7 +503,11 @@ impl<V: SimulatedVenue> TradeAdapter for SimAdapter<V> {
         _ctx: &TradeContext<'_>,
         account: AccountRef<'_>,
     ) -> Result<AccountAccess, TradeError> {
-        let capabilities = self.venue.capabilities();
+        // The adapter's own, not the venue's: cancelling and amending are
+        // added by this layer, and an account resolved from the venue's
+        // list alone would be refused the two things the adapter can
+        // actually do. The engine validates against *this* answer.
+        let capabilities = TradeAdapter::capabilities(self);
         if self.venue.is_read_only(account.settings) {
             return Ok(AccountAccess::read_only(
                 capabilities,
@@ -378,11 +566,100 @@ impl<V: SimulatedVenue> TradeAdapter for SimAdapter<V> {
 
     async fn orders(
         &self,
-        _ctx: &TradeContext<'_>,
-        _account: AccountRef<'_>,
-        _filter: OrderFilter,
+        ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+        filter: OrderFilter,
     ) -> Result<Vec<Order>, TradeError> {
-        Ok(Vec::new())
+        // Settled first, so an order the market has already reached is
+        // reported as filled rather than as still waiting.
+        self.settle(ctx, account.id, account.settings).await?;
+        let accounts = self.lock();
+        let Some(stored) = accounts.get(&account.id) else {
+            return Ok(Vec::new());
+        };
+        Ok(stored
+            .resting
+            .iter()
+            .filter_map(|order| order.to_order(account.id))
+            // Everything still here is open by definition — a resting
+            // order that filled or was cancelled is no longer in this
+            // list — so `All` and `Open` agree, and this build keeps no
+            // history of the closed ones to widen `All` with.
+            .filter(|_| matches!(filter, OrderFilter::Open | OrderFilter::All))
+            .collect())
+    }
+
+    async fn cancel_order(
+        &self,
+        _ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+        order_id: &OrderId,
+    ) -> Result<Order, TradeError> {
+        if self.venue.is_read_only(account.settings) {
+            return Err(TradeError::ReadOnly {
+                adapter: self.venue.id().to_owned(),
+                note: Some("this login cancels no orders".to_owned()),
+            });
+        }
+        let (cancelled, snapshot) = {
+            let mut accounts = self.lock();
+            let Some(stored) = accounts.get_mut(&account.id) else {
+                return Err(TradeError::UnknownAccount);
+            };
+            let Some(index) = stored
+                .resting
+                .iter()
+                .position(|order| order.id == order_id.as_str())
+            else {
+                return Err(TradeError::UnknownOrder);
+            };
+            (stored.resting.remove(index), accounts.clone())
+        };
+        self.persist(&snapshot);
+        let mut order = cancelled
+            .to_order(account.id)
+            .ok_or(TradeError::UnknownOrder)?;
+        order.status = OrderStatus::Cancelled;
+        Ok(order)
+    }
+
+    async fn modify_order(
+        &self,
+        ctx: &TradeContext<'_>,
+        account: AccountRef<'_>,
+        order_id: &OrderId,
+        amendment: OrderAmendment,
+    ) -> Result<Order, TradeError> {
+        if self.venue.is_read_only(account.settings) {
+            return Err(TradeError::ReadOnly {
+                adapter: self.venue.id().to_owned(),
+                note: Some("this login amends no orders".to_owned()),
+            });
+        }
+        let (amended, snapshot) = {
+            let mut accounts = self.lock();
+            let Some(stored) = accounts.get_mut(&account.id) else {
+                return Err(TradeError::UnknownAccount);
+            };
+            let Some(order) = stored
+                .resting
+                .iter_mut()
+                .find(|order| order.id == order_id.as_str())
+            else {
+                return Err(TradeError::UnknownOrder);
+            };
+            // An amendment keeps the order's identity: it is the same
+            // order at a new price, not a cancel and a replace, so its id
+            // and its place in the queue both survive.
+            order.kind = apply_amendment(order.kind, amendment);
+            if let Some(quantity) = amendment.quantity {
+                order.quantity = quantity;
+            }
+            order.updated_at = ctx.now().as_nanos();
+            (order.clone(), accounts.clone())
+        };
+        self.persist(&snapshot);
+        amended.to_order(account.id).ok_or(TradeError::UnknownOrder)
     }
 
     async fn fills(
@@ -431,6 +708,10 @@ impl<V: SimulatedVenue> TradeAdapter for SimAdapter<V> {
             });
         }
         self.settle(ctx, account.id, account.settings).await?;
+
+        if !matches!(request.kind, OrderKind::Market) {
+            return self.rest_order(ctx, account, request);
+        }
 
         let mark = ctx.mark_price(&request.instrument).await?.price;
         let terms = Terms {
