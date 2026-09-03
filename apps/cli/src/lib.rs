@@ -25,6 +25,7 @@ use senken_plugin_bybit::BybitPlugin;
 use senken_plugin_coinbase::CoinbasePlugin;
 use senken_plugin_cryptocom::CryptocomPlugin;
 use senken_plugin_deribit::DeribitPlugin;
+use senken_plugin_futures::venue::FuturesPlugin;
 use senken_plugin_gate::GatePlugin;
 use senken_plugin_gemini::GeminiPlugin;
 use senken_plugin_htx::HtxPlugin;
@@ -32,6 +33,7 @@ use senken_plugin_kraken::KrakenPlugin;
 use senken_plugin_kucoin::KucoinPlugin;
 use senken_plugin_mexc::MexcPlugin;
 use senken_plugin_mt5_hedging::adapter::Mt5HedgingPlugin;
+use senken_plugin_mt5_netting::venue::NettingPlugin;
 use senken_plugin_okx::OkxPlugin;
 use senken_plugin_phemex::PhemexPlugin;
 use senken_plugin_poloniex::PoloniexPlugin;
@@ -166,6 +168,8 @@ fn build_runtime(
             data_dir,
         )))
         .plugin(SpotPlugin::new(senken_storage::Storage::new(data_dir)))
+        .plugin(NettingPlugin::new(senken_storage::Storage::new(data_dir)))
+        .plugin(FuturesPlugin::new(senken_storage::Storage::new(data_dir)))
         .plugin(BinancePlugin)
         .plugin(UpbitPlugin)
         .plugin(PhemexPlugin)

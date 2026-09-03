@@ -49,7 +49,19 @@ margin, the derived liquidation price with its label, the liquidation
 trigger and its close-worst-first loop, funding with its direction and
 interval, one-way versus hedge, and the `SettlementModel` implementation.
 
-Not yet implemented: the `TradeAdapter` that would make this registrable,
-cross-margin's dependence on every other open position, ADL, and
-mark-versus-last trigger selection. This file will keep saying so until
-they land.
+It is a registrable account through `senken-sim-core`'s shared adapter.
+Driven over HTTP in hedge mode, a buy and a sell of one contract on the
+same symbol leave **two** positions with a margin level reported against
+them.
+
+Two honest limits. The account's declared `position_mode` is the
+adapter's, not the account's, so an account configured for hedge mode
+still advertises netting at the adapter level — the per-account narrowing
+that `AccountAccess` does for capabilities has no equivalent for position
+mode yet. And the settings expose a **single** bracket tier rather than a
+real table: enough to exercise the mechanics honestly, not enough to match
+a venue.
+
+Also not yet implemented: cross-margin's dependence on every other open
+position, ADL, and mark-versus-last trigger selection. This file will keep
+saying so until they land.

@@ -24,3 +24,5 @@
 pub mod book;
 /// The netting account as a `SettlementModel`.
 pub mod model;
+/// The netting account as a registrable adapter.
+pub mod venue;

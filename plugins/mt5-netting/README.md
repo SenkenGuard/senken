@@ -45,6 +45,12 @@ Implemented and tested: the four transitions, the two identifiers, the
 realised ledger that survives a position closing, and the `SettlementModel`
 implementation.
 
-Not yet implemented: the `TradeAdapter` that would make this a registrable
-account, its settings schema, and margin. This file will keep saying so
-until they land.
+It is a registrable account: the `TradeAdapter` comes from
+`senken-sim-core`'s shared one, so this crate supplies only what netting
+itself decides. Driven over HTTP, a buy and a sell of one lot on the same
+symbol leave **zero** positions — where the hedging account, given the
+identical sequence, holds two.
+
+Not yet implemented: margin and its figures, resting orders, and the
+deal-history view that `POSITION_IDENTIFIER` exists to group. This file
+will keep saying so until they land.

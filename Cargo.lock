@@ -4748,6 +4748,7 @@ dependencies = [
  "senken-plugin-coinbase",
  "senken-plugin-cryptocom",
  "senken-plugin-deribit",
+ "senken-plugin-futures",
  "senken-plugin-gate",
  "senken-plugin-gemini",
  "senken-plugin-htx",
@@ -4755,6 +4756,7 @@ dependencies = [
  "senken-plugin-kucoin",
  "senken-plugin-mexc",
  "senken-plugin-mt5-hedging",
+ "senken-plugin-mt5-netting",
  "senken-plugin-okx",
  "senken-plugin-phemex",
  "senken-plugin-poloniex",
@@ -5115,8 +5117,11 @@ version = "0.0.5"
 dependencies = [
  "senken-core",
  "senken-marketdata",
+ "senken-plugin",
  "senken-sim-core",
+ "senken-storage",
  "senken-trade",
+ "serde",
  "tokio",
 ]
 
@@ -5246,8 +5251,11 @@ version = "0.0.5"
 dependencies = [
  "senken-core",
  "senken-marketdata",
+ "senken-plugin",
  "senken-sim-core",
+ "senken-storage",
  "senken-trade",
+ "serde",
  "tokio",
 ]
 

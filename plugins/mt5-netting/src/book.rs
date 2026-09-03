@@ -4,6 +4,7 @@ use senken_core::decimal::Scaled;
 use senken_core::time::UnixNanos;
 use senken_marketdata::InstrumentId;
 use senken_trade::PositionSide;
+use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 
@@ -16,7 +17,7 @@ use std::collections::BTreeMap;
 /// that groups a position's deal history keys on it. Collapsing them into
 /// one field makes a reversal either break history or lie about when the
 /// current exposure opened.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetPosition {
     /// Changes on reversal, to the reversing order's ticket.
     pub ticket: u64,
@@ -35,7 +36,7 @@ pub struct NetPosition {
 
 /// A netting book: one position per symbol, ordered so two runs of the
 /// same fills report in the same order.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NettingBook {
     /// The positions, at most one per instrument.
     pub positions: BTreeMap<InstrumentId, NetPosition>,

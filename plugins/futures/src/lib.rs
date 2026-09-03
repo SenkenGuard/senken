@@ -25,3 +25,5 @@ pub mod bracket;
 pub mod funding;
 /// The futures account as a `SettlementModel`.
 pub mod model;
+/// The futures account as a registrable adapter.
+pub mod venue;

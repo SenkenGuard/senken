@@ -9,12 +9,13 @@ use senken_sim_core::money::{CASH_SCALE, rescale};
 use senken_sim_core::risk::{ForcedClose, RiskBreach, RiskState};
 use senken_sim_core::{FillContext, Marks, Settled, SettlementModel};
 use senken_trade::{MarginMode, OrderSide, PositionSide, TradeError};
+use serde::{Deserialize, Serialize};
 
 use crate::bracket::{BracketTable, Liquidation};
 use crate::funding::{FundingTerms, funding_for, intervals_crossed};
 
 /// One open perpetual position.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PerpPosition {
     /// The instrument.
     pub instrument: InstrumentId,
@@ -35,7 +36,7 @@ pub struct PerpPosition {
 }
 
 /// A perpetual futures book.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FuturesBook {
     /// Wallet balance, at [`CASH_SCALE`].
     pub wallet: i64,
