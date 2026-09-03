@@ -49,6 +49,7 @@ senken-plugin-whitebit = { workspace = true }
 # rather than a market data source and reaches no network.
 senken-plugin-mt5-hedging = { workspace = true }
 senken-plugin-simulator = { workspace = true }
+senken-plugin-spot = { workspace = true }
 senken-runtime = { workspace = true }
 # The simulator keeps its books through `Storage`, and this is where the
 # data directory is known.

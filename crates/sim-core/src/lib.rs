@@ -28,6 +28,8 @@ pub mod replay;
 pub mod risk;
 /// The one thing four simulated systems genuinely disagree about.
 pub mod settlement;
+/// One simulated venue, and the adapter that drives any of them.
+pub mod venue;
 
 pub use crate::money::{
     BPS_DIVISOR, CASH_SCALE, basis_points, notional, rescale, slip, weighted_average,
@@ -36,3 +38,4 @@ pub use crate::pricing::{Terms, apply_amendment, is_triggered, market_fill_price
 pub use crate::replay::{Level, ReplayBar, bars_in_range, triggered_in_order};
 pub use crate::risk::{ForcedClose, RiskBreach, RiskState};
 pub use crate::settlement::{FillContext, Marks, Settled, SettlementModel};
+pub use crate::venue::{SimAdapter, SimulatedVenue};

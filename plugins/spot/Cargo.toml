@@ -18,7 +18,10 @@ workspace = true
 [dependencies]
 senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
+senken-plugin = { workspace = true }
 senken-sim-core = { workspace = true }
+senken-storage = { workspace = true }
+serde = { workspace = true }
 senken-trade = { workspace = true }
 
 [dev-dependencies]

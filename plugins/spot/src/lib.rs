@@ -25,3 +25,7 @@
 pub mod balances;
 /// The spot account as a `SettlementModel`.
 pub mod model;
+/// Registering the spot adapter with a runtime.
+pub mod plugin;
+/// The spot account as a registrable adapter.
+pub mod venue;

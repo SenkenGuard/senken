@@ -36,6 +36,7 @@ use senken_plugin_okx::OkxPlugin;
 use senken_plugin_phemex::PhemexPlugin;
 use senken_plugin_poloniex::PoloniexPlugin;
 use senken_plugin_simulator::SimulatorPlugin;
+use senken_plugin_spot::plugin::SpotPlugin;
 use senken_plugin_upbit::UpbitPlugin;
 use senken_plugin_whitebit::WhitebitPlugin;
 use senken_runtime::Runtime;
@@ -164,6 +165,7 @@ fn build_runtime(
         .plugin(Mt5HedgingPlugin::new(senken_storage::Storage::new(
             data_dir,
         )))
+        .plugin(SpotPlugin::new(senken_storage::Storage::new(data_dir)))
         .plugin(BinancePlugin)
         .plugin(UpbitPlugin)
         .plugin(PhemexPlugin)

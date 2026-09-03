@@ -4759,6 +4759,7 @@ dependencies = [
  "senken-plugin-phemex",
  "senken-plugin-poloniex",
  "senken-plugin-simulator",
+ "senken-plugin-spot",
  "senken-plugin-upbit",
  "senken-plugin-whitebit",
  "senken-runtime",
@@ -5319,8 +5320,11 @@ version = "0.0.5"
 dependencies = [
  "senken-core",
  "senken-marketdata",
+ "senken-plugin",
  "senken-sim-core",
+ "senken-storage",
  "senken-trade",
+ "serde",
  "tokio",
 ]
 
@@ -5391,9 +5395,12 @@ dependencies = [
 name = "senken-sim-core"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
  "senken-core",
  "senken-marketdata",
+ "senken-storage",
  "senken-trade",
+ "serde",
  "tokio",
 ]
 

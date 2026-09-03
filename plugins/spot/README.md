@@ -43,7 +43,12 @@ Implemented and tested: the balance book with free and locked, order
 locks and releases, buy and sell settlement, and the fee-currency rule
 including the discount-asset case.
 
-Not yet implemented: the `TradeAdapter` that would make this a registrable
-account, the per-symbol filters (min notional, lot size, tick size) that
-are the main source of real rejections, and `LIMIT_MAKER`/OCO. This file
-will keep saying so until they land.
+It is a registrable account: the `TradeAdapter` comes from
+`senken-sim-core`'s shared one, so this crate supplies only what spot
+itself decides — its settings, its capabilities, how to build its model,
+and how to report its book. That whole adapter is one file with no
+boilerplate in it.
+
+Not yet implemented: the per-symbol filters (min notional, lot size, tick
+size) that are the main source of real rejections, resting orders, and
+`LIMIT_MAKER`/OCO. This file will keep saying so until they land.

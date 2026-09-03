@@ -4,9 +4,10 @@
 use std::collections::BTreeMap;
 
 use senken_trade::TradeError;
+use serde::{Deserialize, Serialize};
 
 /// One asset's balance, at a fixed scale the account keeps.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetBalance {
     /// What can be spent on a new order.
     pub free: i64,
@@ -23,7 +24,7 @@ impl AssetBalance {
 }
 
 /// A spot account: balances, and nothing that resembles a position.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpotBook {
     /// One row per asset the account has ever touched, ordered so two runs
     /// of the same fills report in the same order.
