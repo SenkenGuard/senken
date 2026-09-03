@@ -95,6 +95,11 @@ watches it fill immediately has learned nothing true about their strategy.
 A resting order fills at **its own price**, never at the mark: the market
 reaching a level is not the same as the market crossing it.
 
+A venue can hold something against a resting order — `reserve` and
+`release` — which is how a spot account locks the balance an order could
+consume while a margined one, holding margin against positions rather
+than orders, holds nothing and does not have to say so.
+
 Cancelling and amending live here too, not in each venue, so a venue that
 forgot to declare them would not advertise less than the adapter can do.
 An amendment keeps the order's identity: it is the same order at a new

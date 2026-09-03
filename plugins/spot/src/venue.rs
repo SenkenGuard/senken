@@ -8,7 +8,7 @@
 use senken_core::decimal::Scaled;
 use senken_marketdata::InstrumentId;
 use senken_sim_core::money::{CASH_SCALE, rescale};
-use senken_sim_core::{Marks, SimAdapter, SimulatedVenue};
+use senken_sim_core::{Marks, Reservation, SimAdapter, SimulatedVenue};
 use senken_trade::{
     AccountBalances, AdapterCapabilities, AssetBalance, ChoiceOption, FieldKind, OrderKindTag,
     Position, PositionMode, QuantityUnit, SettingField, SettingsSchema, SettingsValues,
@@ -239,6 +239,34 @@ impl SimulatedVenue for SpotVenue {
         })
     }
 
+    /// A buy holds quote, a sell holds base — exactly what the order
+    /// could consume if it filled completely.
+    ///
+    /// This is what stops one balance being promised to two orders at
+    /// once, and it is the reason a spot account can refuse a second
+    /// order that a glance at the total would say it could afford.
+    fn reserve(
+        &self,
+        book: &mut Self::Book,
+        order: &Reservation<'_>,
+        settings: &SettingsValues,
+    ) -> Result<(), TradeError> {
+        let model = self.model_for(settings)?;
+        let (asset, amount) = held_by(&model, order)?;
+        book.lock(&asset, amount)
+    }
+
+    fn release(
+        &self,
+        book: &mut Self::Book,
+        order: &Reservation<'_>,
+        settings: &SettingsValues,
+    ) -> Result<(), TradeError> {
+        let model = self.model_for(settings)?;
+        let (asset, amount) = held_by(&model, order)?;
+        book.release(&asset, amount)
+    }
+
     fn slippage_bps(&self, _settings: &SettingsValues) -> i64 {
         0
     }
@@ -252,6 +280,43 @@ impl SimulatedVenue for SpotVenue {
             |model| model.fee_currency(side).to_owned(),
         )
     }
+}
+
+/// What one resting order holds, and in which asset.
+///
+/// A buy is held in quote at the price it waits at; a sell in base at its
+/// own size. A kind carrying no price — a plain stop, whose fill price is
+/// not known until it triggers — holds nothing, because reserving against
+/// a price nobody has yet would be inventing the number.
+fn held_by(model: &Spot, order: &Reservation<'_>) -> Result<(String, i64), TradeError> {
+    let price = match order.kind {
+        senken_trade::OrderKind::Limit { price }
+        | senken_trade::OrderKind::StopLimit { price, .. } => Some(price),
+        _ => None,
+    };
+    Ok(match order.side {
+        senken_trade::OrderSide::Buy => {
+            let Some(price) = price else {
+                return Ok((model.quote.clone(), 0));
+            };
+            (
+                model.quote.clone(),
+                rescale(
+                    i128::from(price.value) * i128::from(order.quantity.value),
+                    price.scale.saturating_add(order.quantity.scale),
+                    model.asset_scale,
+                )?,
+            )
+        }
+        senken_trade::OrderSide::Sell => (
+            model.base.clone(),
+            rescale(
+                i128::from(order.quantity.value),
+                order.quantity.scale,
+                model.asset_scale,
+            )?,
+        ),
+    })
 }
 
 /// The adapter, ready to register.

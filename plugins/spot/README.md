@@ -21,9 +21,18 @@ in the futures sense.
 ## Free and locked
 
 A resting order locks exactly what it could consume if it filled
-completely, which is what stops one balance being spent twice. Cancelling
-releases the whole remaining lock; a partial fill releases only the slice
-it consumed.
+completely: **quote on a buy, base on a sell**. That is what stops one
+balance being promised to two orders — an account holding 1 000 with 500
+already spoken for refuses a second order a glance at the total would say
+it could afford.
+
+Cancelling releases the whole hold. A fill releases it too, just before
+spending: the fill draws on the free balance, so leaving the hold in place
+would charge the account twice for one order.
+
+An order that cannot be covered is refused rather than rested. Waiting
+against balance that is not there is the same error as filling against
+it, one step earlier.
 
 ## What this crate proves about the kernel
 

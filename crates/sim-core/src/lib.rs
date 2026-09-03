@@ -38,4 +38,4 @@ pub use crate::pricing::{Terms, apply_amendment, is_triggered, market_fill_price
 pub use crate::replay::{Level, ReplayBar, bars_in_range, triggered_in_order};
 pub use crate::risk::{ForcedClose, RiskBreach, RiskState};
 pub use crate::settlement::{FillContext, Marks, Settled, SettlementModel};
-pub use crate::venue::{SimAdapter, SimulatedVenue};
+pub use crate::venue::{Reservation, SimAdapter, SimulatedVenue};

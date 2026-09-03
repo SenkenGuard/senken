@@ -25,4 +25,6 @@ serde = { workspace = true }
 senken-trade = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

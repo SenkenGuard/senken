@@ -5326,6 +5326,7 @@ dependencies = [
 name = "senken-plugin-spot"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
@@ -5333,6 +5334,7 @@ dependencies = [
  "senken-storage",
  "senken-trade",
  "serde",
+ "tempfile",
  "tokio",
 ]
 

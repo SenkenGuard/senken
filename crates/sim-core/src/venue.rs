@@ -35,6 +35,20 @@ use crate::pricing::{Terms, apply_amendment, is_triggered, market_fill_price};
 use crate::replay::{Level, ReplayBar};
 use crate::settlement::{FillContext, Marks, SettlementModel};
 
+/// One resting order, as a venue sees it when deciding what to hold
+/// against the book while it waits.
+#[derive(Debug, Clone, Copy)]
+pub struct Reservation<'a> {
+    /// The instrument the order is on.
+    pub instrument: &'a InstrumentId,
+    /// Which way it goes.
+    pub side: senken_trade::OrderSide,
+    /// What kind of order it is, carrying the price it waits at.
+    pub kind: OrderKind,
+    /// How much it is for.
+    pub quantity: Scaled,
+}
+
 /// One trading system, as the shared adapter needs to know it.
 ///
 /// Everything here is something the system genuinely decides. Anything a
@@ -94,6 +108,50 @@ pub trait SimulatedVenue: Send + Sync + 'static {
         account: TradeAccountId,
         settings: &SettingsValues,
     ) -> Result<AccountBalances, TradeError>;
+
+    /// Holds whatever a resting order could consume if it filled
+    /// completely.
+    ///
+    /// A spot account locks quote on a buy and base on a sell, which is
+    /// what stops the same balance being promised to two orders at once.
+    /// A margined account holds margin against positions rather than
+    /// against orders, so the default is to hold nothing — and a system
+    /// with nothing to reserve does not have to say so.
+    ///
+    /// # Errors
+    /// [`TradeError`] when the account cannot cover it. The order is then
+    /// refused rather than rested, because an order that could not be
+    /// covered must not be allowed to wait against balance that is not
+    /// there.
+    fn reserve(
+        &self,
+        book: &mut Self::Book,
+        order: &Reservation<'_>,
+        settings: &SettingsValues,
+    ) -> Result<(), TradeError> {
+        let _ = (book, order, settings);
+        Ok(())
+    }
+
+    /// Gives back whatever [`reserve`](Self::reserve) held.
+    ///
+    /// Called when a resting order is cancelled, and again just before it
+    /// fills — the fill spends from the free balance, so what it locked
+    /// must come back first or the account would be charged twice for one
+    /// order.
+    ///
+    /// # Errors
+    /// [`TradeError`] when more is released than was held, which would
+    /// conjure balance out of an accounting mistake.
+    fn release(
+        &self,
+        book: &mut Self::Book,
+        order: &Reservation<'_>,
+        settings: &SettingsValues,
+    ) -> Result<(), TradeError> {
+        let _ = (book, order, settings);
+        Ok(())
+    }
 
     /// Whether this account's login may place orders.
     ///
@@ -272,6 +330,18 @@ impl<V: SimulatedVenue> SimAdapter<V> {
             let Some(stored) = accounts.get_mut(&account.id) else {
                 return Err(TradeError::UnknownAccount);
             };
+            // Held before the order is written down, so a refusal leaves
+            // no half-placed order behind.
+            self.venue.reserve(
+                &mut stored.book,
+                &Reservation {
+                    instrument: &request.instrument,
+                    side: request.side,
+                    kind: request.kind,
+                    quantity: request.quantity,
+                },
+                account.settings,
+            )?;
             stored.resting.push(RestingOrder {
                 id: order_id.to_string(),
                 client_order_id: request.client_order_id.as_ref().map(ToString::to_string),
@@ -422,6 +492,19 @@ impl<V: SimulatedVenue> SimAdapter<V> {
                 OrderKind::Limit { price } | OrderKind::StopLimit { price, .. } => price,
                 _ => mark,
             };
+            // What the order held comes back before the fill spends it:
+            // the fill draws on the free balance, so leaving the hold in
+            // place would charge the account twice for one order.
+            venue.release(
+                &mut stored.book,
+                &Reservation {
+                    instrument: &instrument,
+                    side: order.side,
+                    kind: order.kind,
+                    quantity: order.quantity,
+                },
+                settings,
+            )?;
             let settled = model.settle(
                 &mut stored.book,
                 &FillContext {
@@ -689,7 +772,21 @@ impl<V: SimulatedVenue> TradeAdapter for SimAdapter<V> {
             else {
                 return Err(TradeError::UnknownOrder);
             };
-            (stored.resting.remove(index), accounts.clone())
+            let cancelled = stored.resting.remove(index);
+            if let Ok(instrument) = InstrumentId::parse(&cancelled.instrument) {
+                // Cancelling releases the whole remaining hold.
+                self.venue.release(
+                    &mut stored.book,
+                    &Reservation {
+                        instrument: &instrument,
+                        side: cancelled.side,
+                        kind: cancelled.kind,
+                        quantity: cancelled.quantity,
+                    },
+                    account.settings,
+                )?;
+            }
+            (cancelled, accounts.clone())
         };
         self.persist(&snapshot);
         let mut order = cancelled
