@@ -2,8 +2,7 @@
 // The property under test: an account with no margin (`margin_used: null` —
 // a spot venue genuinely has none) shows the "no margin" sentence rather
 // than a bar sitting at 0%, which would read as "no risk" instead of "not
-// applicable" — the exact distinction the plan this widget implements
-// exists to draw.
+// applicable" — the exact distinction this widget exists to draw.
 import { describe, expect, test } from 'bun:test';
 import { render } from 'svelte/server';
 import type { BalancesDto, PositionDto, TradeAccountDto } from '$lib/api/types';

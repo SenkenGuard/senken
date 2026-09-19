@@ -25,7 +25,6 @@
 mod bindings;
 mod builtins;
 mod circuit;
-mod compiled_instance;
 mod execution;
 mod health;
 mod host;
@@ -38,15 +37,15 @@ pub use bindings::{
     Bar, BarSpec, BarUnit, BoxDrawable, Drawable, Extend, FetchError, IndicatorDescriptor,
     LabelAnchor, LabelDrawable, LevelDrawable, OnBarResult, ParamKind, ParamSpec, ParamValue,
     PlotPoint, PlotShape, PlotSpec, PlotValue, PriceCoord, Scaled, SegmentDrawable, SeriesDrawable,
-    SeriesShape, VenueDescriptor, VenueError, VenueInstrument, Volume,
+    SeriesShape, VenueContract, VenueDescriptor, VenueError, VenueInstrument, VenueInstrumentKind,
+    VenueInstrumentStatus, VenueOptionRight, VenueOptionTerms, VenueSettlement, Volume,
 };
 pub use circuit::CircuitState;
-pub use compiled_instance::CompiledIndicatorInstance;
 pub use execution::ExecutionMode;
 pub use health::PluginHealth;
 pub use host::{
-    LoadedCompiledIndicator, LoadedPlugin, LoadedVenuePlugin, PluginHost, PluginLimits,
-    SUPPORTED_API_VERSION, VenueCallError,
+    LoadedPlugin, LoadedVenuePlugin, PluginHost, PluginLimits, SUPPORTED_API_VERSION,
+    VenueCallError,
 };
 pub use instance::PluginInstance;
 pub use log::{PluginLogLine, PluginLogSeverity};

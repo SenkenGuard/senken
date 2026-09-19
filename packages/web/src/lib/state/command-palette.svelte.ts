@@ -5,10 +5,10 @@
 // component's own `this.state.cmd` — it is what "ADD WIDGET…" (dashboard),
 // "ATTACH ACCOUNT" / the account chip (trade engine) and the symbol readout
 // / "INDICATORS & LAYERS" (charts) all open, each in a different `cmd` mode
-// (line 2716: `symbol` | `account` | `adapter` | `widget` | `layer`).
+// (`symbol` | `account` | `adapter` | `widget` | `layer`).
 //
-// its architectural decision (see the implementation report): this is a
-// module-level rune store, not Svelte context. `layout/command-palette.svelte`
+// This is deliberately a module-level rune store, not Svelte context.
+// `layout/command-palette.svelte`
 // is mounted once, in `AppShell`, so it is already inside every route's
 // component tree — a context would have to be set at that same single
 // mount point anyway, buying nothing over a plain exported store, while a
@@ -36,6 +36,14 @@ export interface CommandRow {
 	 * instrument" — but choosing it must not strand the caller. `meta`
 	 * carries the reason. */
 	disabled?: boolean;
+	/** bits-ui's `Command.Item` requires a unique `value` per row; falling
+	 * back to `title + sub` (`command-palette.svelte`'s own default) is only
+	 * unique by accident, and two rows sharing both — a built-in indicator
+	 * and a same-named dynamic one, once user-authored indicators exist —
+	 * would collide. A caller that can name a real, stable identity (an
+	 * indicator's own catalogue name, an instrument id) should pass it here
+	 * instead of relying on the fallback. */
+	id?: string;
 }
 
 export interface CommandKindTab {
@@ -64,6 +72,13 @@ export interface CommandRequest {
 	 * in-flight search renders as "NO MATCH", which is not merely unhelpful —
 	 * it states something untrue about the venue's catalogue. */
 	busy?: () => boolean;
+	/** A single action shown in the footer, beside "ENTER TO APPLY" — the
+	 * layer picker's own "New indicator…" (034), which opens the indicator
+	 * dock instead of picking a row. A getter, same reason as `kindTabs`'
+	 * `active`: the 'layer' mode's INSTRUMENT/INDICATOR tab can flip while
+	 * the palette stays open, and only the INDICATOR tab has this action at
+	 * all. Returning `null` hides it. */
+	footerAction?: () => { label: string; onClick: () => void } | null;
 }
 
 class CommandPaletteStore {

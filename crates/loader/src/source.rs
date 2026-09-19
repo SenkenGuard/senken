@@ -4,11 +4,11 @@
 //! all: there is no `BarSource` implementation yet, so define
 //! the port you depend on and test it with an in-memory fake." This trait
 //! is that port, not the final one — this crate owns "the
-//! `Plugin`/`BarSource` contracts" to `senken-plugin`, and M7's
+//! `Plugin`/`BarSource` contracts" to `senken-plugin`, whose
 //! illustrative sketch adds a `supported()` method for
 //! venue-registration purposes this crate has no use for. The shape below
 //! is deliberately close to that sketch (`source_id`, `max_rows`, `bars`)
-//! so a future M7 executor can widen this trait in place, or have
+//! so a future implementation can widen this trait in place, or have
 //! `senken-plugin`'s real one subsume it, without a redesign — but it is
 //! this crate's own type until then.
 
@@ -39,8 +39,8 @@ pub trait BarSource: Send + Sync {
     /// A real implementation must already have dropped any unclosed
     /// candle and normalised to ascending order before
     /// returning — this crate trusts what it is given and does not
-    /// re-check it, since M6 has no real implementation to enforce that
-    /// against.
+    /// re-check it, since there is no real implementation yet to enforce
+    /// that against.
     ///
     /// # Errors
     /// [`FetchError`], whose [`FetchError::is_retryable`] tells the caller
@@ -57,10 +57,11 @@ pub trait BarSource: Send + Sync {
 ///
 /// Deliberately small and self-contained rather than reusing
 /// `senken_marketdata::SourceError` or `senken_venue`'s retry machinery:
-/// both belong to the instrument/HTTP layers a real M7 implementation sits
-/// behind, and this port only needs to know whether retrying is worth it —
-/// widening it to carry HTTP status codes or transport detail is an M7
-/// concern once a real implementation exists to need them.
+/// both belong to the instrument/HTTP layers a real venue-facing
+/// implementation sits behind, and this port only needs to know whether
+/// retrying is worth it — widening it to carry HTTP status codes or
+/// transport detail is a concern for whoever eventually builds that
+/// separate contract.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum FetchError {

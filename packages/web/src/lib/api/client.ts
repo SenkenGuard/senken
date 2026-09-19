@@ -41,9 +41,16 @@ import type {
 	ComputeIndicatorRequest,
 	ComputeIndicatorResponse,
 	IndicatorPluginDto,
-	SetIndicatorPluginEnabledRequest,
-	CompileIndicatorRequest,
-	CompileIndicatorErrorDto,
+	PluginDto,
+	PluginListResponse,
+	SetPluginEnabledRequest,
+	InstallPluginResponse,
+	UserIndicatorSummaryDto,
+	UserIndicatorDto,
+	CreateUserIndicatorRequest,
+	UpdateUserIndicatorRequest,
+	SaveUserIndicatorResponse,
+	IndicatorToolchainStatusResponse,
 	InstrumentsPage,
 	SourcesResponse,
 	WatchlistGroupsPage,
@@ -54,11 +61,6 @@ import type {
 	NoteDto,
 	CreateNoteRequest,
 	UpdateNoteRequest,
-	RegistryPage,
-	IndicatorEntryDto,
-	PublishIndicatorRequest,
-	SetHandleRequest,
-	HandleResponse,
 	StorageReportDto,
 	DeleteStorageRequest,
 	DeleteStorageResponse,
@@ -83,19 +85,9 @@ import type {
 
 export type SessionExpiredHandler = () => void;
 
-/** `installIndicator`'s result — the compiled `wasm32-wasip2` component's
- * raw bytes plus the language version they were compiled against. Not a
- * generated DTO: `install_indicator`'s success body is
- * `application/wasm`, not JSON, so there is no `serde` struct for
- * `openapi-typescript` to have derived this shape from. */
-export interface InstalledIndicator {
-	wasm: ArrayBuffer;
-	languageVersion: string;
-}
-
-// B16 point 2: "route to login exactly once." Q5 plugs in the real
-// navigation with one call to `setSessionExpiredHandler` (`app-shell.svelte`,
-// the auth gate); until that call happens the default no-op is fine because
+// Routing to login must happen exactly once. `app-shell.svelte`'s auth gate
+// plugs in the real navigation with one call to `setSessionExpiredHandler`;
+// until that call happens the default no-op is fine because
 // `connectionStore.state` already goes to `'disconnected'` (see
 // `handleSessionExpired` below), which is the observable signal any UI
 // needs to react to a dead session.
@@ -113,21 +105,22 @@ export function setSessionExpiredHandler(handler: SessionExpiredHandler): void {
 const HEARTBEAT_INTERVAL_MS = 5_000;
 
 class ApiClient {
-	// Guards B16 point 2's "exactly once" — see `once-guard.ts` for why this
-	// is a separate, unit-tested primitive rather than an inline flag.
+	// Guards the exactly-once session-expiry handling — see `once-guard.ts`
+	// for why this is a separate, unit-tested primitive rather than an
+	// inline flag.
 	private readonly sessionExpiryGuard = new OnceGuard();
 	private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 	private heartbeatAttempt = 0;
 	private heartbeatGeneration = 0;
 
 	/**
-	 * B16 point 1 (attach credential + base URL) and 2/3 (translate
-	 * transport failures into typed errors). This is the only function in
-	 * the app that calls `fetch`.
+	 * Attaches the credential and base URL, and translates transport
+	 * failures into typed errors. This is the only function in the app that
+	 * calls `fetch`.
 	 *
 	 * `options.anonymous` skips attaching a stored credential even if one
 	 * exists for the active server — needed for exactly one call
-	 * (`setPasswordAnonymous`, the B4 first-run bootstrap path): that
+	 * (`setPasswordAnonymous`, the first-run bootstrap path): that
 	 * request's whole meaning on the server depends on arriving with *no*
 	 * `Authorization` header (`crates/api/src/identity_handlers.rs`'s
 	 * `set_password` branches on the header's presence, not its validity),
@@ -166,8 +159,8 @@ class ApiClient {
 				throw new UnauthorizedError(errorBodyMessage(body) ?? undefined);
 			}
 			case 'forbidden': {
-				// B16 point 3: 403 is authenticated-but-not-permitted, never
-				// a logout. It becomes a typed error a caller can turn into
+				// A 403 is authenticated-but-not-permitted, never a logout.
+				// It becomes a typed error a caller can turn into
 				// a message; it must never touch the credential or
 				// connection state. The server's own reason (e.g. "choose a
 				// registry handle before publishing") is read the same way
@@ -284,9 +277,9 @@ class ApiClient {
 	 * `POST /api/set-password`, self-service path: changes the *caller's
 	 * own* password. Requires an existing session — the server ignores any
 	 * `email` on this path (`crates/api/src/identity_handlers.rs`), so none
-	 * is sent. Per B13 this invalidates every other session for the
-	 * account; the caller's own session (the one making this request)
-	 * survives, so no local credential change is needed here.
+	 * is sent. This invalidates every other session for the account; the
+	 * caller's own session (the one making this request) survives, so no
+	 * local credential change is needed here.
 	 */
 	async setPassword(newPassword: string): Promise<void> {
 		await this.request<void>('/api/set-password', {
@@ -574,61 +567,141 @@ class ApiClient {
 		});
 	}
 
-	/** `POST /api/indicators/compile`: compiles indicator-lang source and
-	 * registers the result the same way `uploadIndicatorPlugin` registers a
-	 * compiled `.wasm` component. A `400` here carries a
-	 * `CompileIndicatorErrorDto` body (`line`/`column`/`message`), not the
-	 * crate-wide `{error}` shape — pass `HttpError.body` to
-	 * `readCompileIndicatorError` below rather than `getErrorMessage`, which
-	 * only ever looks for `error`. */
-	async compileIndicator(source: string): Promise<IndicatorCatalogEntry> {
-		const body: CompileIndicatorRequest = { source };
-		return this.request<IndicatorCatalogEntry>('/api/indicators/compile', {
-			method: 'POST',
-			body: JSON.stringify(body)
-		});
-	}
-
-	/** `POST /api/indicators/plugins`: registers a compiled `wasm32-wasip2`
-	 * component (the raw component bytes, not JSON) as a dynamic indicator.
-	 * Requires the caller to hold `Action::Create` on `Resource::Indicator`
-	 * at `Scope::All` — an ordinary account gets a 403, the same as any
-	 * other storage-wide administrative call. */
-	async uploadIndicatorPlugin(wasm: Uint8Array | ArrayBuffer): Promise<IndicatorCatalogEntry> {
-		return this.request<IndicatorCatalogEntry>('/api/indicators/plugins', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/wasm' },
-			body: wasm instanceof ArrayBuffer ? wasm : new Uint8Array(wasm)
-		});
-	}
-
 	/** `GET /api/indicators/plugins`: every dynamic indicator ever
 	 * registered, enabled or not — unlike `listIndicators`, which only ever
-	 * reports what a chart may place right now. */
+	 * reports what a chart may place right now. The unified Plugins page
+	 * still reads this (matched by id against `listPlugins`' own rows) for
+	 * the runtime health and log detail `GET /api/plugins/{id}` does not
+	 * carry yet; installing, enabling and disabling a plugin go through
+	 * `installPlugin`/`setPluginEnabled` below instead of this route's own
+	 * `POST`/`enabled` calls, which nothing in this app calls any more. */
 	async listIndicatorPlugins(): Promise<IndicatorPluginDto[]> {
 		return this.request<IndicatorPluginDto[]>('/api/indicators/plugins');
 	}
 
-	/** `POST /api/indicators/plugins/{id}/enabled`: flips whether
-	 * `listIndicators` currently offers this dynamic indicator, without
-	 * discarding the loaded component. A chart layer already plotting it
-	 * keeps its own stored parameters regardless — disabling only removes
-	 * it from the catalogue, so a client shows a placeholder rather than
-	 * dropping the layer, and enabling restores the real plot.
-	 *
-	 * `id` is `IndicatorPluginDto.id` — present for every entry regardless
-	 * of state, unlike its flattened catalogue fields (`name`, `title`, …)
-	 * which are only there once a descriptor has actually been read.
-	 * Passing `enabled: true` also closes this plugin's circuit breaker, so
-	 * this same call re-enables one the runtime auto-disabled after
-	 * repeated traps. */
-	async setIndicatorPluginEnabled(id: string, enabled: boolean): Promise<void> {
-		const body: SetIndicatorPluginEnabledRequest = { enabled };
-		await this.request<void>(`/api/indicators/plugins/${encodeURIComponent(id)}/enabled`, {
+	// ------------------------------------------------------------------
+	// The unified plugin system: one list for every venue plugin compiled
+	// into the server and every package discovered on disk, plus install,
+	// uninstall, refresh and the one switch to enable or disable one.
+	// `crates/api/src/plugin_handlers.rs` is the server side.
+	// ------------------------------------------------------------------
+
+	/** `GET /api/plugins`: every plugin this server knows about, static and
+	 * package alike. Needs no grant beyond a valid session — every signed-in
+	 * caller needs to know which venues are active. */
+	async listPlugins(): Promise<PluginDto[]> {
+		const response = await this.request<PluginListResponse>('/api/plugins');
+		return response.plugins;
+	}
+
+	/** `GET /api/plugins/{id}`: one plugin's row from the same catalog
+	 * `listPlugins` reads. */
+	async getPlugin(id: string): Promise<PluginDto> {
+		return this.request<PluginDto>(`/api/plugins/${encodeURIComponent(id)}`);
+	}
+
+	/** `POST /api/plugins/{id}/enabled`: enables or disables one plugin.
+	 * Requires `Action::Edit` on `Resource::Plugin` at `Scope::All` — an
+	 * ordinary account gets a 403. A package's toggle takes effect
+	 * immediately; a static plugin's is only recorded, and the returned
+	 * `needs_restart: true` says so rather than pretending it already
+	 * applied. */
+	async setPluginEnabled(id: string, enabled: boolean): Promise<PluginDto> {
+		const body: SetPluginEnabledRequest = { enabled };
+		return this.request<PluginDto>(`/api/plugins/${encodeURIComponent(id)}/enabled`, {
 			method: 'POST',
 			body: JSON.stringify(body)
 		});
 	}
+
+	/** `POST /api/plugins`: installs a package from the raw bytes of a zip
+	 * archive (`manifest.json` at its root), or a bare compiled `.wasm`
+	 * indicator component — wrapped into a generated package automatically,
+	 * the same shape `uploadIndicatorPlugin` above has always accepted.
+	 * Requires `Action::Create` on `Resource::Plugin` at `Scope::All`. */
+	async installPlugin(bytes: Uint8Array | ArrayBuffer): Promise<InstallPluginResponse> {
+		return this.request<InstallPluginResponse>('/api/plugins', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/octet-stream' },
+			body: bytes instanceof ArrayBuffer ? bytes : new Uint8Array(bytes)
+		});
+	}
+
+	/** `DELETE /api/plugins/{id}`: uninstalls a package's files entirely. A
+	 * built-in, statically compiled plugin has nothing to remove and answers
+	 * `409` instead — see this call's own error, not a silently-ignored
+	 * request. Requires `Action::Delete` on `Resource::Plugin` at
+	 * `Scope::All`. */
+	async uninstallPlugin(id: string): Promise<void> {
+		await this.request<void>(`/api/plugins/${encodeURIComponent(id)}`, {
+			method: 'DELETE'
+		});
+	}
+
+	/** `POST /api/plugins/refresh`: an explicit rescan of the plugin package
+	 * directory, for a package dropped directly on disk rather than
+	 * uploaded — never a filesystem watcher (one can fire mid-copy and read
+	 * a half-written file). Requires `Action::View` on `Resource::Plugin` at
+	 * `Scope::All`. */
+	async refreshPlugins(): Promise<PluginDto[]> {
+		const response = await this.request<PluginListResponse>('/api/plugins/refresh', {
+			method: 'POST'
+		});
+		return response.plugins;
+	}
+
+	// ------------------------------------------------------------------
+	// Indicators an account wrote and compiled themselves. Every one of
+	// these funnels through `senken_indicator_registry::UserIndicatorStore`
+	// on the server, the same per-account scoping `listNotes`/`getNote`
+	// use below. A failed compile is still a `200` — see
+	// `SaveUserIndicatorResponse`'s own fields for how a mistake in the
+	// author's own Rust is reported.
+	// ------------------------------------------------------------------
+
+	myIndicators = {
+		/** `GET /api/my/indicators`: summaries only, never the source. */
+		list: (): Promise<UserIndicatorSummaryDto[]> =>
+			this.request<UserIndicatorSummaryDto[]>('/api/my/indicators'),
+
+		/** `GET /api/my/indicators/{id}`: the full row, source included. */
+		get: (id: string): Promise<UserIndicatorDto> =>
+			this.request<UserIndicatorDto>(`/api/my/indicators/${encodeURIComponent(id)}`),
+
+		/** `POST /api/my/indicators`: creates a new indicator, then compiles
+		 * it immediately. */
+		create: (body: CreateUserIndicatorRequest): Promise<SaveUserIndicatorResponse> =>
+			this.request<SaveUserIndicatorResponse>('/api/my/indicators', {
+				method: 'POST',
+				body: JSON.stringify(body)
+			}),
+
+		/** `PUT /api/my/indicators/{id}`: saves a new title/source, then
+		 * compiles. */
+		update: (id: string, body: UpdateUserIndicatorRequest): Promise<SaveUserIndicatorResponse> =>
+			this.request<SaveUserIndicatorResponse>(`/api/my/indicators/${encodeURIComponent(id)}`, {
+				method: 'PUT',
+				body: JSON.stringify(body)
+			}),
+
+		/** `POST /api/my/indicators/{id}/compile`: recompiles the source
+		 * already on file, without changing it. */
+		compile: (id: string): Promise<SaveUserIndicatorResponse> =>
+			this.request<SaveUserIndicatorResponse>(`/api/my/indicators/${encodeURIComponent(id)}/compile`, {
+				method: 'POST'
+			}),
+
+		/** `DELETE /api/my/indicators/{id}`. */
+		remove: (id: string): Promise<void> =>
+			this.request<void>(`/api/my/indicators/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+		/** `GET /api/my/indicators/toolchain`: whether this server can
+		 * compile a Rust indicator right now, so an authoring panel can
+		 * disable Save with a reason instead of letting a save fail with no
+		 * explanation. */
+		toolchain: (): Promise<IndicatorToolchainStatusResponse> =>
+			this.request<IndicatorToolchainStatusResponse>('/api/my/indicators/toolchain')
+	};
 
 	// ------------------------------------------------------------------
 	// Watchlists: a user-owned group of watched instruments and its
@@ -727,114 +800,6 @@ class ApiClient {
 	/** `DELETE /api/notes/{id}`. */
 	async deleteNote(id: string): Promise<void> {
 		await this.request<void>(`/api/notes/${encodeURIComponent(id)}`, { method: 'DELETE' });
-	}
-
-	// ------------------------------------------------------------------
-	// The indicator registry: publish, search, install indicator-lang
-	// source. `senken_indicator_registry::RegistryStore` performs its own
-	// guarded check on `publish`/`listMyIndicators`; `searchIndicators` and
-	// `getRegistryIndicator` need no session — a published indicator is
-	// public by design (`crates/api/src/registry_handlers.rs`'s own doc).
-	// ------------------------------------------------------------------
-
-	/** `POST /api/registry/indicators`: publishes `source` under `name` in
-	 * the caller's own namespace, replacing an earlier publish of the same
-	 * name. */
-	async publishIndicator(name: string, source: string): Promise<IdResponse> {
-		const body: PublishIndicatorRequest = { name, source };
-		return this.request<IdResponse>('/api/registry/indicators', { method: 'POST', body: JSON.stringify(body) });
-	}
-
-	/** `GET /api/registry/indicators`: the public catalog, across every
-	 * namespace — no session required. `query` matches on indicator name;
-	 * an empty string lists everything published, newest first. */
-	async searchIndicators(query: string, limit = 50, offset = 0): Promise<RegistryPage> {
-		const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-		if (query) params.set('query', query);
-		return this.request<RegistryPage>(`/api/registry/indicators?${params.toString()}`);
-	}
-
-	/** `GET /api/registry/indicators/mine`: every indicator the caller has
-	 * published. */
-	async listMyIndicators(limit: number, offset: number): Promise<RegistryPage> {
-		return this.request<RegistryPage>(`/api/registry/indicators/mine?limit=${limit}&offset=${offset}`);
-	}
-
-	/** `GET /api/registry/indicators/{namespace}/{name}`: the full published
-	 * entry, source included. */
-	async getRegistryIndicator(namespace: string, name: string): Promise<IndicatorEntryDto> {
-		return this.request<IndicatorEntryDto>(
-			`/api/registry/indicators/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
-		);
-	}
-
-	/** `GET /api/registry/handle`: the caller's own claimed registry handle,
-	 * or `null` if they have not chosen one yet — `publishIndicator` 403s
-	 * with "choose a registry handle before publishing" until they have. */
-	async getRegistryHandle(): Promise<HandleResponse> {
-		return this.request<HandleResponse>('/api/registry/handle');
-	}
-
-	/** `PUT /api/registry/handle`: claims, or replaces, the caller's own
-	 * registry handle — the human-readable address other users type instead
-	 * of the caller's raw account id. */
-	async setRegistryHandle(handle: string): Promise<void> {
-		const body: SetHandleRequest = { handle };
-		await this.request<void>('/api/registry/handle', { method: 'PUT', body: JSON.stringify(body) });
-	}
-
-	/**
-	 * `POST /api/registry/indicators/{namespace}/{name}/install`: fetches
-	 * the published source and compiles it right here on this host, the
-	 * same "what you read is what you run" guarantee
-	 * `registry_handlers.rs`'s own doc describes. No session required — see
-	 * that same doc for why install, like search and get, is public.
-	 *
-	 * This cannot go through `request` above: a successful response body is
-	 * the compiled `application/wasm` component's raw bytes, not JSON, so
-	 * `safeJson` would misparse it. Everything else — attaching a
-	 * credential when one exists, the network/401/403/other-error
-	 * classification — mirrors `request` exactly.
-	 */
-	async installIndicator(namespace: string, name: string): Promise<InstalledIndicator> {
-		const server = activeServer();
-		const base = resolveBaseUrl(server);
-		const token = credentialReader.get(server.id);
-		const path = `/api/registry/indicators/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/install`;
-		const headers = new Headers();
-		if (token) headers.set('Authorization', `Bearer ${token}`);
-
-		let response: Response;
-		try {
-			response = await fetch(`${base}${path}`, { method: 'POST', headers });
-		} catch (cause) {
-			throw new NetworkError(`Could not reach ${base}${path}.`, cause);
-		}
-
-		switch (classifyResponse(response)) {
-			case 'unauthorized': {
-				if (token) this.handleSessionExpired(server.id);
-				const body = await safeJson(response);
-				throw new UnauthorizedError(errorBodyMessage(body) ?? undefined);
-			}
-			case 'forbidden': {
-				// Same reasoning as `request`'s own 403 branch above: read
-				// the server's own message rather than a generic default.
-				const body = await safeJson(response);
-				throw new ForbiddenError(errorBodyMessage(body) ?? undefined);
-			}
-			case 'http-error': {
-				const body = await safeJson(response);
-				throw new HttpError(`Request to ${path} failed with ${response.status}.`, response.status, body);
-			}
-			case 'no-content':
-				throw new HttpError(`Request to ${path} returned no body.`, response.status);
-			case 'ok':
-				return {
-					wasm: await response.arrayBuffer(),
-					languageVersion: response.headers.get('X-Indicator-Language-Version') ?? ''
-				};
-		}
 	}
 
 	// ------------------------------------------------------------------
@@ -1068,8 +1033,8 @@ class ApiClient {
 			// whose account is *still* fenced (the fence is a property of
 			// the account, not the session, so a token minted before a
 			// password was set stays fenced even if the password is later
-			// cleared again by some other path). That is not "session gone"
-			// (never a logout point 3), but retrying will also keep
+			// cleared again by some other path). That is not "session gone" —
+			// a 403 must never log anyone out — but retrying will also keep
 			// 403'ing until the account is unfenced. Left as a fall-through to
 			// the generic retry below rather than a third branch: this state
 			// should not arise on the primary first-run-then-login path this
@@ -1096,22 +1061,6 @@ async function safeJson(response: Response): Promise<unknown> {
 }
 
 export const apiClient = new ApiClient();
-
-/** Narrows an `HttpError.body` from `compileIndicator` into its
- * `CompileIndicatorErrorDto` shape, or `null` if the body is the crate-wide
- * `{error}` shape instead (a registration failure past the compiler, or an
- * unrelated error) — the two are deliberately different shapes so a caller
- * can tell "highlight this line" apart from "show this message" without
- * guessing from field presence alone. */
-export function readCompileIndicatorError(body: unknown): CompileIndicatorErrorDto | null {
-	if (!body || typeof body !== 'object') return null;
-	const candidate = body as Partial<CompileIndicatorErrorDto>;
-	return typeof candidate.line === 'number' &&
-		typeof candidate.column === 'number' &&
-		typeof candidate.message === 'string'
-		? (candidate as CompileIndicatorErrorDto)
-		: null;
-}
 
 /** Switch the active server and restart the heartbeat against it — the
  * pairing its done-criterion asks for ("point at a different server and

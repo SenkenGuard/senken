@@ -1,29 +1,20 @@
-//! The indicator language's version, as this host currently compiles it.
-//!
-//! `senken-indicator-lang` does not expose a version of its own — it is an
-//! internal compiler, versioned from `workspace.package.version` like every
-//! other crate in this application rather than decoupled from the
-//! application's own release cadence the way `senken-plugin-api` (a crate
-//! published externally) deliberately is. This crate is versioned the same
-//! way, from the same `workspace.package.version`, so its own
-//! `CARGO_PKG_VERSION` and the compiler's evolve in lockstep by
-//! construction: whenever a change to the language would break an older
-//! published indicator, that change ships in the same release that bumps
-//! this number.
+//! A version this registry compares published entries against — see this
+//! crate's own module docs for why nothing in this build can publish or
+//! install through it any more; this module is kept for whenever it is
+//! designed again, not because anything active depends on it today.
 //!
 //! A published indicator records the *publishing* host's [`HOST_LANGUAGE_VERSION`]
-//! at the moment it is compiled for validation (see
-//! [`crate::RegistryStore::publish`]) — never a value the publisher's HTTP
-//! request supplies, which would let anyone claim any version. An install
+//! at the moment it is published (see [`crate::RegistryStore::publish`]) —
+//! never a value the publisher's HTTP request supplies, which would let
+//! anyone claim any version. An install
 //! then compares that recorded version against the *installing* host's own
 //! [`HOST_LANGUAGE_VERSION`]: two different Senken builds, potentially
 //! months apart, are exactly the case this check exists for.
 
 use crate::error::RegistryError;
 
-/// The version of the indicator language this build compiles — see this
-/// module's docs for why it is this crate's own package version rather
-/// than `senken-indicator-lang`'s.
+/// This build's own version, as this crate's `CARGO_PKG_VERSION` — see
+/// this module's docs for what it is compared against and why.
 pub const HOST_LANGUAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Parses a `major.minor.patch` version string into a tuple that orders the

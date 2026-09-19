@@ -87,6 +87,76 @@ pub use crate::clock::SystemClock;
 pub use crate::error::{BoxError, PluginError, PluginPermissionRegistrationError};
 pub use crate::permissions::reconcile_plugin_permissions;
 
+/// A named extension point a plugin can contribute to, in the same
+/// vocabulary a package's `senken-plugin.json` uses (see
+/// [`widget_package::manifest`]). Carried on [`PluginManifest`] so the
+/// Plugins page can show the same contribution badges for a static plugin
+/// and a package without a second vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContributionKind {
+    /// Market data, bars, depth or a live feed for a venue.
+    Venue,
+    /// A trading adapter.
+    TradeAdapter,
+    /// A dashboard widget UI.
+    DashboardWidget,
+    /// A compiled indicator.
+    Indicator,
+}
+
+/// Everything that can be wrong with a static plugin's embedded
+/// `senken-plugin.json`. A static plugin's copy is fixed at compile time —
+/// these errors are a build-time defect in the plugin crate, not something
+/// an end user can hit, but they are still reported by name rather than
+/// panicking blind.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StaticManifestError {
+    /// The bytes are not valid JSON, or not shaped like a manifest at all.
+    #[error("senken-plugin.json is not valid: {0}")]
+    Malformed(String),
+    /// `point` is not a name this build recognizes.
+    #[error("extension point {0:?} is not a recognized name")]
+    UnknownExtensionPoint(String),
+}
+
+#[derive(serde::Deserialize)]
+struct RawStaticManifest {
+    contributes: Vec<RawStaticContribution>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawStaticContribution {
+    point: String,
+}
+
+/// Parses the `contributes[].point` list out of a static plugin's embedded
+/// `senken-plugin.json` (via `include_str!`).
+///
+/// Unlike [`widget_package::manifest::validate`], this does not require an
+/// `entry` — a static plugin's code lives in the binary, not in a package
+/// asset — and `trade.adapter` is accepted here (it is rejected for
+/// dynamic packages, since no adapter can yet be loaded from WASM).
+///
+/// # Errors
+/// [`StaticManifestError`] if the JSON is malformed or names a point this
+/// build does not recognize at all.
+pub fn parse_static_contributions(
+    json: &str,
+) -> Result<Vec<ContributionKind>, StaticManifestError> {
+    let raw: RawStaticManifest =
+        serde_json::from_str(json).map_err(|e| StaticManifestError::Malformed(e.to_string()))?;
+    raw.contributes
+        .into_iter()
+        .map(|c| match c.point.as_str() {
+            "venue" => Ok(ContributionKind::Venue),
+            "trade.adapter" => Ok(ContributionKind::TradeAdapter),
+            "dashboard.widget" => Ok(ContributionKind::DashboardWidget),
+            "indicator" => Ok(ContributionKind::Indicator),
+            other => Err(StaticManifestError::UnknownExtensionPoint(other.to_owned())),
+        })
+        .collect()
+}
+
 /// Static facts about a plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginManifest {
@@ -113,6 +183,10 @@ pub struct PluginManifest {
     /// [`ActivationContext::register_plugin_permission`] from
     /// [`Plugin::activate`] instead.
     pub permissions: Vec<PluginPermissionName>,
+    /// The extension points this plugin declares in its own
+    /// `senken-plugin.json`, read with [`parse_static_contributions`]. Most
+    /// venue plugins declare exactly `[ContributionKind::Venue]`.
+    pub contributes: Vec<ContributionKind>,
 }
 
 impl PluginManifest {
@@ -436,8 +510,8 @@ impl HttpActivationContext<'_> {
     /// to call `limit_group("binance")` independently while building its own
     /// client. If every call built a fresh, unconnected [`LimitGroup`], the
     /// two kinds of traffic would spend two independent budgets against one
-    /// real venue quota — precisely the failure D15 introduced limit groups
-    /// to prevent, reappearing one level up. Two
+    /// real venue quota — precisely the failure limit groups exist to
+    /// prevent, reappearing one level up. Two
     /// calls with the same `name` now return clones that share one
     /// underlying group, exactly like `binance-spot` and `binance-usdm`
     /// already share one group via explicit `clone()` today.
@@ -555,6 +629,44 @@ pub trait Plugin: Send + Sync {
     fn deactivate(&self) -> Result<(), PluginError> {
         Ok(())
     }
+
+    /// The `venue-plugin` `wasm32-wasip2` components this plugin embeds, one
+    /// per market it has ported off native code — empty for every plugin
+    /// that has ported none (which is every plugin except a venue
+    /// mid-migration, and the default this method need not be overridden
+    /// for).
+    ///
+    /// A static plugin's code ships inside this binary, unlike a package's
+    /// `venue` contribution (loaded from a file at startup) — so a
+    /// **compiled-in** venue that has moved a market's catalog and bars to
+    /// a component still needs a way to hand the runtime that component's
+    /// bytes without a file on disk at all, which is what "one built-in
+    /// active, no files required on a fresh install" (`AGENTS.md`, `wit/
+    /// senken.wit`) actually needs from this side. This returns a `Vec`,
+    /// not a single component, because a `venue-plugin` world's one
+    /// `descriptor` answers for exactly one source id (`wit/senken.wit`'s
+    /// `venue.venue-descriptor.id` doc comment) — a venue with more than
+    /// one native source id to preserve while porting more than one market
+    /// (OKX's `okx-swap`/`okx-futures`/`okx-option-*` alongside `okx-spot`)
+    /// embeds one component per id it has ported, never one component
+    /// trying to speak for several.
+    ///
+    /// The runtime registers each of these bytes into the same
+    /// dynamic-venue registry a package's own `venue` contribution uses,
+    /// with [`crate::widget_package`]'s dynamic origin distinguished from
+    /// this one — see `senken_runtime::plugin_host::PluginOrigin::BuiltIn`
+    /// — and this plugin's own [`Plugin::activate`] must not also register
+    /// a native `MarketDataSource`/`BarSource` for whatever any of these
+    /// components already serves, or the two would collide on the same
+    /// source id.
+    ///
+    /// `Self::manifest`'s own `contributes` list still names `venue`
+    /// either way: a component-served venue is still a venue contribution,
+    /// this method only says which part of it is now dynamic.
+    #[must_use]
+    fn venue_components(&self) -> Vec<&'static [u8]> {
+        Vec::new()
+    }
 }
 
 impl fmt::Debug for dyn Plugin {
@@ -570,7 +682,8 @@ mod tests {
     #[cfg(feature = "http")]
     use super::HttpActivationContext;
     use super::{
-        ActivationContext, Arc, BarSource, BookSource, FeedSource, MarketDataSource, PluginManifest,
+        ActivationContext, Arc, BarSource, BookSource, ContributionKind, FeedSource,
+        MarketDataSource, PluginManifest,
     };
     use crate::error::PluginPermissionRegistrationError;
     use senken_acl::{PluginNamespace, PluginPermissionName};
@@ -1030,7 +1143,33 @@ mod tests {
             version: "0".to_owned(),
             description: String::new(),
             permissions,
+            contributes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn parsing_static_contributions_maps_every_known_point() {
+        let json = r#"{"contributes":[{"point":"venue"},{"point":"trade.adapter"},{"point":"dashboard.widget"},{"point":"indicator"}]}"#;
+        let contributes = super::parse_static_contributions(json).unwrap();
+        assert_eq!(
+            contributes,
+            vec![
+                ContributionKind::Venue,
+                ContributionKind::TradeAdapter,
+                ContributionKind::DashboardWidget,
+                ContributionKind::Indicator,
+            ]
+        );
+    }
+
+    #[test]
+    fn parsing_static_contributions_rejects_an_unknown_point_by_name() {
+        let json = r#"{"contributes":[{"point":"footer.banner"}]}"#;
+        let err = super::parse_static_contributions(json).unwrap_err();
+        assert_eq!(
+            err,
+            super::StaticManifestError::UnknownExtensionPoint("footer.banner".to_owned())
+        );
     }
 
     #[test]
@@ -1050,9 +1189,8 @@ mod tests {
 
     #[test]
     fn a_manifest_declaring_a_permission_outside_its_own_namespace_fails_to_validate() {
-        // The scenario B9 calls out by name: a manifest cannot delegate
-        // authority over anything but its own subtree, even in its own
-        // static, build-time declaration.
+        // A manifest cannot delegate authority over anything but its own
+        // subtree, even in its own static, build-time declaration.
         let foreign = PluginPermissionName::parse("senken.users:manage").unwrap();
         assert!(
             manifest("mychart", vec![foreign])

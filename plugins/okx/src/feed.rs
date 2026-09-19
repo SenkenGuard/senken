@@ -19,7 +19,7 @@
 //! - `px` (price) is a **string**, matching the observation that
 //!   OKX quotes prices as strings everywhere it was checked.
 //! - `ts` is also a **string** containing epoch **milliseconds** — the same
-//!   fact A4 records for OKX's kline endpoint, now confirmed for this
+//!   fact already recorded for OKX's kline endpoint, now confirmed for this
 //!   stream too. Parsed with [`senken_core::decimal_places`]/`parse_scaled`-
 //!   adjacent integer parsing, never assumed to be a bare `i64` the way
 //!   Binance's kline timestamps are.
@@ -64,7 +64,6 @@
 use senken_core::decimal_places;
 use senken_marketdata::InstrumentId;
 use senken_subscription::{ConnectionError, PriceUpdate, QuoteUpdate};
-use senken_venue::normalise_symbol;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -232,9 +231,11 @@ impl OkxTradesProtocol {
         if !self.source_ids.iter().any(|id| id == source) {
             return None;
         }
-        // The same rule this plugin's catalog applies: the `-SWAP` marker
-        // is a market, not part of the symbol.
-        let symbol = normalise_symbol(inst_id.trim_end_matches(SWAP_SUFFIX), &[OKX_SEPARATOR]);
+        // The one normalisation function this venue uses everywhere a
+        // symbol is derived from an `instId` — `okx_core::normalise_okx_symbol`'s
+        // own docs are where the `-SWAP`-marker rule actually lives now,
+        // not repeated here as a second copy of it.
+        let symbol = okx_core::normalise_okx_symbol(inst_id);
         InstrumentId::new(source, &symbol).ok()
     }
 
@@ -466,6 +467,22 @@ mod tests {
         // string with its point removed — no rounding, no float anywhere.
         assert_eq!(update.qty_scale, 8);
         assert_eq!(update.qty, senken_series::Volume::Real(504_905));
+    }
+
+    /// `AGENTS.md`: "A venue's symbol is normalised once, by one rule" —
+    /// this live decoder and the instrument catalog (`okx_core::normalise_okx_symbol`,
+    /// called directly here rather than through a second, hand-rolled
+    /// trim-and-uppercase) must strip exactly the same separators. Fails
+    /// if either side is ever changed to compute the `-SWAP` suffix or the
+    /// dash separator on its own again.
+    #[test]
+    fn the_live_decoder_normalises_a_perpetual_swaps_instid_the_same_way_the_catalog_does() {
+        let instrument = protocol().instrument("BTC-USD-SWAP").unwrap();
+        assert_eq!(
+            instrument.symbol(),
+            okx_core::normalise_okx_symbol("BTC-USD-SWAP")
+        );
+        assert_eq!(instrument.symbol(), "BTCUSD");
     }
 
     #[test]

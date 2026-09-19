@@ -95,12 +95,12 @@
 	--color-gain: var(--gain);
 	--color-loss: var(--loss);
 	/*
-	 * Raw Part A3 tokens that don't have a shadcn slot of their own, exposed
+	 * Raw design tokens that don't have a shadcn slot of their own, exposed
 	 * as first-class Tailwind colors (`bg-chrome`, `text-dim`, `border-ink/9`,
 	 * …) so terminal/ and layout/ components can stay on tokens instead of
 	 * inline `style="color: var(--x)"`. `--color-ink` is the rgb triplet as
 	 * an opaque color — Tailwind's `/<alpha>` modifier then reproduces every
-	 * `rgba(var(--ink), 0.NN)` border the reference uses.
+	 * `rgba(var(--ink), 0.NN)` border the design calls for.
 	 */
 	--color-chrome: var(--chrome);
 	--color-bg2: var(--bg2);

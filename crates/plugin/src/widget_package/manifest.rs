@@ -42,6 +42,20 @@ const WIDGET_API_VERSION: &str = "senken.widget/v1";
 /// module's docs.
 pub const DASHBOARD_WIDGET_POINT: &str = "dashboard.widget";
 
+/// A dynamic venue package: market data, bars, depth and a live feed for
+/// one venue, loaded as a WASM component.
+pub const VENUE_POINT: &str = "venue";
+
+/// A dynamic indicator package.
+pub const INDICATOR_POINT: &str = "indicator";
+
+/// A trading adapter. **Form only** for a dynamic package — no adapter can
+/// yet be loaded from WASM, so a package declaring this point is rejected
+/// the same way an unrouted point is (a static plugin's own
+/// `senken-plugin.json`, parsed by [`crate::parse_static_contributions`],
+/// is the one place this point is accepted).
+pub const TRADE_ADAPTER_POINT: &str = "trade.adapter";
+
 /// Extension point names this document has agreed the *shape* of, but whose
 /// host-side renderer does not exist yet. Declaring one of these must fail
 /// loudly, naming exactly that point, rather than being accepted and then
@@ -51,6 +65,7 @@ const RESERVED_NOT_YET_ROUTED_POINTS: &[&str] = &[
     "statusbar.item",
     "topbar.item",
     "settings.section",
+    TRADE_ADAPTER_POINT,
 ];
 
 /// Everything that can be wrong with an uploaded or discovered package's
@@ -116,6 +131,15 @@ pub enum ManifestError {
     /// `configSchema` was present but not a JSON object.
     #[error("widget {0:?}'s configSchema must be a JSON object")]
     InvalidConfigSchema(String),
+    /// A `venue`/`indicator` contribution's `entry` was empty.
+    #[error("a {0:?} contribution has an empty entry path")]
+    EmptyContributionEntry(&'static str),
+    /// A `venue`/`indicator` contribution's `entry` was absolute or escaped
+    /// the package (`..`).
+    #[error(
+        "entry path {0:?} must be relative and cannot escape the package (no leading \"/\", no \"..\")"
+    )]
+    UnsafeContributionEntryPath(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,6 +157,18 @@ struct RawContribution {
     point: String,
     #[serde(default)]
     widget: Option<RawWidgetContribution>,
+    #[serde(default)]
+    venue: Option<RawEntryContribution>,
+    #[serde(default)]
+    indicator: Option<RawEntryContribution>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawEntryContribution {
+    #[serde(default)]
+    entry: String,
+    #[serde(default)]
+    base_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,6 +272,19 @@ pub struct ValidatedWidgetContribution {
     pub entry: String,
 }
 
+/// One validated `venue` or `indicator` contribution — a WASM component's
+/// path relative to the package root, plus (for a venue) an optional base
+/// URL override the runtime passes on registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedEntryContribution {
+    /// Path, relative to the package root, to the compiled `.wasm`
+    /// component. Already checked to be relative and non-escaping.
+    pub entry: String,
+    /// For a `venue` contribution only: an override for the venue's base
+    /// URL — the first setting a dynamic venue package actually carries.
+    pub base_url: Option<String>,
+}
+
 /// A validated widget UI package manifest. Nothing downstream ever reads
 /// the raw JSON again once this exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,6 +299,10 @@ pub struct ValidatedManifest {
     pub description: String,
     /// Every `dashboard.widget` contribution this package declares.
     pub widgets: Vec<ValidatedWidgetContribution>,
+    /// Every `venue` contribution this package declares.
+    pub venues: Vec<ValidatedEntryContribution>,
+    /// Every `indicator` contribution this package declares.
+    pub indicators: Vec<ValidatedEntryContribution>,
 }
 
 /// Validates `raw` (the bytes of a `manifest.json`) into a
@@ -270,6 +323,8 @@ pub fn validate(raw: &[u8]) -> Result<ValidatedManifest, ManifestError> {
     }
 
     let mut widgets = Vec::with_capacity(parsed.contributes.len());
+    let mut venues = Vec::new();
+    let mut indicators = Vec::new();
     let mut seen_widget_ids = HashSet::new();
     for contribution in parsed.contributes {
         match contribution.point.as_str() {
@@ -282,6 +337,14 @@ pub fn validate(raw: &[u8]) -> Result<ValidatedManifest, ManifestError> {
                     return Err(ManifestError::DuplicateWidgetId(widget.widget_id));
                 }
                 widgets.push(widget);
+            }
+            VENUE_POINT => {
+                let raw = contribution.venue.unwrap_or_default();
+                venues.push(validate_entry_contribution(VENUE_POINT, raw)?);
+            }
+            INDICATOR_POINT => {
+                let raw = contribution.indicator.unwrap_or_default();
+                indicators.push(validate_entry_contribution(INDICATOR_POINT, raw)?);
             }
             point if RESERVED_NOT_YET_ROUTED_POINTS.contains(&point) => {
                 return Err(ManifestError::ExtensionPointNotYetAvailable(
@@ -298,6 +361,23 @@ pub fn validate(raw: &[u8]) -> Result<ValidatedManifest, ManifestError> {
         version: parsed.version,
         description: parsed.description,
         widgets,
+        venues,
+        indicators,
+    })
+}
+
+fn validate_entry_contribution(
+    point: &'static str,
+    raw: RawEntryContribution,
+) -> Result<ValidatedEntryContribution, ManifestError> {
+    if raw.entry.trim().is_empty() {
+        return Err(ManifestError::EmptyContributionEntry(point));
+    }
+    validate_relative_path(&raw.entry)
+        .map_err(|()| ManifestError::UnsafeContributionEntryPath(raw.entry.clone()))?;
+    Ok(ValidatedEntryContribution {
+        entry: raw.entry,
+        base_url: raw.base_url,
     })
 }
 
@@ -584,6 +664,53 @@ mod tests {
                 "{escaping} must be rejected as an unsafe entry path, got {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_venue_contribution_validates_with_its_entry_and_base_url() {
+        let manifest = manifest_json(
+            r#"{ "point": "venue", "venue": { "entry": "venue.wasm", "base_url": "https://example.test" } }"#,
+        );
+        let parsed = validate(manifest.as_bytes()).unwrap();
+        assert_eq!(parsed.venues.len(), 1);
+        assert_eq!(parsed.venues[0].entry, "venue.wasm");
+        assert_eq!(
+            parsed.venues[0].base_url.as_deref(),
+            Some("https://example.test")
+        );
+        assert!(parsed.widgets.is_empty());
+    }
+
+    #[test]
+    fn an_indicator_contribution_validates_with_no_base_url_required() {
+        let manifest = manifest_json(
+            r#"{ "point": "indicator", "indicator": { "entry": "indicator.wasm" } }"#,
+        );
+        let parsed = validate(manifest.as_bytes()).unwrap();
+        assert_eq!(parsed.indicators.len(), 1);
+        assert_eq!(parsed.indicators[0].entry, "indicator.wasm");
+        assert_eq!(parsed.indicators[0].base_url, None);
+    }
+
+    #[test]
+    fn a_trade_adapter_contribution_is_rejected_and_names_the_point() {
+        // A package (dynamic) may not declare `trade.adapter` — no adapter
+        // can yet be loaded from WASM. Only a static plugin's own
+        // `senken-plugin.json`, parsed by `parse_static_contributions`,
+        // accepts this point.
+        let manifest = manifest_json(r#"{ "point": "trade.adapter" }"#);
+        let err = validate(manifest.as_bytes()).unwrap_err();
+        assert_eq!(
+            err,
+            ManifestError::ExtensionPointNotYetAvailable("trade.adapter".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_venue_entry_that_escapes_the_package_is_rejected() {
+        let manifest = manifest_json(r#"{ "point": "venue", "venue": { "entry": "../x.wasm" } }"#);
+        let err = validate(manifest.as_bytes()).unwrap_err();
+        assert!(matches!(err, ManifestError::UnsafeContributionEntryPath(p) if p == "../x.wasm"));
     }
 
     #[test]

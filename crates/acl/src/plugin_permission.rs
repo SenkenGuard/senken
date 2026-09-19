@@ -7,8 +7,9 @@
 //! own discretion, sometimes only known at runtime (a plugin mirroring an
 //! external system's resources cannot know them at build time). Folding
 //! them into `Resource` would either close off that flexibility or reopen
-//! the exhaustiveness hole B7 exists to close, so they are modelled as a
-//! separate, string-identified permission instead: [`PluginPermissionName`].
+//! the exhaustiveness hole `decide`'s closed-enum match exists to close, so
+//! they are modelled as a separate, string-identified permission instead:
+//! [`PluginPermissionName`].
 //!
 //! **A plugin may register a permission; it may never grant one — not even
 //! to itself.** This module only ever hands a plugin a [`PluginNamespace`],
@@ -316,7 +317,9 @@ impl PluginNamespace {
     /// This is the defensive twin of [`declare`](Self::declare), for a
     /// fully-qualified name that arrived from elsewhere (a manifest field,
     /// an admin request) rather than being built by this namespace itself
-    ///   — the case B9 means by "it cannot register `senken.users:manage`".
+    ///   — a plugin manifest can delegate authority only over its own
+    /// subtree, never into another plugin's namespace or core's own
+    /// `senken.users:manage`.
     ///
     /// # Errors
     /// [`PluginPermissionError::OutsideNamespace`] when `permission`'s
@@ -492,9 +495,9 @@ mod tests {
 
     #[test]
     fn a_namespace_refuses_to_admit_a_permission_naming_another_namespace() {
-        // The scenario B9 calls out by name: a plugin manifest delegates
-        // authority over its own subtree only, and cannot register into
-        // core's `senken` namespace (or any other plugin's).
+        // A plugin manifest delegates authority over its own subtree only,
+        // and cannot register into core's `senken` namespace (or any other
+        // plugin's).
         let namespace = PluginNamespace::new("mychart").unwrap();
         let foreign = PluginPermissionName::parse("senken.users:manage").unwrap();
 

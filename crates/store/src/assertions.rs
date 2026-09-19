@@ -15,8 +15,9 @@ use senken_series::{Anchor, BarSpec, bucket_start};
 use crate::error::WriteAssertionError;
 use crate::spec_token::anchor_applies_to;
 
-/// Validates `bars` against every M5.3 rule for one `(spec, anchor, range)`
-/// file. `bars` must already be in the order they will be written — this
+/// Validates `bars` against every assertion in this module for one
+/// `(spec, anchor, range)` file. `bars` must already be in the order they
+/// will be written — this
 /// does not sort them, since silently reordering input would hide the
 /// caller's bug rather than reject it.
 ///

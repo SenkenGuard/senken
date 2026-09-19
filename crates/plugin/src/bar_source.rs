@@ -13,14 +13,15 @@
 //!
 //! `senken-loader`'s resolution ladder predates this trait and
 //! was built and tested against its own small internal fetch port
-//! (`senken_loader::BarSource`, defined before M7 existed). That port has
-//! no `supported()` — the ladder already knows which spec to fetch by the
-//! time it calls in, decided once at construction — and a deliberately
-//! small `FetchError` rather than `SourceError`, "widening it to carry
-//! HTTP status codes or transport detail" being, in that crate's own M6
-//! report, explicitly "an M7 concern once a real implementation exists to
-//! need them." This is that M7 concern, and this trait is *not* a
-//! replacement for that one: they answer different questions for different
+//! (`senken_loader::BarSource`, defined before this crate's trait existed).
+//! That port has no `supported()` — the ladder already knows which spec to
+//! fetch by the time it calls in, decided once at construction — and a
+//! deliberately small `FetchError` rather than `SourceError`, "widening it
+//! to carry HTTP status codes or transport detail" being left, in that
+//! crate's own design notes, as a concern for whoever eventually builds
+//! this separate, plugin-facing contract. This is that concern, and this
+//! trait is *not* a replacement for that one: they answer different
+//! questions for different
 //! callers, and they need only not silently drift
 //! apart while both exist. `senken_loader::PluginBarSource` is the one
 //! documented adapter that lets a `BarSource` registered here also satisfy

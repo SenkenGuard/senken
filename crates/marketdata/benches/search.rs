@@ -127,7 +127,7 @@ fn warm_market_data(
     let dir = tempfile::TempDir::new().unwrap();
     let storage = Storage::new(dir.path());
     storage.init().unwrap();
-    let mut md = MarketData::new(Arc::new(storage));
+    let md = MarketData::new(Arc::new(storage));
     for &(id, name) in sources {
         md.register_source(Arc::new(NamedSource { id, name }))
             .unwrap();

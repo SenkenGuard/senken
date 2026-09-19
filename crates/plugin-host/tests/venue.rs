@@ -12,7 +12,10 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
-use senken_plugin_host::{PluginHost, PluginHostError, PluginLimits};
+use senken_plugin_host::{
+    PluginHost, PluginHostError, PluginLimits, VenueInstrumentKind, VenueInstrumentStatus,
+    VenueSettlement,
+};
 use senken_venue::{LimitGroup, VenueClient};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -48,29 +51,40 @@ fn a_venue_plugin_that_tries_a_socket_fails_to_load() {
     );
 }
 
-#[tokio::test]
-async fn a_well_behaved_venue_plugin_returns_instruments_and_bars_matching_the_recorded_fixture() {
-    let server = MockServer::start().await;
+/// Loads the fixture component against a mock OKX, the one setup every test
+/// below shares. Split per market kind rather than asserted in one function:
+/// each kind is its own property, and a failure should name which kind broke
+/// instead of stopping at the first one.
+async fn load_against_mock_okx(server: &MockServer) -> senken_plugin_host::LoadedVenuePlugin {
     Mock::given(method("GET"))
         .and(path("/api/v5/public/instruments"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(INSTRUMENTS, "application/json"))
-        .mount(&server)
+        .mount(server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/v5/market/history-candles"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(CANDLES, "application/json"))
-        .mount(&server)
+        .mount(server)
         .await;
 
     let wasm = std::fs::read(support::build_fixture("venue-example")).unwrap();
     let host = PluginHost::new(PluginLimits::default()).unwrap();
     let client = test_client(LimitGroup::new("example-okx"));
-    let loaded = host
-        .load_venue(&wasm, client, Some(server.uri()))
-        .expect("a well-behaved venue component must load");
+    host.load_venue(&wasm, client, Some(server.uri()))
+        .expect("a well-behaved venue component must load")
+}
 
+#[tokio::test]
+async fn a_well_behaved_venue_plugin_loads_under_its_own_descriptor_id() {
+    let server = MockServer::start().await;
+    let loaded = load_against_mock_okx(&server).await;
     assert_eq!(loaded.descriptor().id, "example-okx");
+}
 
+#[tokio::test]
+async fn a_spot_instrument_crosses_with_its_scales_and_carries_no_contract() {
+    let server = MockServer::start().await;
+    let loaded = load_against_mock_okx(&server).await;
     let instruments = loaded
         .instruments()
         .expect("the mocked instrument catalog must decode");
@@ -85,7 +99,103 @@ async fn a_well_behaved_venue_plugin_returns_instruments_and_bars_matching_the_r
         instruments.iter().all(|i| i.symbol != "OLDUSDT"),
         "a suspended instrument must not be listed as tradable"
     );
+    assert_eq!(btc.kind, VenueInstrumentKind::Spot);
+    assert_eq!(btc.status, VenueInstrumentStatus::Trading);
+    assert!(btc.contract.is_none(), "spot must carry no contract");
+}
 
+#[tokio::test]
+async fn a_perpetual_crosses_with_no_expiry_rather_than_a_sentinel_date() {
+    let server = MockServer::start().await;
+    let loaded = load_against_mock_okx(&server).await;
+    let instruments = loaded
+        .instruments()
+        .expect("the mocked instrument catalog must decode");
+    // Every non-spot market kind `wit/senken.wit`'s `instrument` record now
+    // names must cross the boundary intact, not only spot — this is the
+    // whole reason that record grew a `kind`/`status`/`contract` in the
+    // first place.
+    let perpetual = instruments
+        .iter()
+        .find(|i| i.symbol == "BTCUSD")
+        .expect("the fixture's perpetual must be present");
+    assert_eq!(perpetual.kind, VenueInstrumentKind::Perpetual);
+    let perpetual_contract = perpetual
+        .contract
+        .as_ref()
+        .expect("a perpetual must carry a contract");
+    assert_eq!(perpetual_contract.settlement, VenueSettlement::Inverse);
+    assert_eq!(perpetual_contract.settle, "BTC");
+    assert_eq!(
+        perpetual_contract.expiry, None,
+        "a perpetual never expires — no expiry, not a far-future sentinel"
+    );
+    assert_eq!(
+        (
+            perpetual_contract.size_scale,
+            perpetual_contract.contract_size
+        ),
+        (0, 100)
+    );
+    assert!(perpetual_contract.option.is_none());
+}
+
+#[tokio::test]
+async fn a_dated_future_carries_its_expiry_as_instant_nanoseconds() {
+    let server = MockServer::start().await;
+    let loaded = load_against_mock_okx(&server).await;
+    let instruments = loaded
+        .instruments()
+        .expect("the mocked instrument catalog must decode");
+    let future = instruments
+        .iter()
+        .find(|i| i.symbol == "BTCUSD260904")
+        .expect("the fixture's dated future must be present");
+    assert_eq!(future.kind, VenueInstrumentKind::Future);
+    let future_contract = future
+        .contract
+        .as_ref()
+        .expect("a future must carry a contract");
+    assert_eq!(
+        future_contract.expiry,
+        Some(1_788_508_800_000_000_000),
+        "a dated future must carry its expiry as instant nanoseconds"
+    );
+}
+
+#[tokio::test]
+async fn an_option_carries_its_strike_right_and_expiry() {
+    let server = MockServer::start().await;
+    let loaded = load_against_mock_okx(&server).await;
+    let instruments = loaded
+        .instruments()
+        .expect("the mocked instrument catalog must decode");
+    let option = instruments
+        .iter()
+        .find(|i| i.symbol == "BTCUSD260830C70000")
+        .expect("the fixture's option must be present");
+    assert_eq!(option.kind, VenueInstrumentKind::Option);
+    let option_contract = option
+        .contract
+        .as_ref()
+        .expect("an option must carry a contract");
+    assert_eq!(
+        option_contract.expiry,
+        Some(1_788_076_800_000_000_000),
+        "an option's own expiry must cross intact alongside its strike"
+    );
+    let terms = option_contract
+        .option
+        .as_ref()
+        .expect("an option instrument must carry its strike and right");
+    assert_eq!(terms.right, senken_plugin_host::VenueOptionRight::Call);
+    assert_eq!((terms.strike_scale, terms.strike), (0, 70_000));
+}
+
+#[tokio::test]
+async fn bars_decode_ascending_with_the_unconfirmed_newest_row_dropped() {
+    let server = MockServer::start().await;
+    let loaded = load_against_mock_okx(&server).await;
     let bars = loaded
         .bars(
             "BTC-USDT",

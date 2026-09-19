@@ -1,0 +1,30 @@
+# The `wasm32-wasip2` component that serves OKX's `ETH-USD` options
+# catalog under the `okx-option-eth-usd` source id — the same source id
+# `senken_plugin_okx::option_source(client, "ETH-USD")` used natively
+# before this component took the job, preserved exactly so a chart layout
+# saved against it is never orphaned (see `plugins/okx/src/lib.rs`'s own
+# module docs). Built by
+# `plugins/build-venue.sh okx wasm-option-eth-usd okx-venue-option-eth-usd`,
+# never by the main workspace's own `cargo build` — see `../wasm/Cargo.toml`'s
+# own comment for why this is its own tiny workspace rather than a member
+# of the main one.
+[workspace]
+
+[package]
+name = "okx-venue-option-eth-usd"
+version = "0.0.5"
+edition = "2024"
+publish = false
+description = "OKX venue-plugin wasm32-wasip2 component: ETH-USD option instruments"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The SDK's `venue-plugin` guest bindings (`export_venue!`, `VenueGuest`,
+# `fetch`) — see `crates/plugin-api/src/lib.rs`'s `generated_venue` module.
+senken-plugin-api = { path = "../../../crates/plugin-api" }
+# The parsing this component shares with the native adapter and every
+# other OKX market component — one implementation of "what an OKX response
+# means", never copied. See that crate's own module docs.
+okx-core = { path = "../core" }

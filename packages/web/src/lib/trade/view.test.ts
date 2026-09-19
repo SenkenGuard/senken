@@ -1,7 +1,7 @@
-// The property this plan exists to guarantee on the web side: row-level
-// actions (CLOSE, CANCEL, AMEND) only ever appear when the account behind
-// the row can actually be traded — never on a read-only account (001's
-// rule, visible), and never on an order that can no longer change.
+// The property that must hold on the web side: row-level actions (CLOSE,
+// CANCEL, AMEND) only ever appear when the account behind the row can
+// actually be traded — never on a read-only account, and never on an order
+// that can no longer change.
 import { describe, expect, test } from 'bun:test';
 import type {
 	AccountAccessDto,

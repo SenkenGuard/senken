@@ -79,15 +79,6 @@ senken-core = { workspace = true }
 num-traits = "0.2"
 
 [dev-dependencies]
-# Proves this crate's `compiled-indicator` load path (`tests/
-# compiled_indicator.rs`) against a genuine compiled component rather than a
-# hand-encoded stand-in: `senken_indicator_lang::compile` produces one
-# in-process, with no `wasm32-wasip2` toolchain or subprocess build needed —
-# unlike this crate's own `indicator-plugin` fixtures under `tests/
-# fixtures/*`, which do need one because they are ordinary Rust crates
-# compiled to that target. `senken-indicators`/`senken-series`/`senken-core`
-# are already ordinary dependencies above and so need no dev-only entry.
-senken-indicator-lang = { workspace = true }
 # `tests/venue.rs` stands up a real HTTP server so a `venue-plugin`
 # fixture's `fetch` calls have something real to hit — the same technique
 # `senken-venue`'s and every compiled-in venue plugin's own tests already

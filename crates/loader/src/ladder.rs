@@ -106,8 +106,8 @@ pub(crate) fn venue_key(key: &SeriesKey, spec: BarSpec) -> SeriesKey {
 /// (never a partial bucket — see [`trim_to_whole_buckets`]), and the next
 /// candidate is tried against whatever is left. Two adjacent, independently
 /// fully-covered regions (e.g. an hour stored at `venue-15m`, the next hour
-/// stored at `venue-1m`) therefore both resolve, where the pre-M8.5 ladder
-/// would have rejected both and re-fetched the base spec for the whole
+/// stored at `venue-1m`) therefore both resolve, where the ladder before
+/// stitching was added would have rejected both and re-fetched the base spec for the whole
 /// range. **The completeness rule stays absolute**: a candidate is only
 /// ever credited for whole buckets it fully backs, so a bucket that cannot
 /// be completed from what is on disk is always left in `missing`, never
@@ -150,7 +150,8 @@ pub(crate) fn compute_gap(
             // (`trim_to_whole_buckets`) — undefined for `BarUnit::Month`,
             // whose buckets vary 28–31 days (the same case its own
             // `Aggregator` special-cases). For a `Month` target this ladder
-            // keeps the pre-M8.5 rule: a single candidate must cover the
+            // keeps the whole-range-only rule from before stitching was added: a
+            // single candidate must cover the
             // whole requested range, or nothing on disk is used at all.
             if key.spec.duration_nanos().is_none() {
                 return compute_gap_whole_range_only(
@@ -202,7 +203,8 @@ pub(crate) fn compute_gap(
     }
 }
 
-/// The pre-M8.5 rule, kept for the one case stitching cannot handle
+/// The whole-range-only rule from before stitching was added, kept for
+/// the one case stitching cannot handle
 /// (`key.spec.unit == BarUnit::Month`, see [`compute_gap`]'s own docs): a
 /// single candidate must cover the *entire* requested range to be used at
 /// all, or the whole range is reported missing at `candidates.base_spec`.
@@ -241,9 +243,9 @@ fn compute_gap_whole_range_only(
 /// Only whole, `target`-bucket-aligned pieces are ever credited — see
 /// [`trim_to_whole_buckets`]. A partial bucket at either edge of `coverage`
 /// is deliberately left in the returned "still missing" set rather than
-/// silently accepted, which is what keeps the completeness rule (plan
-/// M8.5: "a bucket with incomplete coverage is never served as a complete
-/// derived bar") from becoming a promise this function alone cannot back:
+/// silently accepted, which is what keeps the completeness rule — a
+/// bucket with incomplete coverage is never served as a complete derived
+/// bar — from becoming a promise this function alone cannot back:
 /// crediting a sliver too thin to complete a bucket would report that time
 /// as resolved (dropping it from `missing`, so [`crate::SeriesLoader::ensure`]
 /// never fetches it) while [`materialize`] would still correctly refuse to
@@ -606,7 +608,7 @@ mod tests {
         assert_eq!(candidates.fetch_spec_for(seconds_7), m1);
     }
 
-    /// Plan M6, required test: "the ladder prefers the coarsest fully
+    /// Required test: "the ladder prefers the coarsest fully
     /// covering candidate". Both M1 and M15 fully cover the requested hour,
     /// but their underlying values disagree — proving which one actually
     /// got used.
@@ -689,7 +691,7 @@ mod tests {
         );
     }
 
-    /// Plan M6, required test: "an incomplete bucket is never served as a
+    /// Required test: "an incomplete bucket is never served as a
     /// complete derived bar." Coverage (the filename) says the full hour of
     /// M1 was fetched, but one minute's row is missing inside it (a real
     /// market gap) — the H1 bucket must not be emitted.
@@ -785,8 +787,8 @@ mod tests {
 
     /// Required test: "stitch adjacent stored
     /// specs." Hour 0 is stored only at M1, hour 1 only at M15 — neither
-    /// candidate covers the whole two-hour request, so the pre-M8.5 ladder
-    /// would have rejected both and reported the entire range missing even
+    /// candidate covers the whole two-hour request, so the ladder before
+    /// stitching was added would have rejected both and reported the entire range missing even
     /// though every minute of it is already on disk. This test proves two
     /// things at once: the stitched result actually resolves both hours,
     /// and — the plan's own instruction — that it produces *exactly* the

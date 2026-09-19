@@ -58,13 +58,18 @@ pub(crate) enum HandlerError {
     /// `IdentityStore::login` returns one error for both.
     InvalidCredentials,
     /// `403 Forbidden`: a session is valid, but the account is still behind
-    /// the B4 fence, or (once senken-acl-checked endpoints exist) the
+    /// the first-run password fence, or (once senken-acl-checked endpoints exist) the
     /// actor lacks the grant. never a logout, only a message.
     Forbidden(String),
     /// `409 Conflict`: e.g. the email is already registered.
     Conflict(String),
     /// `429 Too Many Requests`: the login rate limit.
     TooManyRequests,
+    /// `503 Service Unavailable`: a capability this server does not have
+    /// right now — e.g. no Rust toolchain to compile a user's indicator
+    /// with. Distinct from [`Internal`](Self::Internal): nothing failed,
+    /// this server was simply never able to do this in the first place.
+    ServiceUnavailable(String),
     /// `502 Bad Gateway`: an upstream this server depends on could not be
     /// reached, so **the request's outcome is unknown**.
     ///
@@ -363,6 +368,35 @@ impl From<senken_notes::NoteError> for HandlerError {
     }
 }
 
+/// `user_indicator_handlers`' translation from
+/// `senken_indicator_registry::UserIndicatorError`, mirroring
+/// [`From<senken_notes::NoteError>`] exactly — a missing/not-yours row is
+/// `BadRequest`, the same "no such X" shape every other guarded store here
+/// gets, never a distinct status that would tell a caller whether the id
+/// belongs to someone else.
+impl From<senken_indicator_registry::UserIndicatorError> for HandlerError {
+    fn from(error: senken_indicator_registry::UserIndicatorError) -> Self {
+        use senken_indicator_registry::UserIndicatorError;
+        match error {
+            UserIndicatorError::Identity(source) => source.into(),
+            UserIndicatorError::NotFound => Self::BadRequest("no such indicator".to_owned()),
+            UserIndicatorError::DuplicateSlug(slug) => Self::Conflict(format!(
+                "you already have an indicator whose name maps to `{slug}` — choose a different title"
+            )),
+            UserIndicatorError::Database(source) => {
+                tracing::error!(%source, "user indicator store: database error");
+                Self::Internal
+            }
+            // Any future `#[non_exhaustive]` variant fails closed the same
+            // way every other guarded store's mapping here does.
+            other => {
+                tracing::error!(?other, "user indicator store: unmapped error variant");
+                Self::Internal
+            }
+        }
+    }
+}
+
 /// `dashboard_handlers`' translation from
 /// `senken_dashboard::DashboardError`, mirroring
 /// [`From<senken_chart::ChartError>`] exactly — the same guarded-store
@@ -520,6 +554,7 @@ impl axum::response::IntoResponse for HandlerError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many attempts, try again later".to_owned(),
             ),
+            Self::ServiceUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal server error".to_owned(),

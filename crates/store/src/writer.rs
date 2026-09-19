@@ -40,7 +40,7 @@ impl Store {
     /// trust for the shared span.
     ///
     /// # Errors
-    /// [`StoreError::Rejected`] if `bars` fails any M5.3 assertion, or if
+    /// [`StoreError::Rejected`] if `bars` fails any write assertion, or if
     /// the range would partially overlap an existing file
     /// ([`WriteAssertionError::OverlapsExistingCoverage`]); otherwise
     /// [`StoreError::Storage`]/[`StoreError::Parquet`]/[`StoreError::Arrow`]

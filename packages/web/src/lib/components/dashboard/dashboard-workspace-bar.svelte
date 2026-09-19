@@ -4,6 +4,8 @@
 	// server-backed workspaces instead of local-only state.
 	import { cn } from '$lib/utils.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+	import ConfirmDialog from '$lib/components/ui/confirm-dialog.svelte';
+	import RenameWorkspaceDialog from './rename-workspace-dialog.svelte';
 	import type { DashboardWorkspaceDto } from './api';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import EllipsisVerticalIcon from '@lucide/svelte/icons/ellipsis-vertical';
@@ -13,6 +15,7 @@
 	let {
 		workspaces,
 		activeId,
+		activeWidgetCount,
 		onSelect,
 		onAdd,
 		onOpenAddWidget,
@@ -21,6 +24,11 @@
 	}: {
 		workspaces: DashboardWorkspaceDto[];
 		activeId: string;
+		/** The active workspace's current widget count, for the delete
+		 * confirmation's own sentence — the caller's grid, not
+		 * `workspaces`, is the source of truth for this (see
+		 * `dashboard-grid.svelte`'s `widgetCount`). */
+		activeWidgetCount: number;
 		onSelect: (id: string) => void;
 		onAdd: () => void;
 		onOpenAddWidget: () => void;
@@ -29,16 +37,17 @@
 	} = $props();
 
 	let menuOpen = $state(false);
+	let renameOpen = $state(false);
+	let deleteOpen = $state(false);
 
 	const active = $derived(workspaces.find((w) => w.id === activeId) ?? workspaces[0]);
+	// The last remaining workspace can never be deleted — this only makes
+	// that existing rule (`routes/dashboard/+page.svelte`'s own guard)
+	// visible before the request round-trips, rather than a toast after the
+	// fact.
+	const isLastWorkspace = $derived(workspaces.length < 2);
 
 	const itemClass = 'gap-2.5 rounded-none border-b border-ink/[0.045] px-3 py-2 focus:bg-ink/7';
-
-	function renameActive() {
-		if (!active) return;
-		const next = prompt('Rename workspace', active.name);
-		if (next && next.trim() && next.trim() !== active.name) onRename(active.id, next.trim());
-	}
 </script>
 
 <div class="flex h-10 flex-none items-stretch border-b border-border bg-secondary">
@@ -71,8 +80,9 @@
 	<div class="relative flex flex-none items-center border-l border-ink/6 px-2">
 		<DropdownMenu.Root bind:open={menuOpen}>
 			<DropdownMenu.Trigger
+				aria-label="Workspace menu"
 				class={cn(
-					'flex h-[25px] w-[27px] cursor-pointer items-center justify-center border transition-colors',
+					'flex size-7 cursor-pointer items-center justify-center border transition-colors',
 					menuOpen ? 'border-foreground bg-foreground text-inv' : 'border-dim text-secondary-foreground'
 				)}
 			>
@@ -86,7 +96,7 @@
 					<PlusIcon class="size-[13px] text-secondary-foreground" />
 					<span class="font-mono text-[10px] tracking-[0.12em] text-foreground">ADD WIDGET…</span>
 				</DropdownMenu.Item>
-				<DropdownMenu.Item class={itemClass} onSelect={renameActive}>
+				<DropdownMenu.Item class={itemClass} onSelect={() => (renameOpen = true)}>
 					<PencilIcon class="size-[13px] text-secondary-foreground" />
 					<span class="font-mono text-[10px] tracking-[0.12em] text-secondary-foreground">
 						RENAME WORKSPACE…
@@ -95,7 +105,7 @@
 				<DropdownMenu.Item
 					variant="destructive"
 					class="gap-2.5 rounded-none px-3 py-2"
-					onSelect={() => active && onDelete(active.id)}
+					onSelect={() => (deleteOpen = true)}
 				>
 					<Trash2Icon class="size-[13px]" />
 					<span class="font-mono text-[10px] tracking-[0.12em]">DELETE WORKSPACE</span>
@@ -104,3 +114,27 @@
 		</DropdownMenu.Root>
 	</div>
 </div>
+
+{#if active}
+	<RenameWorkspaceDialog
+		open={renameOpen}
+		currentName={active.name}
+		onOpenChange={(v) => (renameOpen = v)}
+		onRename={(newName) => {
+			onRename(active.id, newName);
+			renameOpen = false;
+		}}
+	/>
+	<ConfirmDialog
+		open={deleteOpen}
+		title="Delete workspace"
+		description={`Delete workspace ${active.name}? Its ${activeWidgetCount} widget${activeWidgetCount === 1 ? '' : 's'} will be removed.`}
+		confirmDisabled={isLastWorkspace}
+		confirmDisabledReason="You need at least one workspace"
+		onOpenChange={(v) => (deleteOpen = v)}
+		onConfirm={() => {
+			onDelete(active.id);
+			deleteOpen = false;
+		}}
+	/>
+{/if}

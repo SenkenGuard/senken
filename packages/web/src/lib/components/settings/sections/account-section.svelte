@@ -30,8 +30,8 @@
 </script>
 
 <script lang="ts">
-	// Account section. Backed entirely by the auth endpoints
-	// Q4 actually shipped: `GET /api/me` for the profile, `POST
+	// Account section. Backed entirely by the auth endpoints this app
+	// actually ships: `GET /api/me` for the profile, `POST
 	// /api/set-password` for the change-password row, `POST /api/logout`
 	// for signing out. There is no "edit display name" endpoint anywhere in
 	// `crates/api` (only `email`/`display_name`/`disabled`/`password_set`
@@ -166,10 +166,10 @@
 			newPassword = '';
 			confirmPassword = '';
 		} catch (error) {
-			// B16 point 3: a 403 here is genuinely unexpected (changing your
-			// own password needs no grant per `senken_identity`'s own doc
-			// comment), but handled the same non-logout way regardless of
-			// cause.
+			// A 403 here is genuinely unexpected (changing your own password
+			// needs no grant per `senken_identity`'s own doc comment), but a
+			// 403 must never log anyone out, so it is handled the same
+			// non-logout way regardless of cause.
 			passwordError =
 				error instanceof ForbiddenError
 					? error.message

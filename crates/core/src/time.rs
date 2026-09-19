@@ -182,9 +182,9 @@ impl fmt::Display for UnixNanos {
 /// Exported (not private to this module) because it is calendar arithmetic
 /// in its own right, independent of [`UnixNanos`]'s `Display` impl above —
 /// `senken-series`'s day/week/month bucket boundaries need exactly the same
-/// conversion. M4 shipped with a second, independently-written copy of this
-/// function there; that duplication is the defect this export fixes (plan
-/// 001): two copies of calendar math drift silently, and the
+/// conversion. `senken-series` once carried a second, independently-written
+/// copy of this function; that duplication is the defect this export
+/// fixes: two copies of calendar math drift silently, and the
 /// visible symptom would be a bar's *displayed* timestamp disagreeing with
 /// the bucket it was *placed* in.
 #[must_use]

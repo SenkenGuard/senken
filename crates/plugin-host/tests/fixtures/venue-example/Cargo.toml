@@ -16,12 +16,11 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-# The guest-side codegen macro this fixture uses directly, rather than
-# through `senken-plugin-api`: that crate's own `generate!` invocation is
-# hardwired to the `indicator-plugin` world (see its own `src/lib.rs`), so
-# a `venue-plugin` guest has no SDK crate to depend on yet — calling
-# `wit_bindgen::generate!` itself is the only way to implement this world
-# today. Pinned to the same version `senken-plugin-api` and
-# `senken-indicator-lang`'s own compiled output use.
-wit-bindgen = "0.57"
+# The SDK a real venue plugin (`plugins/okx/wasm`, and every venue after
+# it) compiles against — see `crates/plugin-api/src/lib.rs`'s
+# `generated_venue` module. This fixture now exercises that module rather
+# than calling `wit_bindgen::generate!` itself, so a change to how the SDK
+# generates `venue-plugin` bindings is proven here before any real venue
+# depends on it.
+senken-plugin-api = { path = "../../../../plugin-api" }
 serde_json = "1"

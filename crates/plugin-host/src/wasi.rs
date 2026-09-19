@@ -169,8 +169,8 @@ impl WasiView for PluginState {
 ///
 /// A separate type from [`PluginState`] rather than one struct with both
 /// fields as `Option`s: `wit/senken.wit`'s `venue-plugin` world does not
-/// import `builtins`, and `indicator-plugin`/`compiled-indicator` do not
-/// import `http`, so a component instantiated against either `Linker` can
+/// import `builtins`, and `indicator-plugin` does not import `http`, so a
+/// component instantiated against either `Linker` can
 /// only ever reach the field its own world actually declared — an `Option`
 /// that is always `Some` for one call site and always `None` for the other
 /// would just be this same fact, spelled with a runtime check instead of by

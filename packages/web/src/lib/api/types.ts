@@ -91,15 +91,31 @@ export type PluginCircuitStateDto = Schemas['PluginCircuitStateDto'];
 export type PluginLogLineDto = Schemas['PluginLogLineDto'];
 export type PluginLogSeverityDto = Schemas['PluginLogSeverityDto'];
 export type SetIndicatorPluginEnabledRequest = Schemas['SetIndicatorPluginEnabledRequest'];
-export type CompileIndicatorRequest = Schemas['CompileIndicatorRequest'];
-export type CompileIndicatorErrorDto = Schemas['CompileIndicatorErrorDto'];
 
-// Alerts. `crates/api` mounts
-// `senken_alerts::AlertStore` as of S1, so these are now generated from
+// The unified plugin system: one row per static venue plugin or installed
+// package, and the switch to enable/disable one.
+export type PluginKindDto = Schemas['PluginKindDto'];
+export type ContributionKindDto = Schemas['ContributionKindDto'];
+export type PluginStateDto = Schemas['PluginStateDto'];
+export type PluginDto = Schemas['PluginDto'];
+export type PluginListResponse = Schemas['PluginListResponse'];
+export type SetPluginEnabledRequest = Schemas['SetPluginEnabledRequest'];
+export type InstallPluginResponse = Schemas['InstallPluginResponse'];
+
+// Indicators an account wrote and compiled themselves.
+export type UserIndicatorSummaryDto = Schemas['UserIndicatorSummaryDto'];
+export type UserIndicatorDto = Schemas['UserIndicatorDto'];
+export type CreateUserIndicatorRequest = Schemas['CreateUserIndicatorRequest'];
+export type UpdateUserIndicatorRequest = Schemas['UpdateUserIndicatorRequest'];
+export type UserIndicatorDiagnosticDto = Schemas['UserIndicatorDiagnosticDto'];
+export type SaveUserIndicatorResponse = Schemas['SaveUserIndicatorResponse'];
+export type IndicatorToolchainStatusResponse = Schemas['IndicatorToolchainStatusResponse'];
+
+// Alerts. `crates/api` now mounts
+// `senken_alerts::AlertStore`, so these are generated from
 // `GET /api/openapi.json` like everything else above, replacing the
-// hand-written block this file carried before that mount landed (its own
-// former comment said to do exactly this "at that point rather than
-// keeping both"). `ConditionDto.field`/`.comparator` come back from
+// hand-written block this file carried before that mount landed.
+// `ConditionDto.field`/`.comparator` come back from
 // `openapi-typescript` typed as plain `string` — `crates/api/src/dto.rs`
 // documents them to `utoipa` via `#[schema(value_type = String)]` (the
 // orphan rule blocks a real `ToSchema` impl for `senken_alerts`' foreign
@@ -159,17 +175,6 @@ export type NotesPage = Schemas['NotesPage'];
 export type NoteDto = Schemas['NoteDto'];
 export type CreateNoteRequest = Schemas['CreateNoteRequest'];
 export type UpdateNoteRequest = Schemas['UpdateNoteRequest'];
-
-// The indicator registry (`/api/registry/indicators`) — publish, search,
-// install indicator-lang source. `IndicatorSummaryDto` (a listing row)
-// never carries an entry's source; only `IndicatorEntryDto` (`GET
-// /api/registry/indicators/{namespace}/{name}`) does.
-export type IndicatorSummaryDto = Schemas['IndicatorSummaryDto'];
-export type RegistryPage = Schemas['RegistryPage'];
-export type IndicatorEntryDto = Schemas['IndicatorEntryDto'];
-export type PublishIndicatorRequest = Schemas['PublishIndicatorRequest'];
-export type SetHandleRequest = Schemas['SetHandleRequest'];
-export type HandleResponse = Schemas['HandleResponse'];
 
 // Storage (`GET /api/storage`, `POST /api/storage/delete`) — what this
 // server is holding on disk, and reclaiming it. Only market data gets a

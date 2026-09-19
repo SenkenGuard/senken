@@ -1,0 +1,37 @@
+# The `wasm32-wasip2` component this venue registers into
+# `senken_runtime::plugin_host::DynamicVenues` — OKX's spot instrument
+# catalog and 1-minute-and-above bars, exported through `wit/senken.wit`'s
+# `venue-plugin` world. Built by `plugins/build-venue.sh okx`, never by the
+# main workspace's own `cargo build` (see the root `Cargo.toml`'s `members`
+# glob, which only reaches one level under `plugins/`, and this crate's
+# `[workspace]` below).
+#
+# Its own tiny workspace, not part of the main one — the main workspace's
+# `Cargo.lock` pins native dependency versions (`reqwest`, `tokio`, a TLS
+# stack) that either do not exist for `wasm32-wasip2` at all or pull in
+# capabilities (`wasi:sockets`) this component must never be able to
+# request — see `wit/senken.wit`'s own `http` interface docs on why a venue
+# component reaches the network only through the host's `fetch`. Isolating
+# this crate's own dependency resolution keeps a workspace-wide `cargo
+# update` from ever needing to consider whether its choice also has to
+# compile as a wasm guest.
+[workspace]
+
+[package]
+name = "okx-venue"
+version = "0.0.5"
+edition = "2024"
+publish = false
+description = "OKX venue-plugin wasm32-wasip2 component: spot instruments and bars"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The SDK's `venue-plugin` guest bindings (`export_venue!`, `VenueGuest`,
+# `fetch`) — see `crates/plugin-api/src/lib.rs`'s `generated_venue` module.
+senken-plugin-api = { path = "../../../crates/plugin-api" }
+# The parsing this component shares with the native adapter — one
+# implementation of what an OKX response means, not two. See that crate's
+# own module docs.
+okx-core = { path = "../core" }

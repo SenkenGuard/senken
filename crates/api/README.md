@@ -257,7 +257,7 @@ indicators are (see the next section).
 `senken_runtime::RuntimeBuilder::build` calls
 `WidgetPackageStore::ensure_builtin_installed` once at startup, so a fresh
 install's `GET /api/widget-plugins` is never simply empty. It is a real,
-working package — `examples/widget-plugins/example-clock`, compiled straight
+working package — `plugins/widgets/example-clock`, compiled straight
 into this binary — not a second, invisible install path: it goes through
 `install` the same as an upload would, an admin can disable it like any
 other package, and a restart never installs a second copy.

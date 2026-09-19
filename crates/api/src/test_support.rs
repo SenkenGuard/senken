@@ -138,6 +138,33 @@ pub(crate) async fn serve_unfenced_test_server_with_book(
     (handle, store, dir)
 }
 
+/// As [`serve_unfenced_test_server_with`], but with an injected
+/// [`crate::CompileServiceHandle`] — the seam `user_indicator_handlers`'s
+/// own tests use to prove both the real-compile path and the "no
+/// toolchain" path (`CompileServiceHandle::Unavailable`) without needing
+/// to actually remove Rust from the machine running the test suite.
+pub(crate) async fn serve_unfenced_test_server_with_compile_service(
+    runtime: Runtime,
+    compile_service: Arc<crate::CompileServiceHandle>,
+) -> (ServerHandle, Arc<IdentityStore>, TempDir) {
+    let (dir, store) = temp_identity_store();
+    store
+        .set_password(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD, None)
+        .unwrap();
+    let store = Arc::new(store);
+    let handle = crate::serve_with_compile_service(
+        localhost_any_port(),
+        Arc::clone(&store),
+        Arc::new(runtime),
+        HashMap::new(),
+        Arc::new(BookSessionRegistry::new(crate::ws::PANEL_BOOK_DEPTH)),
+        compile_service,
+    )
+    .await
+    .unwrap();
+    (handle, store, dir)
+}
+
 /// `POST url` with a JSON body, no `Authorization` header.
 pub(crate) async fn post_json(
     url: impl reqwest::IntoUrl,

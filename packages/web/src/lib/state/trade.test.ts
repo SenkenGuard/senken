@@ -161,6 +161,6 @@ describe('refreshPortfolios', () => {
 // AGENTS.md warns about (a chart re-requesting its opening 300-bar window
 // instead of the current one). Running the guard test above against it is
 // how that regression was confirmed to actually fail before this suite was
-// trusted — see this plan's verification transcript, not re-run here as an
-// automated test since it would require duplicating the buggy
-// implementation permanently just to assert it stays broken.
+// trusted — verified manually, not re-run here as an automated test since
+// it would require duplicating the buggy implementation permanently just to
+// assert it stays broken.

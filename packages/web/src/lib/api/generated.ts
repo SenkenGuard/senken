@@ -323,7 +323,8 @@ export interface paths {
         /**
          * `GET /api/indicators`: the catalogue of `senken-indicators`' ten
          *     built-ins, plus every currently-enabled indicator loaded from an
-         *     uploaded `.wasm` component. A plugin disabled through `POST
+         *     uploaded `.wasm` component, plus the caller's own `my/<slug>`
+         *     indicators — never another account's. A plugin disabled through `POST
          *     /api/indicators/plugins/{name}/enabled` drops out of this list
          *     immediately — see `senken_runtime::DynamicIndicators::catalog`'s own
          *     docs for why a chart already showing it is left to notice on its own
@@ -333,30 +334,6 @@ export interface paths {
         get: operations["list_indicators"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/indicators/compile": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /api/indicators/compile`: compiles indicator-lang `source` into a
-         *     component and registers it the same way `POST /api/indicators/plugins`
-         *     registers an uploaded one — the authoring panel's "run" action. Requires
-         *     `Action::Create` on `Resource::Indicator` at `Scope::All`, the same as
-         *     uploading a compiled component directly: either way the result joins
-         *     the one dynamic-indicator catalogue every user of this server shares.
-         */
-        post: operations["compile_indicator"];
         delete?: never;
         options?: never;
         head?: never;
@@ -613,6 +590,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/my/indicators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/my/indicators`. */
+        get: operations["list_my_indicators"];
+        put?: never;
+        /**
+         * `POST /api/my/indicators`: creates a new indicator, then compiles it
+         *     immediately.
+         */
+        post: operations["create_my_indicator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/my/indicators/toolchain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/my/indicators/toolchain`: whether this server can compile a
+         *     Rust indicator right now, so the authoring panel can disable Save with
+         *     a reason instead of letting a save fail with no explanation.
+         */
+        get: operations["my_indicator_toolchain"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/my/indicators/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/my/indicators/{id}`: the full row, source included. */
+        get: operations["get_my_indicator"];
+        /** `PUT /api/my/indicators/{id}`: saves a new title/source, then compiles. */
+        put: operations["update_my_indicator"];
+        post?: never;
+        /**
+         * `DELETE /api/my/indicators/{id}`: removes the row and unloads it from
+         *     this account's own runtime catalog.
+         */
+        delete: operations["delete_my_indicator"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/my/indicators/{id}/compile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/my/indicators/{id}/compile`: recompiles the source already
+         *     on file, without changing it.
+         */
+        post: operations["recompile_my_indicator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/notes": {
         parameters: {
             query?: never;
@@ -655,7 +716,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/registry/handle": {
+    "/api/plugins": {
         parameters: {
             query?: never;
             header?: never;
@@ -663,95 +724,36 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /api/registry/handle`: reports the caller's own claimed registry
-         *     handle, or `null` if they have not chosen one yet.
+         * `GET /api/plugins`: every plugin this runtime knows about. **Route this
+         *     at `Authenticated`** — no further check: any signed-in caller needs to
+         *     know which venues are active.
          */
-        get: operations["get_my_handle"];
-        /**
-         * `PUT /api/registry/handle`: claims, or replaces, the caller's own
-         *     registry handle — the human-readable address other users type instead
-         *     of the caller's raw account id (`alice` in `alice/supertrend` rather
-         *     than the account's own id). Requires a session; the target account is
-         *     always the caller's own, never one named in the request body.
-         *     [`publish_indicator`] refuses to run until this has succeeded at least
-         *     once — see `senken_indicator_registry`'s own module docs for why.
-         */
-        put: operations["set_my_handle"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/indicators": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /api/registry/indicators`. The public catalog: no session
-         *     required, every published indicator across every namespace is
-         *     searchable by anyone.
-         */
-        get: operations["search_indicators"];
+        get: operations["list_plugins"];
         put?: never;
         /**
-         * `POST /api/registry/indicators`. Requires a session — publishing needs
-         *     an account; installing does not (see this crate's module docs).
+         * `POST /api/plugins`: installs a package from either the raw bytes of a
+         *     zip archive (its `manifest.json` at the archive root) or a bare
+         *     compiled `.wasm` indicator component — the shape
+         *     `POST /api/indicators/plugins` has always accepted, wrapped
+         *     automatically into a generated package so the same upload works through
+         *     this one unified endpoint (see
+         *     `senken_plugin::widget_package::WidgetPackageStore::install_bare_wasm_as_indicator`).
+         *     Which shape the body is gets decided by [`WASM_MAGIC`], never a
+         *     client-supplied `Content-Type`. **Route this at `Authenticated`, with a
+         *     body-size limit of [`PLUGIN_PACKAGE_MAX_BYTES`]** in place of the
+         *     router-wide JSON default — see
+         *     `widget_plugin_handlers::install_widget_plugin`'s own `mount()` call for
+         *     the exact pattern to copy. The handler itself requires `Action::Create`
+         *     on `Resource::Plugin` at `Scope::All`.
          */
-        post: operations["publish_indicator"];
+        post: operations["install_plugin"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/registry/indicators/mine": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /api/registry/indicators/mine`. Scoped by
-         *     `RegistryStore::list_mine` itself — an ordinary author sees only what
-         *     they have published, an actor granted wider access sees every
-         *     namespace's, and the reported `total` already respects that scope too.
-         */
-        get: operations["list_my_indicators"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/indicators/{namespace}/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /api/registry/indicators/{namespace}/{name}`: the full published
-         *     indicator, source included. Public, like [`search_indicators`].
-         */
-        get: operations["get_indicator"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/indicators/{namespace}/{name}/install": {
+    "/api/plugins/refresh": {
         parameters: {
             query?: never;
             header?: never;
@@ -761,27 +763,59 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * `POST /api/registry/indicators/{namespace}/{name}/install`: fetches the
-         *     current published source, checks its recorded language version against
-         *     this host's own, and — only once that check passes — compiles it with
-         *     `senken_indicator_lang::compile`, right here, on this host. Public: no
-         *     account is required to install (see this crate's module docs).
-         * @description The response body is the compiled `compiled-indicator` WebAssembly
-         *     component's raw bytes (`Content-Type: application/wasm`), not JSON —
-         *     this is the artifact "compiled on the installing machine" actually
-         *     means, not a description of one. The language version it was compiled
-         *     against is echoed in the `X-Indicator-Language-Version` header for a
-         *     caller that wants it without a second round trip to
-         *     [`get_indicator`].
+         * `POST /api/plugins/refresh`: an explicit rescan of the plugin package
+         *     directory, for the direct-file-drop install path — refresh is
+         *     explicit, never a filesystem watcher, since a watcher can fire mid-copy
+         *     and read a half-written file (mirrors
+         *     `widget_plugin_handlers::refresh_widget_plugins` exactly). **Route this
+         *     at `Authenticated`** — the handler requires `Action::View` on
+         *     `Resource::Plugin` at `Scope::All`, same as the plain listing (reading
+         *     needs no grant, but an explicit rescan is still an administrative
+         *     action, not something every signed-in caller can trigger for a server
+         *     none of them may have files on disk for).
          */
-        post: operations["install_indicator"];
+        post: operations["refresh_plugins"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/registry/indicators/{name}": {
+    "/api/plugins/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/plugins/{id}`: one plugin's row from the same catalog
+         *     [`list_plugins`] reads. **Route this at `Authenticated`**, same
+         *     reasoning.
+         */
+        get: operations["get_plugin"];
+        put?: never;
+        post?: never;
+        /**
+         * `DELETE /api/plugins/{id}`: uninstalls a package's files entirely. A
+         *     static plugin — compiled into this binary, not a package on disk — has
+         *     nothing to remove: an admin can only disable it (see
+         *     `set_plugin_enabled`), never delete it, so this refuses with `409` and a
+         *     message that says exactly that rather than a generic bad request.
+         *     **Route this at `Authenticated`** — the handler requires
+         *     `Action::Delete` on `Resource::Plugin` at `Scope::All`.
+         * @description Removing a package's files never touches the market data it already
+         *     downloaded: a venue's `<data>/sources/<id>` directory is
+         *     owned by `senken-marketdata`/`senken-store`, an entirely different tree
+         *     from the plugin package this deletes.
+         */
+        delete: operations["uninstall_plugin"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{id}/enabled": {
         parameters: {
             query?: never;
             header?: never;
@@ -790,20 +824,19 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post?: never;
         /**
-         * `DELETE /api/registry/indicators/{name}`: revokes the caller's own
-         *     published entry. Carries no request body and no `namespace` path
-         *     segment — a delete always targets the caller's own namespace, the same
-         *     server-derives-identity shape [`PublishIndicatorRequest`] already
-         *     establishes for publishing, so this can never reach another author's
-         *     entry regardless of what the caller's grants say (see
-         *     `senken_indicator_registry::RegistryStore::delete`'s own docs). An
-         *     indicator someone else has already installed is unaffected: installing
-         *     copies the compiled bytes to that machine, so nothing here reaches
-         *     back into a copy that already left this registry.
+         * `POST /api/plugins/{id}/enabled`: enables or disables one plugin.
+         *     **Route this at `Authenticated`** — the handler requires `Action::Edit`
+         *     on `Resource::Plugin` at `Scope::All`.
+         * @description A package (a `dashboard.widget`/`indicator` contribution through
+         *     `WidgetPackageStore`, or a `venue` contribution already loaded into
+         *     `DynamicVenues`) is toggled live. A static plugin's flag is only
+         *     recorded — see this module's own doc comment for why applying it needs
+         *     a restart, which the response's `needs_restart` states rather than
+         *     hides.
          */
-        delete: operations["delete_indicator"];
+        post: operations["set_plugin_enabled"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -849,7 +882,7 @@ export interface paths {
         /**
          * `POST /api/roles/{role_id}/plugin-grants`: grants a
          *     plugin permission to every user holding `role_id`. Mounted at plain
-         *     `EndpointPermission::Authenticated` (guard moved to the store in Q10.1,
+         *     `EndpointPermission::Authenticated` (the store checks this itself now,
          *     see the module doc): `IdentityStore::grant_plugin_permission_to_role`
          *     now checks `Action::Edit`/`Resource::Role` itself.
          */
@@ -872,7 +905,7 @@ export interface paths {
         /**
          * `POST /api/roles/{role_id}/plugin-grants/revoke`: the
          *     inverse of [`grant_plugin_permission_to_role`]. Mounted at plain
-         *     `EndpointPermission::Authenticated` (guard moved to the store in Q10.1,
+         *     `EndpointPermission::Authenticated` (the store checks this itself now,
          *     see the module doc).
          */
         post: operations["revoke_plugin_permission_from_role"];
@@ -892,7 +925,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * `POST /api/set-password` — the one endpoint the B4 fence exempts.
+         * `POST /api/set-password` — the one endpoint the first-run password
+         *     fence exempts.
          * @description Two distinct callers reach this, distinguished by whether the shared
          *     [`crate::auth::EndpointPermission::AuthenticatedFenceExempt`] guard
          *     found and resolved a session:
@@ -1289,7 +1323,7 @@ export interface paths {
         /**
          * `POST /api/users/{user_id}/grants`: attaches a direct
          *     grant to a user, independent of any role. Mounted at plain
-         *     `EndpointPermission::Authenticated` (guard moved to the store in Q9.3,
+         *     `EndpointPermission::Authenticated` (the store checks this itself now,
          *     see [`create_user`]'s doc): `IdentityStore::grant_direct` now checks
          *     `Action::Edit`/`Resource::User` itself.
          */
@@ -1312,7 +1346,7 @@ export interface paths {
         /**
          * `POST /api/users/{user_id}/grants/revoke`: the inverse of
          *     [`grant_direct`]. Mounted at plain `EndpointPermission::Authenticated`
-         *     (guard moved to the store in Q10.1, see the module doc):
+         *     (the store checks this itself now, see the module doc):
          *     `IdentityStore::revoke_direct` now checks `Action::Edit`/`Resource::User`
          *     itself.
          */
@@ -1336,8 +1370,8 @@ export interface paths {
          * `POST /api/users/{user_id}/plugin-grants`: grants a
          *     plugin permission to a user directly, by name — an opaque grant, never
          *     interpreted, unlike [`grant_direct`]'s structured `(Action, Resource,
-         *     Scope)`. Mounted at plain `EndpointPermission::Authenticated` (guard
-         *     moved to the store in Q10.1, see the module doc):
+         *     Scope)`. Mounted at plain `EndpointPermission::Authenticated`
+         *     (the store checks this itself now, see the module doc):
          *     `IdentityStore::grant_plugin_permission_to_user` now checks
          *     `Action::Edit`/`Resource::User` itself.
          */
@@ -1360,7 +1394,7 @@ export interface paths {
         /**
          * `POST /api/users/{user_id}/plugin-grants/revoke`: the
          *     inverse of [`grant_plugin_permission_to_user`]. Mounted at plain
-         *     `EndpointPermission::Authenticated` (guard moved to the store in Q10.1,
+         *     `EndpointPermission::Authenticated` (the store checks this itself now,
          *     see the module doc).
          */
         post: operations["revoke_plugin_permission_from_user"];
@@ -1382,7 +1416,7 @@ export interface paths {
         /**
          * `POST /api/users/{user_id}/roles`: assigns an existing
          *     role to an existing user. Mounted at plain
-         *     `EndpointPermission::Authenticated` (guard moved to the store in Q9.3,
+         *     `EndpointPermission::Authenticated` (the store checks this itself now,
          *     see [`create_user`]'s doc): `IdentityStore::assign_role` now checks
          *     `Action::Edit`/`Resource::User` itself — assigning a role is a change to
          *     the target *user's* record, the same category as [`grant_direct`].
@@ -2128,41 +2162,6 @@ export interface components {
             /** @description The instrument to close, as `source:symbol`. */
             instrument: string;
         };
-        /**
-         * @description `POST /api/indicators/compile`'s error body for a mistake in the
-         *     trader's own source (a `senken_indicator_lang::CompileError::Syntax` or
-         *     `::Type`) — line and column and message exactly as the compiler reports
-         *     them, never collapsed into the crate's usual one-line [`ErrorBody`](crate::dto::ErrorBody):
-         *     the authoring panel places this at the offending line, which a flattened
-         *     string cannot drive.
-         *
-         *     Not used for [`senken_indicator_lang::CompileError::Internal`] — that
-         *     variant names a bug in the compiler, not in anything the trader wrote,
-         *     so it is reported as an ordinary [`ErrorBody`](crate::dto::ErrorBody)-shaped `500` instead of a
-         *     line this source never had.
-         */
-        CompileIndicatorErrorDto: {
-            /**
-             * Format: int32
-             * @description One-based column the problem starts on.
-             */
-            column: number;
-            /**
-             * Format: int32
-             * @description One-based line the problem starts on.
-             */
-            line: number;
-            /** @description What was wrong, in the language a trader writing an indicator uses. */
-            message: string;
-        };
-        /**
-         * @description `POST /api/indicators/compile` request body: indicator-lang source, as
-         *     the authoring panel's editor holds it right now.
-         */
-        CompileIndicatorRequest: {
-            /** @description The program, in the language `senken-indicator-lang` implements. */
-            source: string;
-        };
         /** @description `POST /api/indicators/compute` request body. */
         ComputeIndicatorRequest: {
             /**
@@ -2221,6 +2220,11 @@ export interface components {
              */
             threshold: number;
         };
+        /**
+         * @description A named extension point, on the wire.
+         * @enum {string}
+         */
+        ContributionKindDto: "venue" | "trade_adapter" | "dashboard_widget" | "indicator";
         /** @description `POST /api/alerts` request body. */
         CreateAlertRequest: {
             /** @description The condition to check each time a bar closes. */
@@ -2267,6 +2271,16 @@ export interface components {
              *     adapter's own schema.
              */
             settings?: Record<string, never>;
+        };
+        /** @description `POST /api/my/indicators` request body. */
+        CreateUserIndicatorRequest: {
+            /** @description The Rust source to compile. */
+            source: string;
+            /**
+             * @description The indicator's display title — its catalog slug is derived from
+             *     this.
+             */
+            title: string;
         };
         /** @description `POST /api/users` request body. */
         CreateUserRequest: {
@@ -2819,22 +2833,14 @@ export interface components {
             /** @description How far that permission reaches. */
             scope: string;
         };
-        /** @description `GET /api/registry/handle` response body. */
-        HandleResponse: {
-            /**
-             * @description The caller's own claimed registry handle, or `null` if they have
-             *     not chosen one yet.
-             */
-            handle?: string | null;
-        };
         /** @description `GET /api/health` response body. */
         Health: {
             /**
              * @description `true` while this installation's seeded default admin
              *     (`senken_identity::DEFAULT_ADMIN_EMAIL`) has not set a password yet
-             *     (the first-run fence) — a coordinator addition to Q8: the
-             *     login page needs an honest, unauthenticated way to decide whether to
-             *     show "set a password" or "log in" on first load.
+             *     (the first-run password fence) — added so the login page has an
+             *     honest, unauthenticated way to decide whether to show "set a
+             *     password" or "log in" on first load.
              *
              *     This is safe to expose without becoming an account-enumeration
              *     oracle (the concern for `login`/`set-password`) because
@@ -2964,32 +2970,6 @@ export interface components {
             value: number;
         };
         /**
-         * @description A full published indicator, source included — `GET
-         *     /api/registry/indicators/{namespace}/{name}` only.
-         */
-        IndicatorEntryDto: {
-            /**
-             * Format: int64
-             * @description Unix timestamp this entry was first published.
-             */
-            created_at: number;
-            /** @description This entry's id. */
-            id: string;
-            /** @description See [`IndicatorSummaryDto::language_version`]. */
-            language_version: string;
-            /** @description See [`IndicatorSummaryDto::name`]. */
-            name: string;
-            /** @description See [`IndicatorSummaryDto::namespace`]. */
-            namespace: string;
-            /** @description The indicator-lang source exactly as published. */
-            source: string;
-            /**
-             * Format: int64
-             * @description Unix timestamp of the last successful publish to this entry.
-             */
-            updated_at: number;
-        };
-        /**
          * @description How far a segment or level extends past its anchors — mirrors
          *     `senken_indicators::Extend`.
          * @enum {string}
@@ -3086,7 +3066,7 @@ export interface components {
          *     mirrors `senken_runtime::plugin_host::PluginOrigin`.
          * @enum {string}
          */
-        IndicatorPluginOriginDto: "built_in" | "uploaded" | "data_directory";
+        IndicatorPluginOriginDto: "built_in" | "uploaded" | "data_directory" | "user";
         /**
          * @description Which of the five user-facing states one registered entry is in right
          *     now, on the wire — mirrors
@@ -3204,34 +3184,23 @@ export interface components {
             params: string;
         };
         /**
-         * @description A published indicator without its source, as returned by a listing —
-         *     see [`IndicatorEntryDto`] for the full row.
+         * @description `GET /api/my/indicators/toolchain` response body — whether this server
+         *     can compile a Rust indicator at all right now, so the panel can disable
+         *     Save with a reason instead of letting a save fail with no explanation.
          */
-        IndicatorSummaryDto: {
+        IndicatorToolchainStatusResponse: {
             /**
-             * Format: int64
-             * @description Unix timestamp this entry was first published.
+             * @description `true` if a Rust toolchain with the `wasm32-wasip2` target was
+             *     found when this server started.
              */
-            created_at: number;
-            /** @description This entry's id. */
+            available: boolean;
+            /** @description Why not, if `available` is `false`. */
+            reason?: string | null;
+        };
+        /** @description `POST /api/plugins` response body. */
+        InstallPluginResponse: {
+            /** @description The installed package's id. */
             id: string;
-            /**
-             * @description The indicator language version this entry was last published
-             *     against.
-             */
-            language_version: string;
-            /** @description The indicator's name within its namespace. */
-            name: string;
-            /**
-             * @description The publishing account's id — this indicator's namespace. The
-             *     qualified name is `{namespace}/{name}`.
-             */
-            namespace: string;
-            /**
-             * Format: int64
-             * @description Unix timestamp of the last successful publish to this entry.
-             */
-            updated_at: number;
         };
         /** @description `POST /api/widget-plugins` response body. */
         InstallWidgetPluginResponse: {
@@ -3645,6 +3614,51 @@ export interface components {
             state: "open";
         };
         /**
+         * @description One plugin, on the wire — the same row for a static venue and a
+         *     package.
+         */
+        PluginDto: {
+            /** @description What this plugin declares it contributes. */
+            contributes: components["schemas"]["ContributionKindDto"][];
+            /**
+             * @description The admin-controlled enable/disable flag. For a static plugin whose
+             *     flag has never been set, this reflects whatever actually activated
+             *     at startup — a completely fresh install seeds only a couple of
+             *     venues as enabled (see `senken_runtime`'s default set), so every
+             *     other static plugin reads back `false` until someone opts it in.
+             */
+            enabled: boolean;
+            /** @description Stable identifier. */
+            id: string;
+            /** @description Static or package. */
+            kind: components["schemas"]["PluginKindDto"];
+            /** @description Display name. */
+            name: string;
+            /**
+             * @description `true` when [`Self::enabled`] does not yet match what is actually
+             *     running and applying it needs a restart — always `false` for a
+             *     package, whose toggle is live, and for a static plugin whose toggle
+             *     already applied live; see this module's own doc comment for the two
+             *     cases that cannot.
+             */
+            needs_restart: boolean;
+            /**
+             * @description What is still pending when [`Self::needs_restart`] is `true` — `None`
+             *     whenever it is `false`. Always naming the actual reason (enabling a
+             *     plugin that never activated, or a trade adapter that stays connected)
+             *     rather than a blind "restart to apply" is the whole point of this
+             *     field; see this module's own doc comment.
+             */
+            restart_reason?: string | null;
+            /** @description Its current state. */
+            state: components["schemas"]["PluginStateDto"];
+            /**
+             * @description Version string (empty for a dynamic venue with no manifest of its
+             *     own read yet).
+             */
+            version: string;
+        };
+        /**
          * @description `POST /api/users/{user_id}/plugin-grants` (and its `role_id`/`.../revoke`
          *     siblings) request body: a plugin permission is granted
          *     or revoked whole, by name — never interpreted, unlike a core [`GrantDto`].
@@ -3682,6 +3696,16 @@ export interface components {
             trap_count: number;
         };
         /**
+         * @description What kind of plugin one is, on the wire.
+         * @enum {string}
+         */
+        PluginKindDto: "static" | "package";
+        /** @description `GET /api/plugins` response body. */
+        PluginListResponse: {
+            /** @description Every plugin this runtime knows about, static and package alike. */
+            plugins: components["schemas"]["PluginDto"][];
+        };
+        /**
          * @description One line in a plugin's ring log, on the wire — mirrors
          *     `senken_plugin_host::PluginLogLine`.
          */
@@ -3702,6 +3726,19 @@ export interface components {
          * @enum {string}
          */
         PluginLogSeverityDto: "info" | "warn";
+        /** @description A plugin's current state, on the wire. */
+        PluginStateDto: {
+            /** @enum {string} */
+            state: "active";
+        } | {
+            /** @enum {string} */
+            state: "disabled";
+        } | {
+            /** @description Why — shown to whoever can see this plugin. */
+            reason: string;
+            /** @enum {string} */
+            state: "failed";
+        };
         /** @description One open position. */
         PositionDto: {
             /** @description The account holding it. */
@@ -3761,34 +3798,6 @@ export interface components {
              *     at the instrument's own quantity scale.
              */
             volume: components["schemas"]["VolumeDto"];
-        };
-        /**
-         * @description `POST /api/registry/indicators` request body. Carries no `namespace`
-         *     field on purpose: a publish always targets the caller's own account —
-         *     see `senken_indicator_registry`'s own module docs for why a namespace
-         *     is an account id rather than a client-chosen string in the first
-         *     place, which is exactly what makes deriving it from the session, never
-         *     accepting it as input, both correct and safe here.
-         */
-        PublishIndicatorRequest: {
-            /** @description The indicator's name within the caller's own namespace. */
-            name: string;
-            /** @description The indicator-lang source to publish. */
-            source: string;
-        };
-        /**
-         * @description `GET /api/registry/indicators` and `GET /api/registry/indicators/mine`
-         *     response body. Scope reaches the query, including this `total` — see
-         *     `senken_indicator_registry::RegistryStore::list_mine`'s own docs.
-         */
-        RegistryPage: {
-            /** @description The rows for this page. */
-            rows: components["schemas"]["IndicatorSummaryDto"][];
-            /**
-             * Format: int64
-             * @description How many rows exist in total, under the same scope as `rows`.
-             */
-            total: number;
         };
         /** @description `PATCH /api/dashboard/workspaces/{id}` request body. */
         RenameDashboardWorkspaceRequest: {
@@ -3904,6 +3913,21 @@ export interface components {
              */
             params?: Record<string, never>;
         };
+        /**
+         * @description `POST`/`PUT /api/my/indicators*`'s response body: whether the save's own
+         *     compile attempt (create, save, or an explicit recompile) succeeded, and
+         *     why not if it did not. A failed compile is still a `200` — the source
+         *     was accepted and stored either way — never a `4xx`/`5xx` for a mistake
+         *     in the author's own Rust.
+         */
+        SaveUserIndicatorResponse: {
+            /** @description `true` if this attempt compiled successfully. */
+            compiled: boolean;
+            /** @description Present, and non-empty, only when `compiled` is `false`. */
+            diagnostics?: components["schemas"]["UserIndicatorDiagnosticDto"][] | null;
+            /** @description The indicator's id. */
+            id: string;
+        };
         /** @description A fixed-point number: `value × 10^-scale`. */
         ScaledDto: {
             /**
@@ -3913,15 +3937,6 @@ export interface components {
             scale: number;
             /** @description The integer itself, as a decimal string — see [`WireInt`]. */
             value: components["schemas"]["WireInt"];
-        };
-        /** @description `PUT /api/registry/handle` request body. */
-        SetHandleRequest: {
-            /**
-             * @description The handle to claim: lowercase ASCII letters, digits and hyphens
-             *     only, 3-32 characters, starting and ending with a letter or digit
-             *     (see `senken_indicator_registry::Handle`).
-             */
-            handle: string;
         };
         /** @description `POST /api/indicators/plugins/{name}/enabled` request body. */
         SetIndicatorPluginEnabledRequest: {
@@ -3944,6 +3959,11 @@ export interface components {
             email?: string | null;
             /** @description The new password (length floor only, checked by `senken-identity`). */
             new_password: string;
+        };
+        /** @description `POST /api/plugins/{id}/enabled` request body. */
+        SetPluginEnabledRequest: {
+            /** @description The new enable/disable flag. */
+            enabled: boolean;
         };
         /** @description `POST /api/widget-plugins/{id}/enabled` request body. */
         SetWidgetPluginEnabledRequest: {
@@ -4217,6 +4237,17 @@ export interface components {
             label?: string | null;
         };
         /**
+         * @description `PUT /api/my/indicators/{id}` request body. `title` is optional: a save
+         *     that only edits code sends `source` alone and keeps the existing title
+         *     (and slug).
+         */
+        UpdateUserIndicatorRequest: {
+            /** @description The Rust source to compile. */
+            source: string;
+            /** @description A new display title, if the author renamed it. */
+            title?: string | null;
+        };
+        /**
          * @description `PATCH /api/workspaces/{id}/settings` request body. `settings` is opaque
          *     JSON-object text, validated only as "is a JSON object" — the same
          *     contract `senken_chart::ChartWorkspaceStore::update_workspace_settings`
@@ -4225,6 +4256,89 @@ export interface components {
         UpdateWorkspaceSettingsRequest: {
             /** @description The workspace's new display settings, as JSON-object text. */
             settings: string;
+        };
+        /**
+         * @description One error-level diagnostic from a failed compile, with the line/column
+         *     in the author's own source `rustc` could resolve one to. Never carries
+         *     `rustc`'s fully rendered text — that can name a path on the server —
+         *     only the diagnostic's own short message; the full text goes to the
+         *     server log instead.
+         */
+        UserIndicatorDiagnosticDto: {
+            /**
+             * Format: int32
+             * @description 1-based column, if `rustc` named one.
+             */
+            column?: number | null;
+            /**
+             * Format: int32
+             * @description 1-based line in the author's `src/lib.rs`, if `rustc` named one.
+             */
+            line?: number | null;
+            /** @description The diagnostic's short message. */
+            message: string;
+        };
+        /**
+         * @description `GET /api/my/indicators/{id}` response body: everything in
+         *     [`UserIndicatorSummaryDto`], plus the source. Never the compiled
+         *     component's bytes — nothing in the client needs them, and a component
+         *     can be several kilobytes of binary with no reason to cross this wire.
+         */
+        UserIndicatorDto: {
+            /**
+             * @description The `senken-plugin-api` version the current compiled component was
+             *     built against, if one has ever compiled successfully.
+             */
+            api_version?: string | null;
+            /** @description The most recent compile attempt's error message, if it failed. */
+            compile_error?: string | null;
+            /**
+             * @description `true` when the most recent compile attempt succeeded and a
+             *     compiled component exists.
+             */
+            compiled: boolean;
+            /** @description The indicator's id. */
+            id: string;
+            /** @description The catalog slug this indicator compiles to (`my/<slug>`). */
+            slug: string;
+            /** @description The Rust source as last saved. */
+            source: string;
+            /** @description The display title, as typed by its author. */
+            title: string;
+            /**
+             * Format: int64
+             * @description When the row was last changed, Unix nanoseconds.
+             */
+            updated_at: number;
+        };
+        /**
+         * @description A row from `GET /api/my/indicators` — never the source, which
+         *     `GET /api/my/indicators/{id}` alone carries (the same "listing never
+         *     carries the heavy field" shape `NoteSummaryDto` uses for a note's body).
+         */
+        UserIndicatorSummaryDto: {
+            /**
+             * @description The most recent compile attempt's error message, if it failed.
+             *     `None` when the last attempt succeeded, or before any attempt.
+             */
+            compile_error?: string | null;
+            /**
+             * @description `true` when the most recent compile attempt succeeded and a
+             *     compiled component exists (which may predate the currently saved
+             *     source — see `compile_error`).
+             */
+            compiled: boolean;
+            /** @description The indicator's id. */
+            id: string;
+            /** @description The catalog slug this indicator compiles to (`my/<slug>`). */
+            slug: string;
+            /** @description The display title, as typed by its author. */
+            title: string;
+            /**
+             * Format: int64
+             * @description When the row was last changed, Unix nanoseconds.
+             */
+            updated_at: number;
         };
         /**
          * @description A user row as the user/role management endpoints report it — the same fields as [`MeResponse`]'s profile half, without the
@@ -5386,54 +5500,6 @@ export interface operations {
             };
         };
     };
-    compile_indicator: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CompileIndicatorRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IndicatorCatalogEntry"];
-                };
-            };
-            /** @description a mistake in the source, or the compiled component was rejected */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CompileIndicatorErrorDto"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
     compute_indicator: {
         parameters: {
             query?: never;
@@ -6001,6 +6067,337 @@ export interface operations {
             };
         };
     };
+    list_my_indicators: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserIndicatorSummaryDto"][];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_my_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateUserIndicatorRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaveUserIndicatorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    my_indicator_toolchain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndicatorToolchainStatusResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_my_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserIndicatorDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_my_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUserIndicatorRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaveUserIndicatorResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_my_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    recompile_my_indicator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaveUserIndicatorResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_notes: {
         parameters: {
             query?: {
@@ -6215,7 +6612,7 @@ export interface operations {
             };
         };
     };
-    get_my_handle: {
+    list_plugins: {
         parameters: {
             query?: never;
             header?: never;
@@ -6229,7 +6626,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HandleResponse"];
+                    "application/json": components["schemas"]["PluginListResponse"];
                 };
             };
             401: {
@@ -6242,7 +6639,7 @@ export interface operations {
             };
         };
     };
-    set_my_handle: {
+    install_plugin: {
         parameters: {
             query?: never;
             header?: never;
@@ -6251,11 +6648,127 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SetHandleRequest"];
+                "application/octet-stream": number[];
             };
         };
         responses: {
-            /** @description handle claimed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallPluginResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    refresh_plugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginListResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    uninstall_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -6278,7 +6791,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description another account already holds this handle */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6289,197 +6809,28 @@ export interface operations {
             };
         };
     };
-    search_indicators: {
-        parameters: {
-            query?: {
-                /** @description matches indicator names containing this text */
-                query?: string;
-                /** @description page size, default 50, max 200 */
-                limit?: number;
-                /** @description rows to skip, default 0 */
-                offset?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RegistryPage"];
-                };
-            };
-        };
-    };
-    publish_indicator: {
+    set_plugin_enabled: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                id: string;
+            };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["PublishIndicatorRequest"];
+                "application/json": components["schemas"]["SetPluginEnabledRequest"];
             };
         };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IdResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    list_my_indicators: {
-        parameters: {
-            query?: {
-                /** @description page size, default 50, max 200 */
-                limit?: number;
-                /** @description rows to skip, default 0 */
-                offset?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RegistryPage"];
+                    "application/json": components["schemas"]["PluginDto"];
                 };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    get_indicator: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description the publishing account's id, or its claimed handle */
-                namespace: string;
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IndicatorEntryDto"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    install_indicator: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description the publishing account's id, or its claimed handle */
-                namespace: string;
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description the compiled WebAssembly component, `application/wasm` */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    delete_indicator: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description indicator revoked */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             400: {
                 headers: {

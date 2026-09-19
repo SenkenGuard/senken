@@ -259,12 +259,12 @@ fn the_overload_fixtures_drawables_survive_the_bridge_as_levels() {
     );
 }
 
-/// A component that loads under neither world must not simply vanish: it
-/// has to stay visible on `all()`, with the combined reason both attempts
-/// gave, so an uploaded file that failed does not disappear without
-/// explanation. Re-uploading the exact same broken bytes replaces the
-/// earlier failed entry rather than piling up duplicates — the same
-/// contract a successful registration already has.
+/// A component that fails to load must not simply vanish: it has to stay
+/// visible on `all()`, with the reason the load actually failed for, so an
+/// uploaded file that failed does not disappear without explanation.
+/// Re-uploading the exact same broken bytes replaces the earlier failed
+/// entry rather than piling up duplicates — the same contract a
+/// successful registration already has.
 #[test]
 fn a_registration_that_fails_to_load_is_kept_visible_with_its_reason() {
     let catalog = DynamicIndicators::new().unwrap();
@@ -290,8 +290,8 @@ fn a_registration_that_fails_to_load_is_kept_visible_with_its_reason() {
     match &status.state {
         DynamicIndicatorState::FailedToLoad { reason } => {
             assert!(
-                reason.contains("indicator-plugin") && reason.contains("compiled-indicator"),
-                "the reason must name both worlds that were tried: {reason:?}"
+                reason.contains("not a valid component"),
+                "the reason must name why the load failed: {reason:?}"
             );
         }
         other => panic!("expected FailedToLoad, got {other:?}"),

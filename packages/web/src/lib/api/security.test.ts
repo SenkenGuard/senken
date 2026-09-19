@@ -21,7 +21,7 @@ describe('isSecureUrl', () => {
 		expect(isSecureUrl('https://trading.example.com')).toBe(true);
 	});
 
-	test('non-loopback http is INSECURE — the case B15 exists to warn about', () => {
+	test('non-loopback http is INSECURE — exactly the case this check exists to warn about', () => {
 		expect(isSecureUrl('http://trading.example.com')).toBe(false);
 		expect(isSecureUrl('http://192.168.1.50:4206')).toBe(false);
 	});

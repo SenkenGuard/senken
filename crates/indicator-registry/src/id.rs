@@ -59,9 +59,60 @@ impl std::str::FromStr for IndicatorEntryId {
     }
 }
 
+/// A user-authored indicator's primary key, in `user_indicators`. Its own
+/// type, not [`IndicatorEntryId`], because the two tables are unrelated:
+/// one holds source someone has published to the (currently unused)
+/// registry, the other holds source and its compiled artifact for a
+/// single account's own charts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UserIndicatorId(Uuid);
+
+impl UserIndicatorId {
+    /// A fresh, randomly generated id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for UserIndicatorId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for UserIndicatorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl ToSql for UserIndicatorId {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::from(self.0.to_string()))
+    }
+}
+
+impl FromSql for UserIndicatorId {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> FromSqlResult<Self> {
+        let text = value.as_str()?;
+        Uuid::parse_str(text)
+            .map(UserIndicatorId)
+            .map_err(|e| FromSqlError::Other(Box::new(e)))
+    }
+}
+
+impl std::str::FromStr for UserIndicatorId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(s).map(Self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::IndicatorEntryId;
+    use super::{IndicatorEntryId, UserIndicatorId};
 
     #[test]
     fn two_freshly_generated_ids_differ() {
@@ -71,6 +122,18 @@ mod tests {
     #[test]
     fn display_round_trips_through_uuid_parsing() {
         let id = IndicatorEntryId::new();
+        let text = id.to_string();
+        assert_eq!(text.parse::<uuid::Uuid>().unwrap(), id.0);
+    }
+
+    #[test]
+    fn two_freshly_generated_user_indicator_ids_differ() {
+        assert_ne!(UserIndicatorId::new(), UserIndicatorId::new());
+    }
+
+    #[test]
+    fn user_indicator_id_display_round_trips_through_uuid_parsing() {
+        let id = UserIndicatorId::new();
         let text = id.to_string();
         assert_eq!(text.parse::<uuid::Uuid>().unwrap(), id.0);
     }

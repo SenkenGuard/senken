@@ -50,19 +50,22 @@ use senken_indicators::{
     SeriesShape,
 };
 use senken_marketdata::SourceSymbol;
-use senken_marketdata::instrument::{Instrument, InstrumentStatus};
+use senken_marketdata::instrument::{
+    Contract, Instrument, InstrumentKind, InstrumentStatus, OptionRight, Settlement,
+};
 use senken_marketdata::source::{MarketDataSource, SourceError};
 use senken_plugin::BarSource;
 use senken_plugin_host::{
     Bar as WitBar, BarSpec as WitBarSpec, BarUnit as WitBarUnit, CircuitState,
-    CompiledIndicatorInstance, Drawable as WitDrawable, Extend as WitExtend,
-    FetchError as WitFetchError, IndicatorDescriptor as WitIndicatorDescriptor,
-    LabelAnchor as WitLabelAnchor, LoadedCompiledIndicator, LoadedPlugin, LoadedVenuePlugin,
-    ParamKind as WitParamKind, ParamValue as WitParamValue, PlotShape as WitPlotShape,
-    PluginHealth, PluginHost, PluginHostError, PluginInstance, PluginLimits, PluginLogLine,
-    PriceCoord as WitPriceCoord, Scaled as WitScaled, SeriesShape as WitSeriesShape,
-    VenueCallError, VenueError as WitVenueError, VenueInstrument as WitVenueInstrument,
-    Volume as WitVolume,
+    Drawable as WitDrawable, Extend as WitExtend, FetchError as WitFetchError,
+    IndicatorDescriptor as WitIndicatorDescriptor, LabelAnchor as WitLabelAnchor, LoadedPlugin,
+    LoadedVenuePlugin, ParamKind as WitParamKind, ParamValue as WitParamValue,
+    PlotShape as WitPlotShape, PluginHealth, PluginHost, PluginHostError, PluginInstance,
+    PluginLimits, PluginLogLine, PriceCoord as WitPriceCoord, Scaled as WitScaled,
+    SeriesShape as WitSeriesShape, VenueCallError, VenueContract as WitContract,
+    VenueError as WitVenueError, VenueInstrument as WitVenueInstrument,
+    VenueInstrumentKind as WitInstrumentKind, VenueInstrumentStatus as WitInstrumentStatus,
+    VenueOptionRight as WitOptionRight, VenueSettlement as WitSettlement, Volume as WitVolume,
 };
 use senken_series::{Bar, BarSpec, BarUnit, Volume};
 use senken_venue::{LimitGroup, VenueClient};
@@ -366,92 +369,6 @@ fn info_from_descriptor(descriptor: &WitIndicatorDescriptor) -> DynamicIndicator
     }
 }
 
-/// The wire key [`DynamicOnBar::plots`] reports a compiled indicator-lang
-/// program's single plotted value under. The language has exactly one
-/// `plot` expression per program (see `crates/indicator-lang`'s own
-/// grammar), so unlike a built-in or a Rust-authored plugin — either of
-/// which may declare several named plot fields — there is only ever one
-/// field to name, and this is that name.
-const COMPILED_INDICATOR_PLOT_FIELD: &str = "value";
-
-/// The default line colour assigned to every compiled indicator-lang
-/// program's one plot. The language has no way to declare a colour of its
-/// own — see [`synthesize_compiled_info`]'s own doc comment — so every
-/// compiled indicator gets the same one; chosen to match
-/// `crates/indicators/src/descriptor.rs`'s own `VALUE_LINE`, the exact plot
-/// every single-valued built-in a compiled program can call (`Sma`, `Ema`,
-/// `Wma`, `Rsi`, `Atr`, `Vwap`) already uses for its own "value" field, so a
-/// compiled indicator does not stand out as visually foreign next to one.
-const COMPILED_INDICATOR_COLOR: &str = "#f2f2ef";
-
-/// Builds the [`DynamicIndicatorInfo`] for a component compiled from
-/// indicator-lang source, from nothing but its own compiled bytes.
-///
-/// `wit/senken.wit`'s `compiled-indicator` world exports a bare `on-bar`
-/// function and nothing else — the language has no syntax for a title, an
-/// id, or a parameter (whatever a trader wrote, such as `ema(close, 20)`'s
-/// period, is already baked into the compiled bytes rather than left
-/// runtime-configurable) — so every field here is synthesised by this
-/// bridge rather than read out of the component the way
-/// [`info_from_descriptor`] reads a real descriptor:
-///
-/// - `id` is a content hash of the compiled bytes. `senken_indicator_lang::
-///   compile` already guarantees identical source compiles to
-///   byte-identical output, so this makes recompiling the same program
-///   idempotent — the same "re-uploading the same id replaces the earlier
-///   registration" contract [`DynamicIndicators::register`] already
-///   documents for an uploaded `.wasm` file — without needing a second
-///   channel (a request field, a client-chosen name) this task's own
-///   surface does not have room for.
-/// - `params` is always empty, for the reason above: there is nothing left
-///   to configure at spawn time.
-/// - `plots` is always the one field [`COMPILED_INDICATOR_PLOT_FIELD`]
-///   names, since the language has exactly one `plot` expression per
-///   program.
-fn synthesize_compiled_info(wasm: &[u8]) -> DynamicIndicatorInfo {
-    let digest = Sha256::digest(wasm);
-    let short_hash = digest.iter().take(4).fold(String::new(), |mut hex, byte| {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
-        hex
-    });
-    let id = format!("Compiled-{short_hash}");
-    DynamicIndicatorInfo {
-        title: format!("Compiled indicator {short_hash}"),
-        short_title: "Compiled".to_owned(),
-        legend: id.clone(),
-        id,
-        params: Vec::new(),
-        plots: vec![DynamicPlotSpec {
-            field: COMPILED_INDICATOR_PLOT_FIELD.to_owned(),
-            label: "VALUE".to_owned(),
-            shape: PlotShape::Line,
-            color: COMPILED_INDICATOR_COLOR.to_owned(),
-        }],
-    }
-}
-
-/// The plain magnitude `wit/senken.wit`'s `compiled-indicator` world's
-/// `on-bar` takes for volume.
-///
-/// That world's flat ABI has no channel for [`Volume`]'s real/tick/absent
-/// distinction the way `indicator-plugin`'s own `bar` record does (see
-/// [`volume_to_wit`]) — a compiled indicator-lang program only ever calls
-/// the `volume` built-in with one bare number, exactly as
-/// `senken_plugin_host`'s own host-side bridge for that built-in always
-/// wraps its incoming `f64` as `Volume::Real` before calling
-/// `senken_indicators::Volume::handle_bar`. So both a real traded quantity
-/// and a tick count are widened to this one number here, and a bar with no
-/// reported volume becomes zero — the honest floor of what this world's
-/// ABI can carry, not a shortcut this bridge introduces.
-fn bar_volume_magnitude(volume: Volume) -> f64 {
-    match volume {
-        Volume::Real(value) => scaled_to_f64_lossy(scaled(value)),
-        Volume::Tick(count) => f64::from(count),
-        Volume::Absent => 0.0,
-    }
-}
-
 fn point_from_wit(point: senken_plugin_host::PlotPoint) -> Point {
     Point {
         time: point.time,
@@ -610,45 +527,6 @@ pub enum DynamicIndicatorError {
     NotToggleable(String),
 }
 
-/// Either shape a registered component can take, once
-/// [`DynamicIndicators::register`] has proven it loads: a Rust-authored
-/// plugin against `indicator-plugin` (with its own real descriptor), or a
-/// component compiled from indicator-lang source against the leaner
-/// `compiled-indicator` (whose descriptor [`synthesize_compiled_info`]
-/// invents, since the component itself carries none).
-enum LoadedIndicator {
-    Plugin(LoadedPlugin),
-    Compiled(LoadedCompiledIndicator),
-}
-
-impl LoadedIndicator {
-    fn health(&self) -> PluginHealth {
-        match self {
-            Self::Plugin(plugin) => plugin.health(),
-            Self::Compiled(compiled) => compiled.health(),
-        }
-    }
-
-    fn logs(&self) -> Vec<PluginLogLine> {
-        match self {
-            Self::Plugin(plugin) => plugin.logs(),
-            Self::Compiled(compiled) => compiled.logs(),
-        }
-    }
-
-    /// Explicitly closes this plugin's circuit breaker — the "re-enable"
-    /// remedy [`DynamicIndicators::set_enabled`] applies whenever a caller
-    /// asks for `enabled: true`, since the breaker never clears itself (see
-    /// `senken_plugin_host::circuit`'s own docs for why a guest trap gets no
-    /// timer-based recovery the way a venue's rate limit does).
-    fn reset_circuit_breaker(&self) {
-        match self {
-            Self::Plugin(plugin) => plugin.reset_circuit_breaker(),
-            Self::Compiled(compiled) => compiled.reset_circuit_breaker(),
-        }
-    }
-}
-
 /// Where a registered plugin's bytes came from. Each origin implies a
 /// different remedy when the plugin ends up
 /// [`DynamicIndicatorState::Incompatible`] or
@@ -659,12 +537,17 @@ impl LoadedIndicator {
 pub enum PluginOrigin {
     /// Ships with Senken itself.
     BuiltIn,
-    /// Uploaded through the Plugins page, or compiled from indicator-lang
-    /// source and registered by the authoring panel's "run" action.
+    /// Uploaded through the Plugins page.
     Uploaded,
     /// Found under the data directory at startup, not this session's own
     /// upload.
     DataDirectory,
+    /// Compiled by `senken-indicator-compile` from an account's own Rust
+    /// source, and registered into that account's own catalog — see
+    /// `crate::user_indicators::UserIndicators`. Its own variant, not
+    /// `Uploaded`: a user did not hand this server a `.wasm` file, they
+    /// hold the source, and this server built it for them.
+    User,
 }
 
 /// Which of the five user-facing states one registered entry is in right
@@ -710,7 +593,7 @@ pub enum DynamicIndicatorState {
 /// a whole [`LoadedIndicator`] — does not force the other two, much
 /// smaller variants to pay for its size in every [`HashMap`] slot.
 struct LoadedEntry {
-    plugin: LoadedIndicator,
+    plugin: LoadedPlugin,
     info: DynamicIndicatorInfo,
     enabled: bool,
     origin: PluginOrigin,
@@ -726,8 +609,8 @@ enum DynamicIndicatorEntry {
         found_version: String,
         supported_version: String,
     },
-    /// The component never loaded at all, under either world this crate
-    /// tries. Keyed the same way as `Incompatible`, for the same reason.
+    /// The component never loaded at all. Keyed the same way as
+    /// `Incompatible`, for the same reason.
     FailedToLoad {
         origin: PluginOrigin,
         reason: String,
@@ -739,9 +622,7 @@ enum DynamicIndicatorEntry {
 /// still has something to key a failed entry by, and re-uploading the exact
 /// same broken bytes replaces the earlier failed entry rather than piling
 /// up duplicates — the same contract [`DynamicIndicators::register`]
-/// already documents for a component that *does* load. Shares
-/// [`synthesize_compiled_info`]'s own hashing approach for the same reason
-/// that function has it.
+/// already documents for a component that *does* load.
 fn content_hash_id(prefix: &str, wasm: &[u8]) -> String {
     let digest = Sha256::digest(wasm);
     let short_hash = digest.iter().take(4).fold(String::new(), |mut hex, byte| {
@@ -830,6 +711,19 @@ impl DynamicIndicators {
         })
     }
 
+    /// Builds an empty catalog sharing an already-built `PluginHost`
+    /// rather than creating its own — used by
+    /// `crate::user_indicators::UserIndicators`, which keeps one
+    /// `PluginHost` (one `wasmtime::Engine`) shared across every account's
+    /// own catalog instead of paying for a second `Engine` per account.
+    #[must_use]
+    pub fn with_host(host: PluginHost) -> Self {
+        Self {
+            host,
+            entries: Arc::default(),
+        }
+    }
+
     fn read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, DynamicIndicatorEntry>> {
         self.entries.read().unwrap_or_else(PoisonError::into_inner)
     }
@@ -855,20 +749,17 @@ impl DynamicIndicators {
     /// default. Re-uploading the same id replaces the earlier registration
     /// outright — the mechanism a plugin author uses to ship a fixed build.
     ///
-    /// `wasm` may implement either `wit/senken.wit` world this crate's own
-    /// `senken_plugin_host` can load: a Rust-authored plugin against
-    /// `indicator-plugin` is tried first, and only a component that world
-    /// rejects (because it does not export the `indicator` interface at
-    /// all) is tried again against the leaner `compiled-indicator` world —
-    /// what `senken_indicator_lang::compile` produces.
+    /// `wasm` must implement `wit/senken.wit`'s `indicator-plugin` world —
+    /// the only one a Rust-authored plugin, uploaded or user-compiled,
+    /// ever targets.
     ///
-    /// A component satisfying neither world is never simply dropped: it is
-    /// still recorded, as either [`DynamicIndicatorState::Incompatible`] (if
-    /// either attempt named an unsupported `senken:plugin-api` version) or
-    /// [`DynamicIndicatorState::FailedToLoad`] (both worlds' own reasons,
-    /// combined) — see [`DynamicIndicators::all`] to read it back. This
-    /// call still fails for the immediate caller either way; the point is
-    /// that the *next* look at the catalog still finds it.
+    /// A component that fails to load is never simply dropped: it is
+    /// still recorded, as either [`DynamicIndicatorState::Incompatible`]
+    /// (an unsupported `senken:plugin-api` version) or
+    /// [`DynamicIndicatorState::FailedToLoad`] (any other reason) — see
+    /// [`DynamicIndicators::all`] to read it back. This call still fails
+    /// for the immediate caller either way; the point is that the *next*
+    /// look at the catalog still finds it.
     ///
     /// # Errors
     /// [`DynamicIndicatorError::CollidesWithBuiltin`] if the descriptor's id
@@ -876,32 +767,17 @@ impl DynamicIndicators {
     /// `senken_indicators::descriptor` itself uses) — a dynamic indicator
     /// must never shadow a curated one, since a client resolves a name
     /// against exactly one of the two catalogs; [`DynamicIndicatorError::Host`]
-    /// if the component fails to load against both worlds.
+    /// if the component fails to load.
     pub fn register_with_origin(
         &self,
         wasm: &[u8],
         origin: PluginOrigin,
     ) -> Result<DynamicIndicatorInfo, DynamicIndicatorError> {
-        let (plugin, info) = match self.host.load(wasm) {
-            Ok(plugin) => {
-                let info = info_from_descriptor(plugin.descriptor());
-                (LoadedIndicator::Plugin(plugin), info)
-            }
-            Err(plugin_error) => match self.host.load_compiled(wasm) {
-                Ok(compiled) => (
-                    LoadedIndicator::Compiled(compiled),
-                    synthesize_compiled_info(wasm),
-                ),
-                Err(compiled_error) => {
-                    return self.record_failed_registration(
-                        wasm,
-                        origin,
-                        &plugin_error,
-                        &compiled_error,
-                    );
-                }
-            },
+        let plugin = match self.host.load(wasm) {
+            Ok(plugin) => plugin,
+            Err(error) => return self.record_failed_registration(wasm, origin, &error),
         };
+        let info = info_from_descriptor(plugin.descriptor());
         if senken_indicators::descriptor(&info.id).is_some() {
             return Err(DynamicIndicatorError::CollidesWithBuiltin(info.id));
         }
@@ -918,41 +794,86 @@ impl DynamicIndicators {
         Ok(info)
     }
 
-    /// Records a registration that loaded under neither world, as either
-    /// `Incompatible` or `FailedToLoad` depending on what the two attempts
-    /// actually said — see [`Self::register_with_origin`]'s own doc
-    /// comment for why this is recorded rather than only returned.
+    /// Registers `wasm` under the catalog key `name`, ignoring whatever id
+    /// the component's own `descriptor()` reports, replacing whatever was
+    /// already registered under `name`.
+    ///
+    /// Used for indicators an account compiled themselves
+    /// (`crate::user_indicators::UserIndicators`), where the catalog name
+    /// is `my/<slug>` — assigned once, by this server, when the row is
+    /// created. That is what [`Self::register_with_origin`] cannot offer:
+    /// it keys every entry by the component's own self-reported id, so
+    /// nothing would stop two of one account's own indicators (or two
+    /// different accounts', if they ever shared one catalog) from
+    /// claiming the same `descriptor().id` and silently overwriting one
+    /// another here. A server-assigned name closes that the same way a
+    /// user-chosen filename never gets to decide a database row's primary
+    /// key elsewhere in this workspace.
+    ///
+    /// # Errors
+    /// [`DynamicIndicatorError::Host`] if the component fails to load.
+    pub fn register_named(
+        &self,
+        name: &str,
+        wasm: &[u8],
+        origin: PluginOrigin,
+    ) -> Result<DynamicIndicatorInfo, DynamicIndicatorError> {
+        let plugin = self.host.load(wasm)?;
+        let mut info = info_from_descriptor(plugin.descriptor());
+        name.clone_into(&mut info.id);
+        self.write().insert(
+            info.id.clone(),
+            DynamicIndicatorEntry::Loaded(Box::new(LoadedEntry {
+                plugin,
+                info: info.clone(),
+                enabled: true,
+                origin,
+            })),
+        );
+        Ok(info)
+    }
+
+    /// Removes `id`'s registration outright, whatever state it was in.
+    /// Returns `true` if something was actually removed.
+    ///
+    /// Unlike [`Self::set_enabled`]`(id, false)`, which keeps a disabled
+    /// entry visible (so an operator can re-enable it without
+    /// re-uploading), this is for a registration whose backing row is
+    /// itself gone — deleting an account's own indicator
+    /// (`crate::user_indicators::UserIndicators::unload`) should not leave
+    /// behind a ghost entry only that same account could ever have
+    /// re-enabled anyway.
+    #[must_use]
+    pub fn unregister(&self, id: &str) -> bool {
+        self.write().remove(id).is_some()
+    }
+
+    /// Records a registration that failed to load, as either
+    /// `Incompatible` or `FailedToLoad` depending on what `error` says —
+    /// see [`Self::register_with_origin`]'s own doc comment for why this
+    /// is recorded rather than only returned.
     fn record_failed_registration(
         &self,
         wasm: &[u8],
         origin: PluginOrigin,
-        plugin_error: &PluginHostError,
-        compiled_error: &PluginHostError,
+        error: &PluginHostError,
     ) -> Result<DynamicIndicatorInfo, DynamicIndicatorError> {
-        // Either attempt naming an unsupported version is the more specific,
-        // more actionable diagnosis — in practice both name the same
-        // version, since both loads see the same bytes.
-        for error in [plugin_error, compiled_error] {
-            if let PluginHostError::Incompatible { found, supported } = error {
-                let id = content_hash_id("Incompatible", wasm);
-                self.write().insert(
-                    id,
-                    DynamicIndicatorEntry::Incompatible {
-                        origin,
-                        found_version: found.clone(),
-                        supported_version: supported.clone(),
-                    },
-                );
-                return Err(DynamicIndicatorError::Host(PluginHostError::Incompatible {
-                    found: found.clone(),
-                    supported: supported.clone(),
-                }));
-            }
+        if let PluginHostError::Incompatible { found, supported } = error {
+            let id = content_hash_id("Incompatible", wasm);
+            self.write().insert(
+                id,
+                DynamicIndicatorEntry::Incompatible {
+                    origin,
+                    found_version: found.clone(),
+                    supported_version: supported.clone(),
+                },
+            );
+            return Err(DynamicIndicatorError::Host(PluginHostError::Incompatible {
+                found: found.clone(),
+                supported: supported.clone(),
+            }));
         }
-        let reason = format!(
-            "not a valid `indicator-plugin` component ({plugin_error}), and not a valid \
-             `compiled-indicator` component either ({compiled_error})"
-        );
+        let reason = error.to_string();
         let id = content_hash_id("FailedToLoad", wasm);
         self.write().insert(
             id,
@@ -1176,54 +1097,24 @@ impl DynamicIndicators {
         if !enabled {
             return Err(DynamicIndicatorError::Disabled(id.to_owned()));
         }
-        // A compiled indicator-lang program's own `info.params` is always
-        // empty (see `synthesize_compiled_info`), so this validates
-        // `params_json` against that empty list — trivially satisfied by
-        // any JSON object — the same way it does for a real plugin with
-        // declared parameters. There is nothing further to pass a compiled
-        // component's spawn call: it takes none.
         let params = Self::params_from_json(info, params_json)?;
         let mode = senken_plugin_host::ExecutionMode::Backtest {
             fuel: DYNAMIC_INDICATOR_FUEL_BUDGET,
         };
-        let kind = match plugin {
-            LoadedIndicator::Plugin(plugin) => {
-                DynamicInstanceKind::Plugin(plugin.spawn(&params, mode)?)
-            }
-            LoadedIndicator::Compiled(compiled) => {
-                DynamicInstanceKind::Compiled(compiled.spawn(mode)?)
-            }
-        };
+        let instance = plugin.spawn(&params, mode)?;
         Ok(DynamicIndicatorInstance {
-            kind,
+            instance,
             info: info.clone(),
         })
     }
-}
-
-/// Which of the two loaded shapes a [`DynamicIndicatorInstance`] is
-/// actually running — mirrors [`LoadedIndicator`] one level down, at the
-/// spawned-instance stage.
-enum DynamicInstanceKind {
-    Plugin(PluginInstance),
-    Compiled(CompiledIndicatorInstance),
 }
 
 /// One running dynamic-indicator instance, spawned by
 /// [`DynamicIndicators::spawn`].
 #[derive(Debug)]
 pub struct DynamicIndicatorInstance {
-    kind: DynamicInstanceKind,
+    instance: PluginInstance,
     info: DynamicIndicatorInfo,
-}
-
-impl std::fmt::Debug for DynamicInstanceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Plugin(instance) => f.debug_tuple("Plugin").field(instance).finish(),
-            Self::Compiled(instance) => f.debug_tuple("Compiled").field(instance).finish(),
-        }
-    }
 }
 
 impl DynamicIndicatorInstance {
@@ -1244,93 +1135,178 @@ impl DynamicIndicatorInstance {
     /// open circuit breaker — wrapped in [`DynamicIndicatorError::Host`];
     /// [`DynamicIndicatorError::UnsupportedBarUnit`] if `spec.unit` has no
     /// counterpart in `wit/senken.wit`'s closed `bar-unit` enum (see
-    /// [`bar_to_wit`]) — checked even for a compiled indicator, which does
-    /// not carry a `bar-spec` across its own flat ABI, so every dynamic
-    /// indicator rejects the same bar units consistently rather than one
-    /// kind silently accepting what the other refuses.
+    /// [`bar_to_wit`]).
     pub fn handle_bar(
         &mut self,
         bar: &Bar,
         spec: BarSpec,
     ) -> Result<DynamicOnBar, DynamicIndicatorError> {
-        match &mut self.kind {
-            DynamicInstanceKind::Plugin(instance) => {
-                let result = instance.handle_bar(bar_to_wit(bar, spec)?)?;
-                Ok(DynamicOnBar {
-                    plots: result
-                        .plots
-                        .into_iter()
-                        .map(|plot| (plot.field, plot.value))
-                        .collect(),
-                    drawables: result.drawables.iter().map(drawable_from_wit).collect(),
-                })
-            }
-            DynamicInstanceKind::Compiled(instance) => {
-                // Proves this bar's own unit is one `wit/senken.wit` knows
-                // about, exactly as the plugin path above does, even though
-                // `on-bar`'s flat signature never actually carries it.
-                bar_spec_to_wit(spec)?;
-                let value = instance.on_bar(
-                    scaled_to_f64_lossy(scaled(bar.open)),
-                    scaled_to_f64_lossy(scaled(bar.high)),
-                    scaled_to_f64_lossy(scaled(bar.low)),
-                    scaled_to_f64_lossy(scaled(bar.close)),
-                    bar_volume_magnitude(bar.volume),
-                )?;
-                Ok(DynamicOnBar {
-                    plots: vec![(COMPILED_INDICATOR_PLOT_FIELD.to_owned(), value)],
-                    drawables: Vec::new(),
-                })
-            }
-        }
+        let result = self.instance.handle_bar(bar_to_wit(bar, spec)?)?;
+        Ok(DynamicOnBar {
+            plots: result
+                .plots
+                .into_iter()
+                .map(|plot| (plot.field, plot.value))
+                .collect(),
+            drawables: result.drawables.iter().map(drawable_from_wit).collect(),
+        })
     }
 
     /// Whether this instance has seen enough bars for its output to be
     /// meaningful.
     ///
-    /// A compiled indicator-lang program has no way to report this —
-    /// `wit/senken.wit`'s `compiled-indicator` world has no counterpart to
-    /// `indicator-plugin`'s own `initialized` method, since the language
-    /// has no notion of warm-up separate from the value a built-in already
-    /// returns on every bar — so this always reports `true` for one. Every
-    /// built-in a compiled program calls already computes its real value
-    /// from the first bar it sees, the same value `senken_indicators`
-    /// itself would report before its own `initialized()` turns `true`,
-    /// which is exactly what `crates/indicator-lang`'s own equivalence
-    /// tests check bar-for-bar without ever gating on that flag.
-    ///
     /// # Errors
     /// See [`Self::handle_bar`].
     pub fn initialized(&mut self) -> Result<bool, DynamicIndicatorError> {
-        match &mut self.kind {
-            DynamicInstanceKind::Plugin(instance) => Ok(instance.initialized()?),
-            DynamicInstanceKind::Compiled(_) => Ok(true),
-        }
+        Ok(self.instance.initialized()?)
     }
+}
+
+/// Why one `wit/senken.wit` `instrument` could not be converted to the
+/// domain [`Instrument`] every `senken-marketdata` consumer already speaks.
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum InstrumentFromWitError {
+    /// `kind` and `contract` disagreed about whether this instrument is a
+    /// derivative.
+    ///
+    /// [`Instrument::contract`]'s own doc comment states the invariant this
+    /// guards: `Some` exactly when
+    /// [`InstrumentKind::is_derivative`] is `true`, `None` for spot. A
+    /// `wit/senken.wit` `instrument` that names a derivative `kind` with no
+    /// `contract`, or `spot` with one attached, describes a state the
+    /// domain type has no representation for — rejected here rather than
+    /// silently dropping the extra side or inventing the missing one.
+    #[error(
+        "instrument {symbol:?} has kind {kind:?} but {} a contract",
+        if *has_contract { "carries" } else { "carries no" }
+    )]
+    KindContractMismatch {
+        /// The instrument's own normalised symbol, for the error message.
+        symbol: String,
+        /// The `kind` this instrument reported.
+        kind: WitInstrumentKind,
+        /// Whether `contract` was present.
+        has_contract: bool,
+    },
+}
+
+/// Converts one `wit/senken.wit` `instrument-kind` into the domain
+/// [`InstrumentKind`] it mirrors case for case.
+const fn instrument_kind_from_wit(kind: WitInstrumentKind) -> InstrumentKind {
+    match kind {
+        WitInstrumentKind::Spot => InstrumentKind::Spot,
+        WitInstrumentKind::Future => InstrumentKind::Future,
+        WitInstrumentKind::Option => InstrumentKind::Option,
+        WitInstrumentKind::Perpetual => InstrumentKind::Perpetual,
+    }
+}
+
+/// Converts one `wit/senken.wit` `instrument-status` into the domain
+/// [`InstrumentStatus`] it mirrors case for case.
+const fn instrument_status_from_wit(status: WitInstrumentStatus) -> InstrumentStatus {
+    match status {
+        WitInstrumentStatus::Trading => InstrumentStatus::Trading,
+        WitInstrumentStatus::Halted => InstrumentStatus::Halted,
+        WitInstrumentStatus::PreOpen => InstrumentStatus::PreOpen,
+        WitInstrumentStatus::Closed => InstrumentStatus::Closed,
+        WitInstrumentStatus::Test => InstrumentStatus::Test,
+        WitInstrumentStatus::Unknown => InstrumentStatus::Unknown,
+    }
+}
+
+/// Converts one `wit/senken.wit` `settlement` into the domain [`Settlement`]
+/// it mirrors case for case.
+const fn settlement_from_wit(settlement: WitSettlement) -> Settlement {
+    match settlement {
+        WitSettlement::Linear => Settlement::Linear,
+        WitSettlement::Inverse => Settlement::Inverse,
+        WitSettlement::Quanto => Settlement::Quanto,
+    }
+}
+
+/// Converts one `wit/senken.wit` `option-right` into the domain
+/// [`OptionRight`] it mirrors case for case.
+const fn option_right_from_wit(right: WitOptionRight) -> OptionRight {
+    match right {
+        WitOptionRight::Call => OptionRight::Call,
+        WitOptionRight::Put => OptionRight::Put,
+    }
+}
+
+/// Converts one `wit/senken.wit` `contract` into the domain [`Contract`] it
+/// mirrors field for field.
+///
+/// `expiry` needs no checked conversion: `wit/senken.wit`'s `instant` is
+/// already nanoseconds since the epoch (the same unit [`UnixNanos`]
+/// stores), so [`UnixNanos::from_nanos`] cannot fail the way
+/// `from_millis`/`from_secs` can — this is a named boundary crossing, not a
+/// computation, the same reason `senken_plugin_api::convert::instant_from_nanos`
+/// is the identity function.
+fn contract_from_wit(contract: WitContract) -> Contract {
+    let mut built = Contract::new(contract.settle, settlement_from_wit(contract.settlement));
+    if let Some(expiry) = contract.expiry {
+        built = built.with_expiry(UnixNanos::from_nanos(expiry));
+    }
+    built = built.with_contract_size(contract.size_scale, contract.contract_size);
+    if let Some(option) = contract.option {
+        built = built.with_option(
+            option_right_from_wit(option.right),
+            option.strike_scale,
+            option.strike,
+        );
+    }
+    built
 }
 
 /// Converts one `wit/senken.wit` `instrument` into the domain [`Instrument`]
 /// every `senken-marketdata` consumer already speaks.
 ///
-/// Spot only, always `InstrumentStatus::Trading`: `wit/senken.wit`'s own
-/// `venue.instrument` record carries neither a `kind` nor a `status` field
-/// (see that record's own doc comment for why — a derivative's contract
-/// terms are real weight this boundary does not carry yet), so every
-/// dynamic venue instrument is presented as an ordinary, currently-trading
-/// spot pair. A plugin author with a delisted or halted symbol to report
-/// has no channel for that today; extending `venue.instrument` to carry it
-/// is a real, separate piece of work, not a gap this bridge can paper over.
-fn instrument_from_wit(instrument: WitVenueInstrument) -> Instrument {
-    Instrument::spot(
-        instrument.symbol,
-        instrument.source_symbol,
-        instrument.base,
-        instrument.quote,
-    )
-    .with_name(instrument.name)
-    .with_status(InstrumentStatus::Trading)
-    .with_price_increment((instrument.price_scale, instrument.tick_size))
-    .with_qty_increment((instrument.qty_scale, instrument.step_size))
+/// Every market kind a venue plugin can describe — spot, dated futures,
+/// perpetual swaps and options — crosses through this one function: `kind`
+/// says which, and `contract` (checked against `kind` first, per
+/// [`InstrumentFromWitError::KindContractMismatch`]) carries the terms only
+/// a derivative has.
+///
+/// # Errors
+/// [`InstrumentFromWitError::KindContractMismatch`] if `kind` and `contract`
+/// disagree about whether this instrument is a derivative.
+fn instrument_from_wit(
+    instrument: WitVenueInstrument,
+) -> Result<Instrument, InstrumentFromWitError> {
+    let kind = instrument_kind_from_wit(instrument.kind);
+    let has_contract = instrument.contract.is_some();
+    if kind.is_derivative() != has_contract {
+        return Err(InstrumentFromWitError::KindContractMismatch {
+            symbol: instrument.symbol,
+            kind: instrument.kind,
+            has_contract,
+        });
+    }
+
+    let status = instrument_status_from_wit(instrument.status);
+    let built = match instrument.contract {
+        Some(contract) => Instrument::derivative(
+            instrument.symbol,
+            instrument.source_symbol,
+            instrument.base,
+            instrument.quote,
+            kind,
+            contract_from_wit(contract),
+        ),
+        None => Instrument::spot(
+            instrument.symbol,
+            instrument.source_symbol,
+            instrument.base,
+            instrument.quote,
+        ),
+    };
+
+    Ok(built
+        .with_name(instrument.name)
+        .with_status(status)
+        .with_price_increment((instrument.price_scale, instrument.tick_size))
+        .with_qty_increment((instrument.qty_scale, instrument.step_size)))
 }
 
 /// Restates a [`VenueCallError`] as the [`SourceError`] every
@@ -1873,7 +1849,19 @@ impl MarketDataSource for DynamicVenueSource {
         let instruments = run_venue_call(move || shared.plugin.instruments())
             .await
             .map_err(source_error_from_venue_call_error)?;
-        Ok(instruments.into_iter().map(instrument_from_wit).collect())
+        instruments
+            .into_iter()
+            .map(|instrument| instrument_from_wit(instrument).map_err(SourceError::decode))
+            .collect()
+    }
+
+    fn is_serving(&self) -> bool {
+        // Returning an empty list above is not enough on its own: a registry
+        // memoises each source's catalog and keeps a disk snapshot of it, so
+        // once either is warm this source is never asked again and a venue
+        // switched off would keep filling searches. This is asked ahead of
+        // both caches.
+        self.shared.enabled.load(Ordering::Relaxed)
     }
 }
 
@@ -1922,8 +1910,16 @@ impl BarSource for DynamicVenueSource {
 
 #[cfg(test)]
 mod tests {
-    use super::{BarSpec, BarUnit, DynamicIndicatorError, DynamicIndicators, Volume, bar_to_wit};
+    use super::{
+        BarSpec, BarUnit, DynamicIndicatorError, DynamicIndicators, InstrumentFromWitError, Volume,
+        bar_to_wit, instrument_from_wit,
+    };
     use senken_core::UnixNanos;
+    use senken_marketdata::instrument::{InstrumentKind, OptionRight, Settlement};
+    use senken_plugin_host::{
+        VenueContract, VenueInstrument, VenueInstrumentKind, VenueInstrumentStatus,
+        VenueOptionRight, VenueOptionTerms, VenueSettlement,
+    };
     use senken_series::Bar;
     use std::num::NonZeroU32;
 
@@ -2015,6 +2011,141 @@ mod tests {
         assert!(matches!(
             catalog.set_enabled("Sma", false).unwrap_err(),
             DynamicIndicatorError::UnknownPlugin(id) if id == "Sma"
+        ));
+    }
+
+    /// A `wit/senken.wit` `instrument` with `kind`/`contract` filled in for
+    /// the given case — every other field is a fixed, arbitrary stand-in
+    /// the tests below do not care about.
+    fn wit_instrument(
+        kind: VenueInstrumentKind,
+        contract: Option<VenueContract>,
+    ) -> VenueInstrument {
+        VenueInstrument {
+            symbol: "BTCUSD".to_owned(),
+            source_symbol: "BTC-USD".to_owned(),
+            name: "BTC / USD".to_owned(),
+            base: "BTC".to_owned(),
+            quote: "USD".to_owned(),
+            kind,
+            status: VenueInstrumentStatus::Trading,
+            price_scale: 1,
+            tick_size: 1,
+            qty_scale: 1,
+            step_size: 1,
+            contract,
+        }
+    }
+
+    #[test]
+    fn a_spot_instrument_crosses_with_no_contract() {
+        let instrument =
+            instrument_from_wit(wit_instrument(VenueInstrumentKind::Spot, None)).unwrap();
+        assert_eq!(instrument.kind, InstrumentKind::Spot);
+        assert!(instrument.contract.is_none());
+    }
+
+    /// The property `wit/senken.wit`'s own `contract.expiry` doc comment
+    /// states directly: a perpetual crosses with `none`, never a
+    /// far-future sentinel a caller would have to know to treat as "never".
+    #[test]
+    fn a_perpetual_with_no_expiry_crosses_intact() {
+        let contract = VenueContract {
+            settle: "USD".to_owned(),
+            settlement: VenueSettlement::Inverse,
+            expiry: None,
+            size_scale: 0,
+            contract_size: 100,
+            option: None,
+        };
+        let instrument = instrument_from_wit(wit_instrument(
+            VenueInstrumentKind::Perpetual,
+            Some(contract),
+        ))
+        .unwrap();
+        let built = instrument
+            .contract
+            .expect("a perpetual must carry a contract");
+        assert_eq!(built.settlement, Settlement::Inverse);
+        assert_eq!(
+            built.expiry, None,
+            "a perpetual must round-trip with no expiry, not a sentinel date"
+        );
+    }
+
+    /// An option's strike and right must survive the crossing alongside its
+    /// own expiry — the same property `crates/plugin-host/tests/venue.rs`
+    /// proves end to end against a genuine compiled component; this is the
+    /// unit-level proof of the same bridge function.
+    #[test]
+    fn an_option_carries_its_strike_and_right_intact() {
+        let contract = VenueContract {
+            settle: "BTC".to_owned(),
+            settlement: VenueSettlement::Inverse,
+            expiry: Some(1_788_076_800_000_000_000),
+            size_scale: 0,
+            contract_size: 1,
+            option: Some(VenueOptionTerms {
+                right: VenueOptionRight::Call,
+                strike_scale: 0,
+                strike: 70_000,
+            }),
+        };
+        let instrument =
+            instrument_from_wit(wit_instrument(VenueInstrumentKind::Option, Some(contract)))
+                .unwrap();
+        let built = instrument
+            .contract
+            .expect("an option must carry a contract");
+        assert_eq!(
+            built.expiry,
+            Some(UnixNanos::from_nanos(1_788_076_800_000_000_000))
+        );
+        let terms = built
+            .option
+            .expect("an option must carry its strike and right");
+        assert_eq!(terms.right, OptionRight::Call);
+        assert_eq!(terms.strike, 70_000);
+    }
+
+    /// Proves [`InstrumentFromWitError::KindContractMismatch`] is actually
+    /// reachable, not just declared: a derivative `kind` with no `contract`
+    /// describes a state [`senken_marketdata::instrument::Instrument`] has
+    /// no representation for (see its own `contract` doc comment), so this
+    /// must be rejected rather than silently defaulting to spot.
+    #[test]
+    fn a_derivative_kind_with_no_contract_is_rejected() {
+        let err =
+            instrument_from_wit(wit_instrument(VenueInstrumentKind::Perpetual, None)).unwrap_err();
+        assert!(matches!(
+            err,
+            InstrumentFromWitError::KindContractMismatch {
+                has_contract: false,
+                ..
+            }
+        ));
+    }
+
+    /// The other side of the same guard: `spot` carrying a `contract` is
+    /// just as unrepresentable as a derivative carrying none.
+    #[test]
+    fn a_spot_kind_carrying_a_contract_is_rejected() {
+        let contract = VenueContract {
+            settle: "USD".to_owned(),
+            settlement: VenueSettlement::Linear,
+            expiry: None,
+            size_scale: 0,
+            contract_size: 1,
+            option: None,
+        };
+        let err = instrument_from_wit(wit_instrument(VenueInstrumentKind::Spot, Some(contract)))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            InstrumentFromWitError::KindContractMismatch {
+                has_contract: true,
+                ..
+            }
         ));
     }
 }

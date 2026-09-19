@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "bitstamp",
+  "name": "Bitstamp",
+  "version": "0.0.5",
+  "contributes": [
+    {
+      "point": "venue"
+    }
+  ]
+}

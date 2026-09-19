@@ -238,7 +238,7 @@ impl AlertStore {
     ///
     /// **Deliberately not behind [`AuthenticatedUser`].** Every other method
     /// on this store answers "what can *this caller* see", which is exactly
-    /// the question B6/its guarded-query discipline exists to police. This
+    /// the question guarded-query scoping exists to police. This
     /// method answers a different question — "what does the server itself
     /// need to keep running" — asked by the trusted evaluation engine
     /// running inside the server process, never by a caller impersonating a
@@ -556,7 +556,7 @@ mod tests {
         )
     }
 
-    // --- B6/B7: scope reaches the query, including the total -----------
+    // --- Guarded queries: scope reaches the query, including the total --
 
     #[test]
     fn two_users_cannot_see_each_others_alerts_and_the_total_respects_scope_too() {

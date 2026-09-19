@@ -43,10 +43,10 @@ type ChunkCell = Arc<OnceCell<Arc<[Bar]>>>;
 pub(crate) struct ChunkSingleFlight {
     cells: Mutex<HashMap<ChunkKey, ChunkCell>>,
     /// How many times a chunk's fetch closure actually *ran* — as opposed
-    /// to how many times a caller *asked* for one. The required test for
-    /// M6.2 (two concurrent requests at different timeframes issue exactly
-    /// one fetch) asserts on this counter rather than merely trusting the
-    /// design, per the plan's own instruction to "prove the count".
+    /// to how many times a caller *asked* for one. The required test —
+    /// two concurrent requests at different timeframes must issue exactly
+    /// one fetch — asserts on this counter rather than merely trusting the
+    /// design, proving the count rather than assuming it.
     fetch_starts: AtomicU64,
 }
 

@@ -24,8 +24,8 @@ use crate::source::BarSource;
 
 /// The default byte budget for this loader's internal bar cache — 64 MiB. An
 /// explicit, overridable default ("an explicit setting ... not
-/// a buried constant"), sized generously against the arithmetic in design
-/// D16 (a full year of M1 for one symbol decodes to roughly 25 MB; a chart
+/// a buried constant"), sized generously against the arithmetic (a full
+/// year of M1 for one symbol decodes to roughly 25 MB; a chart
 /// viewport is a few hundred KB), not a measurement of this deployment.
 pub const DEFAULT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -367,14 +367,14 @@ impl SeriesLoader {
     /// `price_scale`/`qty_scale` are supplied here, not derived: they are
     /// a property of the specific instrument, and this crate
     /// has no instrument-catalog dependency to source them from
-    /// automatically — wiring that up is `senken-runtime`'s job (plan Part
-    /// C2), exactly as [`senken_store::Store::write`] itself already
+    /// automatically — wiring that up is `senken-runtime`'s job,
+    /// exactly as [`senken_store::Store::write`] itself already
     /// requires them as explicit per-call parameters rather than deriving
     /// them from a `Bar`. This — along with the explicit `anchor` — is a
-    /// deliberate widening of the plan's illustrative `ensure(&self, key,
-    /// range, priority)` signature, for the same reason `senken-store`'s
-    /// M5 executor widened `coverage`/`read_range` beyond their own
-    /// sketch: an unavoidable consequence of a detail the plan's sketch
+    /// deliberate widening beyond the original illustrative `ensure(&self,
+    /// key, range, priority)` signature, for the same reason `senken-store`
+    /// widened `coverage`/`read_range` beyond their own
+    /// sketch: an unavoidable consequence of a detail the original sketch
     /// left implicit.
     pub fn ensure(
         &self,
@@ -1735,8 +1735,9 @@ mod tests {
     /// (queued first) and V (queued second, higher priority) — the one
     /// scenario that actually distinguishes the two policies: a FIFO gate
     /// must grant B next (it queued first); a priority gate must grant V
-    /// next regardless of arrival order. The pre-M8.3 `Semaphore` would
-    /// produce `[A, B, V]` here; this loader must produce `[A, V, B]`.
+    /// next regardless of arrival order. The plain `Semaphore` this gate
+    /// replaced would produce `[A, B, V]` here; this loader must produce
+    /// `[A, V, B]`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_visible_jobs_chunk_is_serviced_before_an_earlier_queued_backgrounds_chunk() {
         let dir = TempDir::new().unwrap();

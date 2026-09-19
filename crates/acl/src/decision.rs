@@ -100,7 +100,9 @@ pub fn decide(actor: &Actor, action: Action, resource: Resource) -> Decision {
         | Resource::Watchlist
         | Resource::Note
         | Resource::Storage
-        | Resource::WidgetPlugin => decide_by_grant(actor, action, resource),
+        | Resource::WidgetPlugin
+        | Resource::UserIndicator
+        | Resource::Plugin => decide_by_grant(actor, action, resource),
     }
 }
 
@@ -219,6 +221,8 @@ mod tests {
             Resource::Note,
             Resource::Storage,
             Resource::WidgetPlugin,
+            Resource::UserIndicator,
+            Resource::Plugin,
         ];
         for resource in resources {
             let _ = decide(&Actor::new(), Action::View, resource);

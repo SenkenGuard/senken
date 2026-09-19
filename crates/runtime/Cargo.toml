@@ -24,6 +24,11 @@ async-trait = { workspace = true }
 senken-acl = { workspace = true }
 senken-core = { workspace = true }
 senken-identity = { workspace = true }
+# `UserIndicatorStore::all_compiled_for_startup` — reloading every account's
+# already-compiled indicator into `user_indicators::UserIndicators` when the
+# runtime starts, the same way `scan_indicator_plugin_directory` reloads
+# files dropped in the data directory by hand.
+senken-indicator-registry = { workspace = true }
 # The ten built-in indicators' descriptor vocabulary
 # (`ParamKind`/`ParamDefault`/`PlotShape`/`Drawable`/`DisplayList`) — reused
 # by `plugin_host`'s dynamic-indicator bridge so an uploaded `.wasm`
@@ -64,12 +69,11 @@ senken-store = { workspace = true }
 senken-venue = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
-# Content-addresses a registered `compiled-indicator` component (see
-# `plugin_host.rs::synthesize_compiled_info`): the language has no channel
-# of its own to declare an id or a title, and `senken_indicator_lang::compile`
-# already guarantees the same source always produces byte-identical output,
-# so hashing the compiled bytes gives a stable id for free — the same crate
-# `senken-identity` already uses to hash session tokens before storing them.
+# Content-addresses a registration that never finished loading (see
+# `plugin_host.rs::content_hash_id`): a component that never linked has no
+# descriptor to read a real id from, so hashing its bytes gives a stable
+# key for free — the same crate `senken-identity` already uses to hash
+# session tokens before storing them.
 sha2 = { workspace = true }
 # The registry half: the runtime is where plugin-registered adapters are
 # assembled into one `TradeEngine`, so it asks for that feature. `accounts`
@@ -87,12 +91,6 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
-# Proves the full compile-register-compute pipeline end to end (`tests/
-# compiled_indicators.rs`) against a real indicator-lang program, produced
-# in-process with no `wasm32-wasip2` toolchain needed — unlike the
-# Rust-authored fixtures under `tests/fixtures/*`, which are ordinary crates
-# built for that target.
-senken-indicator-lang = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 # `plugin_host.rs`'s own `DynamicVenues` tests stand up a real HTTP server
@@ -100,3 +98,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 # to hit, the same technique `senken-plugin-host`'s own `tests/venue.rs`
 # already uses one layer down.
 wiremock = { workspace = true }
+# `tests/dynamic_venue_packages.rs` packs a fixture venue component into a
+# zip archive to prove `WidgetPackageStore::install` end to end, the same
+# way `senken-plugin`'s own store tests do one layer down.
+zip = { workspace = true }

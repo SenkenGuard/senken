@@ -83,7 +83,8 @@
 	import ObjectTree from '$lib/components/terminal/object-tree.svelte';
 	import ChartSettingsDialog from '$lib/components/terminal/chart-settings-dialog.svelte';
 	import LayerDialog from '$lib/components/terminal/layer-dialog.svelte';
-	import IndicatorPanel from '$lib/components/terminal/indicator-panel.svelte';
+	import IndicatorDock from '$lib/components/indicators/indicator-dock.svelte';
+	import { indicatorEditor, toggleDock } from '$lib/charts/indicator-editor.svelte';
 	import DateJumpDialog from '$lib/components/terminal/date-jump-dialog.svelte';
 	import DrawingToolbar from '$lib/components/terminal/drawing-toolbar.svelte';
 	import AlertsPanel from '$lib/components/terminal/alerts-panel.svelte';
@@ -123,9 +124,32 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import CoinsIcon from '@lucide/svelte/icons/coins';
 	import SigmaIcon from '@lucide/svelte/icons/sigma';
+	import SquareCodeIcon from '@lucide/svelte/icons/square-code';
 	import { toast } from 'svelte-sonner';
 
 	let indicatorCatalog = $state<IndicatorDescriptorClient[]>([]);
+
+	/** `GET /api/indicators`'s full catalogue — the ten built-ins plus, for
+	 * the signed-in account, every one of its own compiled Rust indicators
+	 * as `my/<slug>` (`033`). Re-run after any indicator-dock mutation
+	 * (create/save/rename/delete all call `loadIndicatorList`, watched
+	 * below) so a freshly compiled indicator shows up in the "MY
+	 * INDICATORS" picker group without a page reload. */
+	function refreshIndicatorDescriptors() {
+		void apiClient.listIndicators().then((items) => {
+			indicatorCatalog = items as unknown as IndicatorDescriptorClient[];
+			setIndicatorDescriptors(indicatorCatalog);
+		});
+	}
+
+	// `indicatorEditor.list` (the dock's own "MY INDICATORS" list) changes
+	// after every create/save/rename/delete — reacting to it here is what
+	// keeps this page's own indicator catalogue (used by the add-indicator
+	// picker below) from lagging behind a save the reader just made.
+	$effect(() => {
+		indicatorEditor.list;
+		untrack(() => refreshIndicatorDescriptors());
+	});
 
 	onMount(() => {
 		// The instrument pickers below refuse a source that cannot serve
@@ -134,10 +158,6 @@
 		// reader can reach a picker before any pane has mounted.
 		void ensureSourcesLoaded();
 		void initChartWorkspaces();
-		void apiClient.listIndicators().then((items) => {
-			indicatorCatalog = items as unknown as IndicatorDescriptorClient[];
-			setIndicatorDescriptors(indicatorCatalog);
-		});
 		// The trade panel needs the adapter catalogue before it can draw a
 		// ticket at all — which controls exist is read from the active
 		// account's adapter, not assumed. Every account's portfolio (not
@@ -414,6 +434,11 @@
 	 * whether this particular keydown should fire it at all (typing in a
 	 * field, or a dialog open, must not have the chart jump underneath). */
 	function handleGlobalKeydown(e: KeyboardEvent) {
+		if (e.altKey && e.key.toLowerCase() === 'i') {
+			e.preventDefault();
+			toggleDock();
+			return;
+		}
 		const dialogOpen = csOpen || !!layerDlg || !!dateJumpDlg;
 		if (!shouldResetActivePaneView(e, e.target as { tagName?: string; isContentEditable?: boolean } | null, dialogOpen)) return;
 		e.preventDefault();
@@ -426,9 +451,6 @@
 	 * itself the moment the user edited anything. */
 	let layerDlg = $state<{ pane: number; position: number } | null>(null);
 	let addMenuKind = $state<'instrument' | 'indicator'>('indicator');
-	/** Which pane the indicator-authoring panel is placing onto, or `null`
-	 * while it is closed. */
-	let indicatorPanelPane = $state<number | null>(null);
 
 	// Drawing objects: which one is selected, if any — set by
 	// `chart-pane.svelte`'s cursor-tool click handler, cleared by closing the
@@ -753,28 +775,25 @@
 			placeholder: 'Search instruments or indicators…',
 			footer: `ADDING TO PANE ${paneTarget + 1}`,
 			busy: () => addMenuKind === 'instrument' && instrumentSearchBusy,
-			kindTabs: [
-				...(['instrument', 'indicator'] as const).map((k) => ({
-					label: k.toUpperCase(),
-					active: () => addMenuKind === k,
-					onClick: () => (addMenuKind = k)
-				})),
-				// Not a third `addMenuKind` state: picking it opens the
-				// indicator-authoring panel directly (its own dialog, not
-				// another row of this palette) and leaves `addMenuKind` alone.
-				// Labelled to say what it does, not just that it is
-				// different — "CUSTOM" told a reader nothing about writing
-				// an indicator, and nothing else on this screen pointed here
-				// at all.
-				{
-					label: 'WRITE YOUR OWN',
-					active: () => false,
-					onClick: () => {
-						closeCommand();
-						indicatorPanelPane = paneTarget;
-					}
-				}
-			],
+			kindTabs: (['instrument', 'indicator'] as const).map((k) => ({
+				label: k.toUpperCase(),
+				active: () => addMenuKind === k,
+				onClick: () => (addMenuKind = k)
+			})),
+			// The indicator editor is opened from here for a reader who has
+			// not yet noticed the toolbar's own "INDICATOR EDITOR" button —
+			// only shown on the INDICATOR tab, since it has nothing to do
+			// with adding an instrument overlay.
+			footerAction: () =>
+				addMenuKind === 'indicator'
+					? {
+							label: 'New indicator…',
+							onClick: () => {
+								closeCommand();
+								toggleDock(true);
+							}
+						}
+					: null,
 			rows: (query) => {
 				if (addMenuKind === 'instrument') {
 					return instrumentResults.map((x) =>
@@ -785,44 +804,34 @@
 					);
 				}
 				const q = query.trim().toLowerCase();
-				const catalogRows = indicatorCatalog
-					.filter((def) => !q || `${def.title} ${def.legend}`.toLowerCase().includes(q))
-					.map((def) => ({
-						icon: SigmaIcon,
-						title: def.short_title,
-						sub: def.legend,
-						meta: def.placement === 'sub_pane' ? 'SUB-PANE' : 'OVERLAY',
-						metaTone: 'dim' as const,
-						onPick: () => {
-							const item: IndicatorCatalogItem = {
-								name: def.name,
-								defaultParams: Object.fromEntries(def.params.map((param) => [param.name, param.default.value])),
-								placement: def.placement
-							};
-							void addIndicatorLayer(paneTarget, item);
-							closeCommand();
-						}
-					}));
-				// Pinned above the catalog itself, not tucked behind the
-				// "WRITE YOUR OWN" kind tab alone — a reader who never
-				// notices the tab row still sees, the moment this list
-				// opens, that writing an indicator from scratch is an
-				// option here at all.
-				if (q) return catalogRows;
-				return [
-					{
-						icon: PencilIcon,
-						title: 'Write your own indicator',
-						sub: 'Open the indicator editor and compile it yourself',
-						meta: 'NEW',
-						metaTone: 'dim' as const,
-						onPick: () => {
-							closeCommand();
-							indicatorPanelPane = paneTarget;
-						}
-					},
-					...catalogRows
-				];
+				const matches = (def: IndicatorDescriptorClient) => !q || `${def.title} ${def.legend}`.toLowerCase().includes(q);
+				const rowFor = (def: IndicatorDescriptorClient, meta: string) => ({
+					id: def.name,
+					icon: SigmaIcon,
+					title: def.short_title,
+					sub: def.legend,
+					meta,
+					metaTone: 'dim' as const,
+					onPick: () => {
+						const item: IndicatorCatalogItem = {
+							name: def.name,
+							defaultParams: Object.fromEntries(def.params.map((param) => [param.name, param.default.value])),
+							placement: def.placement
+						};
+						void addIndicatorLayer(paneTarget, item);
+						closeCommand();
+					}
+				});
+				// "MY INDICATORS" first — the account's own compiled Rust
+				// indicators (`my/<slug>`, `033`) — then the built-in
+				// catalogue, so the add-indicator flow stays one list
+				// instead of splitting authored and built-in indicators
+				// across separate screens (034's whole reason for being).
+				const mine = indicatorCatalog.filter((def) => def.name.startsWith('my/') && matches(def)).map((def) => rowFor(def, 'MINE'));
+				const builtins = indicatorCatalog
+					.filter((def) => !def.name.startsWith('my/') && matches(def))
+					.map((def) => rowFor(def, def.placement === 'sub_pane' ? 'SUB-PANE' : 'OVERLAY'));
+				return [...mine, ...builtins];
 			}
 		});
 	}
@@ -1072,6 +1081,21 @@
 							</Tooltip.Content>
 						</Tooltip.Root>
 					{/each}
+					<Tooltip.Root>
+						<Tooltip.Trigger
+							class={cn(
+								'flex h-[25px] min-w-7 cursor-pointer items-center justify-center border px-2',
+								indicatorEditor.open ? 'border-foreground bg-ink/8 text-foreground' : 'border-transparent text-dim2'
+							)}
+							aria-label="Indicator editor"
+							onclick={() => toggleDock()}
+						>
+							<SquareCodeIcon class="size-[15px]" />
+						</Tooltip.Trigger>
+						<Tooltip.Content side="bottom" sideOffset={8} arrowClasses="hidden" class="rounded-none border border-ink/16 bg-popover px-2.5 py-1.5">
+							<span class="font-mono text-[9px] tracking-[0.16em] whitespace-nowrap text-secondary-foreground">INDICATOR EDITOR · ALT I</span>
+						</Tooltip.Content>
+					</Tooltip.Root>
 				</div>
 
 				<div class="flex-1"></div>
@@ -1296,7 +1320,13 @@
 		</Tooltip.Provider>
 		</div>
 
-		<!-- Toolbar + pane grid + right panel (lines 428-714) -->
+		<!-- Toolbar + pane grid + right panel (lines 428-714), wrapped in the
+		     indicator-authoring dock (034): the dock collapses to nothing
+		     rather than unmounting this content, so a chart pane's own
+		     `ResizeObserver` — not a remount — is what reacts to the dock
+		     opening or closing. -->
+		<IndicatorDock paneCount={panes.length}>
+			{#snippet children()}
 		<div class="relative flex min-h-0 flex-1">
 			<!-- Selecting a drawing puts it in move mode — draggable handles on the
 	     chart, and this toolbar for the properties. A modal here would sit
@@ -1548,6 +1578,8 @@
 				</div>
 			</Tooltip.Provider>
 		</div>
+			{/snippet}
+		</IndicatorDock>
 	</div>
 
 	{#if ctxMenu}
@@ -1575,8 +1607,6 @@
 		onEditParams={(patch) => dialogLayer && layerDlg && void editLayerParams(layerDlg.pane, dialogLayer.id, patch)}
 		onStyleChanged={() => dialogLayer && void persistLayerStyle(dialogLayer.id)}
 	/>
-
-	<IndicatorPanel paneIndex={indicatorPanelPane} onClose={() => (indicatorPanelPane = null)} />
 
 	<DateJumpDialog
 		open={!!dateJumpDlg}

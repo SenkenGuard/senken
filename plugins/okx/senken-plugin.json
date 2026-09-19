@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "okx",
+  "name": "OKX",
+  "version": "0.0.5",
+  "contributes": [
+    {
+      "point": "venue",
+      "entry": "okx-venue.wasm",
+      "base_url": "https://www.okx.com"
+    }
+  ]
+}

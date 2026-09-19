@@ -47,14 +47,13 @@ senken-feed = { workspace = true }
 # The accounts store this crate exposes over HTTP.
 senken-identity = { workspace = true }
 senken-indicators = { workspace = true }
-# `compile()` for `POST /api/indicators/compile` — turns indicator-lang
-# source into a component, with line/column diagnostics for a mistake in
-# the trader's own source.
-senken-indicator-lang = { workspace = true }
-# The indicator registry: `RegistryStore` is mounted directly by
-# `registry_handlers`, the same way `senken-notes`' `NoteStore` is mounted
-# by `notes_handlers`.
+# `UserIndicatorStore` is mounted directly by `user_indicator_handlers`,
+# the same way `senken-notes`' `NoteStore` is mounted by `notes_handlers`.
 senken-indicator-registry = { workspace = true }
+# Runs the actual `cargo build` behind `POST /api/my/indicators` and
+# `.../compile` — see that crate's own module docs for why it has no
+# domain dependency of its own.
+senken-indicator-compile = { workspace = true }
 # `SeriesKey`/`BarSpec`/`Anchor`/`Origin` — the bars endpoints' request/
 # response shapes are built from these directly, not a re-declared copy.
 senken-series = { workspace = true }
@@ -158,8 +157,8 @@ zip = { workspace = true }
 # Test-only: opens a second raw connection to the same accounts database
 # file a test's `IdentityStore` already created, to simulate a state
 # `senken-identity`'s own public API cannot produce yet (an account whose
-# password is unset again after a session was minted) — see the B4
-# defense-in-depth test in `lib.rs`.
+# password is unset again after a session was minted) — see the
+# first-run-password-fence defense-in-depth test in `lib.rs`.
 rusqlite = { workspace = true }
 tempfile = { workspace = true }
 # `test-util` for `#[tokio::test(start_paused = true)]`: the live-feed suite

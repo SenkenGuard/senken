@@ -230,9 +230,10 @@ export interface WidgetPluginPackage {
 	status: WidgetPluginStatus;
 	digest: string;
 	widget_count: number;
-	/** `true` for the package this server installs on every fresh start.
-	 * It can be disabled like any other package; `uninstallWidgetPlugin`
-	 * refuses it (the server returns 400) rather than removing its files. */
+	/** `true` for the package this server installs on every fresh start —
+	 * the unified Plugins page (`plugins-section.svelte`) disables its own
+	 * uninstall control for this one, since the server refuses to remove
+	 * its files. */
 	is_builtin: boolean;
 }
 
@@ -249,48 +250,13 @@ export async function widgetPluginCatalog(): Promise<WidgetPluginCatalogResponse
 
 /** `GET /api/widget-plugins` — every installed package, enabled or not.
  * Requires the caller to hold `Action::View` on `Resource::WidgetPlugin` at
- * `Scope::All` (an ordinary account gets `ForbiddenError`). */
+ * `Scope::All` (an ordinary account gets `ForbiddenError`). Installing,
+ * enabling/disabling, uninstalling and refreshing a package all go through
+ * the unified `apiClient.installPlugin`/`setPluginEnabled`/
+ * `uninstallPlugin`/`refreshPlugins` now — this call remains only as the
+ * detail source `plugins-section.svelte` matches by id against the unified
+ * list, since `GET /api/plugins/{id}` does not carry a package's
+ * description or manifest digest yet. */
 export async function listWidgetPlugins(): Promise<WidgetPluginListResponse> {
 	return apiClient.request<WidgetPluginListResponse>('/api/widget-plugins');
-}
-
-/** `POST /api/widget-plugins`: installs a package from the raw bytes of a
- * zip archive (`manifest.json` at its root, assets under `web/`). Requires
- * `Action::Create` on `Resource::WidgetPlugin` at `Scope::All`. */
-export async function installWidgetPlugin(zipBytes: Uint8Array | ArrayBuffer): Promise<{ id: string }> {
-	return apiClient.request<{ id: string }>('/api/widget-plugins', {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/zip' },
-		body: zipBytes instanceof ArrayBuffer ? zipBytes : new Uint8Array(zipBytes)
-	});
-}
-
-/** `POST /api/widget-plugins/{id}/enabled`: flips whether this package's
- * widgets are in the effective catalog, without touching its files or any
- * placed instance's stored config — enabling restores it exactly. Requires
- * `Action::Edit` on `Resource::WidgetPlugin` at `Scope::All`. */
-export async function setWidgetPluginEnabled(id: string, enabled: boolean): Promise<void> {
-	await apiClient.request<void>(`/api/widget-plugins/${encodeURIComponent(id)}/enabled`, {
-		method: 'POST',
-		body: JSON.stringify({ enabled })
-	});
-}
-
-/** `DELETE /api/widget-plugins/{id}`: removes a package's files entirely.
- * Requires `Action::Delete` on `Resource::WidgetPlugin` at `Scope::All`. */
-export async function uninstallWidgetPlugin(id: string): Promise<void> {
-	await apiClient.request<void>(`/api/widget-plugins/${encodeURIComponent(id)}`, {
-		method: 'DELETE'
-	});
-}
-
-/** `POST /api/widget-plugins/refresh`: an explicit rescan of the data
- * directory, for a package dropped directly on disk rather than uploaded —
- * never a filesystem watcher (a watcher can fire mid-copy and read a
- * half-written file). Requires `Action::View` on `Resource::WidgetPlugin` at
- * `Scope::All`. */
-export async function refreshWidgetPlugins(): Promise<WidgetPluginListResponse> {
-	return apiClient.request<WidgetPluginListResponse>('/api/widget-plugins/refresh', {
-		method: 'POST'
-	});
 }

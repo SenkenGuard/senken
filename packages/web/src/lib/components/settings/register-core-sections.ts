@@ -65,15 +65,15 @@ registerSettingsSection({
 	icon: PuzzleIcon,
 	component: PluginsSection,
 	searchIndex: pluginsSearchIndex,
-	// This page lists two kinds of plugin, each checked against its own
-	// resource: `Indicator` (`crates/api/src/indicator_handlers.rs`'s three
-	// `/indicators/plugins*` routes) and `WidgetPlugin`
-	// (`crates/api/src/widget_plugin_handlers.rs`'s `/widget-plugins*`
-	// routes) — an account granted either one should still find the page,
-	// even without the other. Hiding it is still only cosmetic; those
-	// endpoints check a real grant on every request regardless of what
-	// this list says.
-	requiresAnyResource: ['Indicator', 'WidgetPlugin'],
+	// The unified list (`GET /api/plugins`) needs no grant at all to read —
+	// every signed-in account can see which venues are active — but this
+	// page's mutations (install, enable/disable, uninstall, refresh) check
+	// `Plugin`, and the two legacy sections it still renders detail from
+	// check `Indicator`/`WidgetPlugin`. Any one of the three is enough to
+	// find this page worth opening. Hiding it is still only cosmetic; every
+	// endpoint behind it checks a real grant on every request regardless of
+	// what this list says.
+	requiresAnyResource: ['Plugin', 'Indicator', 'WidgetPlugin'],
 	order: 40
 });
 

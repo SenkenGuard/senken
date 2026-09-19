@@ -666,7 +666,7 @@ fn subscribe_book(
     out_tx: &mpsc::UnboundedSender<Message>,
     subscriptions: &mut HashMap<String, AbortHandle>,
 ) {
-    let Some(source) = state.runtime.book_source(instrument.source()).cloned() else {
+    let Some(source) = state.runtime.book_source(instrument.source()) else {
         let _ = out_tx.send(send_frame(&ServerFrame::Unsupported { topic }));
         return;
     };

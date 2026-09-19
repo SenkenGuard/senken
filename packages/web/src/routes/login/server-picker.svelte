@@ -1,17 +1,16 @@
 <script lang="ts">
-	// The server picker: "login must let the user choose
-	// which server to connect to, add one, and switch." Lives inside
-	// `routes/login/` rather than `$lib/components/layout/` because nothing
-	// outside the login page needs it — the authenticated shell shows the
-	// *current* server via `connection-status.svelte`, but changing it is a
-	// setup-time action, not a running-session one.
+	// The server picker: login lets the user choose which server to connect
+	// to, add one, and switch. Lives inside `routes/login/` rather than
+	// `$lib/components/layout/` because nothing outside the login page
+	// needs it — the authenticated shell shows the *current* server via
+	// `connection-status.svelte`, but changing it is a setup-time action,
+	// not a running-session one.
 	//
 	// Reads and mutates `serversStore` directly (`$lib/api/servers.svelte`)
-	// and switches through `switchServer` (`$lib/api/client`) — the same
-	// two entry points Q3 built and documented as the only way to change
-	// which server the app talks to. This component adds no new state of
-	// its own beyond the popover's open flag and the add-server form's
-	// draft fields.
+	// and switches through `switchServer` (`$lib/api/client`) — the only
+	// documented way to change which server the app talks to. This
+	// component adds no new state of its own beyond the popover's open flag
+	// and the add-server form's draft fields.
 	import { serversStore, activeServer, addServer, removeServer, isSecureConnection, serverAddressLabel } from '$lib/api/servers.svelte';
 	import { switchServer } from '$lib/api/client';
 	import { cn } from '$lib/utils.js';

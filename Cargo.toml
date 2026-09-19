@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["apps/*", "crates/*", "plugins/*"]
+# `plugins/widgets` holds dashboard widget UI packages — a manifest plus a
+# static `web/` bundle rendered client-side in a sandboxed iframe, never
+# compiled or executed by this server. It has no `Cargo.toml` of its own,
+# unlike every other `plugins/*` entry (a venue or the simulator, each a
+# real Rust crate `wasm32-wasip2` compiles), so the `plugins/*` member glob
+# must not try to load it as one.
+exclude = ["plugins/widgets"]
 
 [workspace.package]
 version = "0.0.5"
@@ -29,7 +36,7 @@ senken-core = { path = "crates/core", version = "0.0.5" }
 senken-dashboard = { path = "crates/dashboard", version = "0.0.5" }
 senken-identity = { path = "crates/identity", version = "0.0.5" }
 senken-indicators = { path = "crates/indicators", version = "0.0.5" }
-senken-indicator-lang = { path = "crates/indicator-lang", version = "0.0.5" }
+senken-indicator-compile = { path = "crates/indicator-compile", version = "0.0.5" }
 senken-indicator-registry = { path = "crates/indicator-registry", version = "0.0.5" }
 senken-marketdata = { path = "crates/marketdata", version = "0.0.5" }
 senken-notes = { path = "crates/notes", version = "0.0.5" }

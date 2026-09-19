@@ -55,8 +55,8 @@ module_name_repetitions = "allow"
 # values, never money, so `f64` is correct for them and the precision loss
 # this lint warns about is understood and accepted, not a case this crate
 # failed to reason about. The conversion happens at exactly one place
-# (`src/convert.rs`). Scoped to this crate alone, not the workspace: B7's
-# boundary is that a price derived *from* an indicator must be rounded back
+# (`src/convert.rs`). Scoped to this crate alone, not the workspace: a
+# price derived *from* an indicator must still be rounded back
 # to a scaled integer before it reaches anything that trades, so every other
 # crate keeps the strict workspace default.
 cast_precision_loss = "allow"

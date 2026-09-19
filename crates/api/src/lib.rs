@@ -32,13 +32,14 @@ mod live_feed_tests;
 mod notes_handlers;
 mod openapi;
 mod pagination;
-mod registry_handlers;
+mod plugin_handlers;
 mod source_handlers;
 mod storage_handlers;
 #[cfg(test)]
 mod test_support;
 mod trade_context;
 mod trade_handlers;
+mod user_indicator_handlers;
 mod watchlist_handlers;
 mod widget_plugin_handlers;
 mod workspace_handlers;
@@ -66,7 +67,8 @@ use senken_alerts::{AlertEngine, AlertStore};
 use senken_chart::ChartWorkspaceStore;
 use senken_dashboard::DashboardWorkspaceStore;
 use senken_identity::{DEFAULT_ADMIN_EMAIL, IdentityStore};
-use senken_indicator_registry::RegistryStore;
+use senken_indicator_compile::{CompileService, Toolchain};
+use senken_indicator_registry::UserIndicatorStore;
 use senken_notes::NoteStore;
 use senken_runtime::Runtime;
 use senken_subscription::{BookSessionRegistry, IndicatorSessionRegistry, SubscriptionPool};
@@ -76,6 +78,21 @@ use senken_watchlist::WatchlistStore;
 use crate::auth::{EndpointPermission, mount};
 pub(crate) use crate::error::HandlerError;
 pub use error::ApiError;
+
+/// Whether this server can compile a user's Rust indicator right now.
+///
+/// Detected once, at startup (see [`serve_with_feed_pools_and_book`]):
+/// `cargo`/`wasm32-wasip2` either are or are not on this machine for the
+/// life of the process, so there is nothing to gain from re-detecting on
+/// every request — only a repeated subprocess spawn for the same answer.
+pub(crate) enum CompileServiceHandle {
+    /// A toolchain was found; `POST /api/my/indicators` and friends may
+    /// compile through it.
+    Available(CompileService),
+    /// No toolchain was found. Every compile attempt is refused with this
+    /// reason rather than a generic failure.
+    Unavailable(String),
+}
 
 /// Where the server should bind, and the transport-level policy around it.
 #[derive(Debug, Clone)]
@@ -160,9 +177,12 @@ pub(crate) struct AppState {
     /// Freeform notes, sharing `identity`'s connection the same way
     /// `watchlists` does.
     pub(crate) notes: Arc<NoteStore>,
-    /// The indicator registry: publish, search, install — sharing
+    /// Indicators an account wrote and compiled themselves, sharing
     /// `identity`'s connection the same way `notes` does.
-    pub(crate) registry: Arc<RegistryStore>,
+    pub(crate) user_indicators: Arc<UserIndicatorStore>,
+    /// Whether this server can compile one right now — see
+    /// [`CompileServiceHandle`]'s own docs.
+    pub(crate) compile_service: Arc<CompileServiceHandle>,
     /// The broker and exchange accounts users have attached, sharing
     /// `identity`'s connection the same way `notes` does. The adapters
     /// those accounts trade through live on `runtime`, not here: an
@@ -193,7 +213,7 @@ pub(crate) struct AppState {
     pub(crate) book_sessions: Arc<BookSessionRegistry>,
     /// Login attempt counters.
     pub(crate) login_limiter: Arc<identity_handlers::LoginRateLimiter>,
-    /// The address this server actually bound, for the B4 non-loopback
+    /// The address this server actually bound, for the non-loopback
     /// warning below — read once at startup, never the requested address
     /// (port `0` would make that meaningless).
     pub(crate) bind_host: IpAddr,
@@ -221,7 +241,10 @@ pub async fn serve(
     runtime: Arc<Runtime>,
 ) -> Result<ServerHandle, ApiError> {
     // One `SubscriptionPool` per live feed the active plugins registered.
-    let feed_pools = feed::build_feed_pools(runtime.marketdata(), runtime.feed_sources()).await;
+    // `feed_sources()` is a snapshot as of right now — see its own docs on
+    // why a plugin activated live, after this point, gets no pool this run.
+    let feeds = runtime.feed_sources();
+    let feed_pools = feed::build_feed_pools(runtime.marketdata(), &feeds).await;
     serve_with_feed_pools(options, identity, runtime, feed_pools).await
 }
 
@@ -247,6 +270,36 @@ pub(crate) async fn serve_with_feed_pools(
     .await
 }
 
+/// Detects whether this machine can compile a user's Rust indicator, and
+/// builds the [`CompileService`] pointed at `<data_dir>/indicator-build`
+/// if it can. Called once, at startup, never per-request — see
+/// [`CompileServiceHandle`]'s own docs for why.
+///
+/// `senken-plugin-api`'s path is this build's own checkout
+/// (`env!("CARGO_MANIFEST_DIR")` of this very crate, joined with
+/// `../plugin-api`), correct for a prototype running on a developer
+/// machine that already has this repository. The risk of `cargo` running a
+/// dependency's `build.rs` or a proc macro is answered by the generated
+/// crate depending on nothing else — see `senken-indicator-compile`'s own
+/// module doc. The day this SDK is published to a registry, this is the
+/// one constant that changes.
+async fn detect_compile_service(data_dir: &std::path::Path) -> CompileServiceHandle {
+    match Toolchain::detect().await {
+        Ok(toolchain) => {
+            let work_dir = data_dir.join("indicator-build");
+            let sdk_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugin-api");
+            CompileServiceHandle::Available(CompileService::new(toolchain, work_dir, sdk_path))
+        }
+        Err(source) => {
+            tracing::warn!(
+                %source,
+                "no Rust toolchain for wasm32-wasip2 was found; POST /api/my/indicators will report 503"
+            );
+            CompileServiceHandle::Unavailable(source.to_string())
+        }
+    }
+}
+
 /// [`serve_with_feed_pools`], parameterised again over the session registry
 /// that polls book depth — the seam a test uses to poll on a fast cadence
 /// (`BookSessionRegistry::with_interval`) instead of waiting a full second
@@ -264,6 +317,33 @@ pub(crate) async fn serve_with_feed_pools_and_book(
     feed_pools: HashMap<String, SubscriptionPool>,
     book_sessions: Arc<BookSessionRegistry>,
 ) -> Result<ServerHandle, ApiError> {
+    let compile_service = Arc::new(detect_compile_service(runtime.storage().data_dir()).await);
+    serve_with_compile_service(
+        options,
+        identity,
+        runtime,
+        feed_pools,
+        book_sessions,
+        compile_service,
+    )
+    .await
+}
+
+/// [`serve_with_feed_pools_and_book`], parameterised again over
+/// [`CompileServiceHandle`] instead of detecting one itself — the seam
+/// `user_indicator_handlers`'s own tests use to prove the "no toolchain"
+/// path (`CompileServiceHandle::Unavailable`) without needing to actually
+/// remove Rust from the machine running the test suite. Every real caller
+/// goes through [`serve_with_feed_pools_and_book`] above, which always
+/// detects for real.
+pub(crate) async fn serve_with_compile_service(
+    options: ServeOptions,
+    identity: Arc<IdentityStore>,
+    runtime: Arc<Runtime>,
+    feed_pools: HashMap<String, SubscriptionPool>,
+    book_sessions: Arc<BookSessionRegistry>,
+    compile_service: Arc<CompileServiceHandle>,
+) -> Result<ServerHandle, ApiError> {
     let addr = SocketAddr::new(options.host, options.port);
     let listener = TcpListener::bind(addr)
         .await
@@ -275,7 +355,7 @@ pub(crate) async fn serve_with_feed_pools_and_book(
     let alerts = Arc::new(AlertStore::new(&identity));
     let watchlists = Arc::new(WatchlistStore::new(&identity));
     let notes = Arc::new(NoteStore::new(&identity));
-    let registry = Arc::new(RegistryStore::new(&identity));
+    let user_indicators = Arc::new(UserIndicatorStore::new(&identity));
     let trade_accounts = Arc::new(TradeAccountStore::new(&identity));
     let feed_pools = Arc::new(feed_pools);
     // reconciles every already-enabled alert against those
@@ -292,7 +372,8 @@ pub(crate) async fn serve_with_feed_pools_and_book(
         alerts,
         watchlists,
         notes,
-        registry,
+        user_indicators,
+        compile_service,
         trade_accounts,
         runtime,
         feed_pools,
@@ -340,9 +421,9 @@ pub(crate) struct Health {
     version: &'static str,
     /// `true` while this installation's seeded default admin
     /// (`senken_identity::DEFAULT_ADMIN_EMAIL`) has not set a password yet
-    /// (the first-run fence) — a coordinator addition to Q8: the
-    /// login page needs an honest, unauthenticated way to decide whether to
-    /// show "set a password" or "log in" on first load.
+    /// (the first-run password fence) — added so the login page has an
+    /// honest, unauthenticated way to decide whether to show "set a
+    /// password" or "log in" on first load.
     ///
     /// This is safe to expose without becoming an account-enumeration
     /// oracle (the concern for `login`/`set-password`) because
@@ -460,9 +541,10 @@ fn router(state: AppState, allowed_origins: &[String]) -> Router {
     api = mount_instrument_routes(api, &state);
     api = mount_watchlist_routes(api, &state);
     api = mount_notes_routes(api, &state);
-    api = mount_registry_routes(api, &state);
+    api = mount_user_indicator_routes(api, &state);
     api = mount_storage_routes(api, &state);
     api = mount_widget_plugin_routes(api, &state);
+    api = mount_plugin_routes(api, &state);
     api = mount_trade_routes(api, &state);
     let api: Router = api.fallback(api_not_found).with_state(state.clone());
 
@@ -667,8 +749,9 @@ fn mount_trade_routes(mut api: Router<AppState>, state: &AppState) -> Router<App
 /// `senken_identity::IdentityStore::list_users`/`list_roles` performing
 /// their own guarded, scope-aware check, so
 /// `Authenticated` is enough for them. `create_user`, `create_role`,
-/// `assign_role` and `grant_direct` join them at plain `Authenticated` as of, and `revoke_direct` plus the four plugin-grant methods
-/// join them in turn as of Q10.1: `senken_identity::IdentityStore` now
+/// `assign_role` and `grant_direct` join them at plain `Authenticated`
+/// too, and `revoke_direct` plus the four plugin-grant methods join them
+/// in turn: `senken_identity::IdentityStore` now
 /// performs the same `AuthenticatedUser::authorize` check on every mutation
 /// in this module internally (closing the headless bypass a non-HTTP caller
 /// previously had for all nine), so mounting any of them at `Acl` as well
@@ -998,13 +1081,6 @@ fn mount_indicator_routes(mut api: Router<AppState>, state: &AppState) -> Router
     api = mount(
         api,
         state,
-        "/indicators/compile",
-        post(indicator_handlers::compile_indicator),
-        EndpointPermission::Authenticated,
-    );
-    api = mount(
-        api,
-        state,
         "/indicators/plugins",
         // The router-wide default body limit (2 MiB) is sized for a JSON
         // request; a compiled `wasm32-wasip2` component — every plugin
@@ -1196,69 +1272,58 @@ fn mount_notes_routes(mut api: Router<AppState>, state: &AppState) -> Router<App
     )
 }
 
-/// Mounts the indicator registry surface. Unlike [`mount_notes_routes`],
-/// permission is not uniform across it: publishing, listing one's own
-/// entries, revoking one, and reading/setting one's own handle need a
-/// session (`senken_indicator_registry::RegistryStore` performs its own
-/// guarded check on each), while searching, reading and installing a
-/// published indicator are `EndpointPermission::Public` — a published
-/// indicator is public and installable with no account, by design (see
-/// `registry_handlers`' own module docs).
-fn mount_registry_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+/// Mounts the user-indicator surface, split out of [`router`] the same way
+/// [`mount_notes_routes`] is. Every route is mounted at plain
+/// `EndpointPermission::Authenticated`: `senken_indicator_registry::UserIndicatorStore`
+/// performs its own guarded check on every read and write.
+fn mount_user_indicator_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
     api = mount(
         api,
         state,
-        "/registry/indicators",
-        post(registry_handlers::publish_indicator),
+        "/my/indicators",
+        get(user_indicator_handlers::list_my_indicators),
         EndpointPermission::Authenticated,
     );
     api = mount(
         api,
         state,
-        "/registry/indicators",
-        get(registry_handlers::search_indicators),
-        EndpointPermission::Public,
-    );
-    api = mount(
-        api,
-        state,
-        "/registry/indicators/mine",
-        get(registry_handlers::list_my_indicators),
+        "/my/indicators",
+        post(user_indicator_handlers::create_my_indicator),
         EndpointPermission::Authenticated,
     );
     api = mount(
         api,
         state,
-        "/registry/indicators/{namespace}/{name}",
-        get(registry_handlers::get_indicator),
-        EndpointPermission::Public,
-    );
-    api = mount(
-        api,
-        state,
-        "/registry/indicators/{namespace}/{name}/install",
-        post(registry_handlers::install_indicator),
-        EndpointPermission::Public,
-    );
-    api = mount(
-        api,
-        state,
-        "/registry/indicators/{name}",
-        delete(registry_handlers::delete_indicator),
+        "/my/indicators/toolchain",
+        get(user_indicator_handlers::my_indicator_toolchain),
         EndpointPermission::Authenticated,
     );
     api = mount(
         api,
         state,
-        "/registry/handle",
-        put(registry_handlers::set_my_handle),
+        "/my/indicators/{id}",
+        get(user_indicator_handlers::get_my_indicator),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/my/indicators/{id}",
+        put(user_indicator_handlers::update_my_indicator),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/my/indicators/{id}/compile",
+        post(user_indicator_handlers::recompile_my_indicator),
         EndpointPermission::Authenticated,
     );
     mount(
         api,
         state,
-        "/registry/handle",
-        get(registry_handlers::get_my_handle),
+        "/my/indicators/{id}",
+        delete(user_indicator_handlers::delete_my_indicator),
         EndpointPermission::Authenticated,
     )
 }
@@ -1371,6 +1436,69 @@ fn mount_widget_plugin_routes(mut api: Router<AppState>, state: &AppState) -> Ro
         state,
         "/widget-plugins/refresh",
         post(widget_plugin_handlers::refresh_widget_plugins),
+        EndpointPermission::Authenticated,
+    )
+}
+
+/// Mounts the unified plugin system: list/get, install/update/uninstall,
+/// enable/disable and refresh. Every route is
+/// `EndpointPermission::Authenticated` — `plugin_handlers`'s own module
+/// docs explain why reading needs no further grant while every other
+/// handler here checks `senken_acl::Resource::Plugin` itself.
+///
+/// Updating an existing package (`PUT /api/plugins/{id}`, keeping its
+/// settings, saving the previous version for rollback) is not wired here
+/// yet; the legacy `/api/widget-plugins/*` and `/api/indicators/plugins/*`
+/// routes remain the only way to change a package's files short of
+/// uninstall-then-reinstall.
+fn mount_plugin_routes(mut api: Router<AppState>, state: &AppState) -> Router<AppState> {
+    api = mount(
+        api,
+        state,
+        "/plugins",
+        get(plugin_handlers::list_plugins),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/plugins",
+        // The router-wide default body limit (2 MiB) is sized for a JSON
+        // request; an installed package's zip archive (or a bare `.wasm`
+        // component) legitimately exceeds it — see
+        // `widget_plugin_handlers::install_widget_plugin`'s own `mount()`
+        // call for the exact pattern this mirrors.
+        post(plugin_handlers::install_plugin).layer(axum::extract::DefaultBodyLimit::max(
+            plugin_handlers::PLUGIN_PACKAGE_MAX_BYTES,
+        )),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/plugins/refresh",
+        post(plugin_handlers::refresh_plugins),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/plugins/{id}",
+        get(plugin_handlers::get_plugin),
+        EndpointPermission::Authenticated,
+    );
+    api = mount(
+        api,
+        state,
+        "/plugins/{id}",
+        delete(plugin_handlers::uninstall_plugin),
+        EndpointPermission::Authenticated,
+    );
+    mount(
+        api,
+        state,
+        "/plugins/{id}/enabled",
+        post(plugin_handlers::set_plugin_enabled),
         EndpointPermission::Authenticated,
     )
 }
@@ -1499,9 +1627,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_live_session_for_an_account_that_becomes_fenced_again_is_refused_with_403_not_401() {
-        // "the B4 fence is a property of the account, not the
-        // session — a token minted before the password is set stays
-        // fenced." Today's identity store has no public way to *unset* a
+        // The first-run password fence is a property of the account, not
+        // the session — a token minted before the password is set stays
+        // fenced. Today's identity store has no public way to *unset* a
         // password once it is set, so this simulates the scenario directly
         // at the database file `senken-identity`'s own store already
         // opened, the same technique a future "admin forces a password

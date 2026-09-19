@@ -4,8 +4,8 @@
 //! point being that a directory listing answers "what coverage exists?"
 //! with no side table and no file opened. That only works if the encoding
 //! is exact (a lossy round-trip would misreport coverage) and sorts the
-//! same way lexicographically as chronologically (so pruning by filename,
-//! M5.4, can use plain string comparison).
+//! same way lexicographically as chronologically (so pruning by filename
+//! can use plain string comparison).
 //!
 //! No Arrow or Parquet dependency: this is pure string/integer arithmetic,
 //! available even with `default-features = false`.

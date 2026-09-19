@@ -221,11 +221,11 @@ impl SourceSymbol {
     /// exists to make unrepresentable — which is
     /// why `senken-runtime`'s own wiring resolves a real [`SourceSymbol`]
     /// from the instrument catalog first and does not route through
-    /// `PluginBarSource` at all (see the M8.1/M8.2 executor's report). A
+    /// `PluginBarSource` at all. A
     /// different, standalone consumer of `senken-loader` that keys its own
     /// `SeriesKey`s by venue-native symbol in the first place would use this
-    /// safely; calling it with a normalised symbol anywhere is the bug F7
-    /// describes.
+    /// safely; calling it with a normalised symbol anywhere is exactly the
+    /// normalised-symbol mistake this type exists to make unrepresentable.
     #[must_use]
     pub fn assume(raw: impl Into<Box<str>>) -> Self {
         Self(raw.into())

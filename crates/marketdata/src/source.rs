@@ -123,6 +123,20 @@ pub trait MarketDataSource: Send + Sync {
     /// # Errors
     /// See [`SourceError`].
     async fn instruments(&self) -> Result<Vec<Instrument>, SourceError>;
+
+    /// Whether this source is serving its catalog at all right now.
+    ///
+    /// A registry memoises a catalog once and also caches it on disk, so a
+    /// source that has stopped serving cannot signal that through
+    /// [`instruments`](Self::instruments) alone — by the time it returns
+    /// nothing, nobody is asking it any more. This is checked *before*
+    /// either cache, so a source switched off is absent from every lookup
+    /// and every search count immediately, not once a cache expires.
+    ///
+    /// Defaults to `true`: a source that is always on says nothing.
+    fn is_serving(&self) -> bool {
+        true
+    }
 }
 
 impl fmt::Debug for dyn MarketDataSource {
@@ -141,6 +155,12 @@ pub struct SourceSummary {
     pub id: String,
     /// The source's display name.
     pub name: String,
+    /// Whether it is serving right now — see
+    /// [`MarketDataSource::is_serving`]. A venue switched off stays listed,
+    /// because its stored history is still there to manage, so a caller
+    /// deciding whether to offer its bars, quotes or depth reads this
+    /// rather than the row's mere presence.
+    pub serving: bool,
 }
 
 /// A source together with statistics about its loaded catalog.

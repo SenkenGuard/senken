@@ -338,28 +338,6 @@ world indicator-plugin {
     import builtins;
 }
 
-/// The world a compiled indicator-lang program implements: it has no way to
-/// declare a title, a parameter, or anything else `indicator`'s descriptor
-/// and resource need, so it targets a leaner world than `indicator-plugin`
-/// rather than hand-writing the canonical-ABI glue (records, lists,
-/// strings, a resource) that bridging one into the other would take —
-/// glue that would be identical for every compiled program and unrelated
-/// to what that program actually computes. It shares this package's one
-/// `builtins` interface with `indicator-plugin` rather than declaring its
-/// own copy, so there is exactly one definition of what calling a built-in
-/// means, used by a compiled indicator-lang program and a Rust-authored
-/// plugin alike.
-world compiled-indicator {
-    import builtins;
-
-    /// Runs one bar through the compiled program's `plot` expression and
-    /// returns its value. Bars must arrive in chronological order — the
-    /// same requirement `senken_indicators::Indicator::handle_bar` states,
-    /// inherited here because this function's own implementation is built
-    /// entirely out of calls to `builtins`.
-    export on-bar: func(open: f64, high: f64, low: f64, close: f64, volume: f64) -> f64;
-}
-
 /// The host's own fetch capability, and the *only* path a venue plugin has
 /// to the network.
 ///
@@ -419,14 +397,108 @@ interface venue {
     use types.{instant, bar, bar-spec};
     use http.{fetch-error};
 
+    /// What kind of contract an instrument is — mirrors
+    /// `senken_marketdata::instrument::InstrumentKind` case for case.
+    enum instrument-kind {
+        /// Immediate exchange of base for quote.
+        spot,
+        /// Dated future. `future` is a WIT keyword (the async `future<T>`
+        /// type), so this case is spelled `%future` — the same escape
+        /// `types.extend`'s `%none` and `types.drawable`'s `%box` already
+        /// use for the identical reason.
+        %future,
+        /// Option contract. `option` is a WIT keyword too (the built-in
+        /// `option<T>` type), so this case is likewise escaped.
+        %option,
+        /// Perpetual swap.
+        perpetual,
+    }
+
+    /// Whether the venue currently accepts orders for an instrument —
+    /// mirrors `senken_marketdata::instrument::InstrumentStatus` case for
+    /// case.
+    enum instrument-status {
+        /// Orders are accepted and matched.
+        trading,
+        /// Temporarily suspended; expected to resume.
+        halted,
+        /// Listed but not yet trading.
+        pre-open,
+        /// Delisted or otherwise permanently closed.
+        closed,
+        /// A venue test symbol; never real liquidity.
+        test,
+        /// The venue reported a status this crate does not recognise.
+        unknown,
+    }
+
+    /// What a derivative is collateralised and settled in — mirrors
+    /// `senken_marketdata::instrument::Settlement` case for case.
+    enum settlement {
+        /// Settled in the quote currency (`USDT`-margined).
+        linear,
+        /// Settled in the base currency (coin-margined).
+        inverse,
+        /// Settled in a third currency that is neither leg of the pair.
+        quanto,
+    }
+
+    /// Which side an option confers — mirrors
+    /// `senken_marketdata::instrument::OptionRight` case for case.
+    enum option-right {
+        /// The right to buy.
+        call,
+        /// The right to sell.
+        put,
+    }
+
+    /// The strike of an option, as fixed-point at its own scale — mirrors
+    /// `senken_marketdata::instrument::OptionTerms` field for field. The
+    /// strike needs a scale of its own because a venue may quote an
+    /// option's premium in one currency and its strike in another, so
+    /// `instrument.price-scale` does not describe it.
+    record option-terms {
+        /// Whether the option is a call or a put.
+        right: option-right,
+        /// Decimal places in `strike`.
+        strike-scale: u8,
+        /// Strike price at `strike-scale`.
+        strike: s64,
+    }
+
+    /// The terms only a derivative carries — mirrors
+    /// `senken_marketdata::instrument::Contract` field for field. Present
+    /// on `instrument.contract` exactly when `instrument.kind` is not
+    /// `spot`.
+    record contract {
+        /// Currency positions settle in: `USDT` for a linear contract,
+        /// `BTC` for an inverse one.
+        settle: string,
+        /// Linear, inverse or quanto.
+        settlement: settlement,
+        /// Expiry instant, UTC. `none` for a perpetual, which never
+        /// expires — never a sentinel far-future date, which some venues
+        /// report.
+        expiry: option<instant>,
+        /// Decimal places in `contract-size`.
+        size-scale: u8,
+        /// Units of the underlying one contract represents, at
+        /// `size-scale`.
+        contract-size: s64,
+        /// Strike and right, for an option. `option` is a WIT keyword, so
+        /// this field is spelled `%option` — see `instrument-kind`'s own
+        /// `%option` case for the identical reason.
+        %option: option<option-terms>,
+    }
+
     /// One instrument this venue lists.
     ///
-    /// Spot only, deliberately: a derivative's contract terms (expiry,
-    /// settlement currency, strike) are a real chunk of `senken_marketdata`'s
-    /// own `Contract` type, and no dynamic venue exists yet to demand the
-    /// wire cost of carrying them across this boundary before it is
-    /// needed. A venue plugin that only ever lists spot pairs describes its
-    /// whole catalog with this record as it stands.
+    /// Every market a venue can list — spot and every derivative kind —
+    /// describes itself with this one record: `kind` says which, and
+    /// `contract` carries the terms only a derivative has (`none` for
+    /// spot). Prices and quantities still cross as `scaled` pairs, never a
+    /// float, and an expiry crosses as `instant` nanoseconds, never a
+    /// string or a millisecond count a caller has to guess the unit of.
     record instrument {
         /// Normalised symbol, unique within this venue (`BTCUSDT`).
         symbol: string,
@@ -440,6 +512,10 @@ interface venue {
         base: string,
         /// Quote asset code.
         quote: string,
+        /// Contract type.
+        kind: instrument-kind,
+        /// Current venue status.
+        status: instrument-status,
         /// Decimal places in a price.
         price-scale: u8,
         /// Minimum price increment at `price-scale`.
@@ -448,6 +524,9 @@ interface venue {
         qty-scale: u8,
         /// Minimum quantity increment at `qty-scale`.
         step-size: s64,
+        /// Derivative terms. `some` exactly when `kind` is not `spot`;
+        /// `none` for spot.
+        contract: option<contract>,
     }
 
     /// Static identity, read once before any other call.

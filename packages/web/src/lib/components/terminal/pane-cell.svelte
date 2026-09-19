@@ -18,7 +18,7 @@
 	import { drawingsForInstrument, splitPaneLayers, type DrawingRuntime, type LayerRuntime } from '$lib/charts/pane-runtime';
 	import type { ChartSettings } from '$lib/mock/chart-settings';
 	import { cn } from '$lib/utils.js';
-	import type { ToolKey } from './chart-config';
+	import { parseInstrumentId, type ToolKey } from './chart-config';
 	import type { MarketStatus } from '$lib/charts/live-state';
 	import type { StatusBar } from '$lib/charts/status-line';
 	import type { IChartApi } from 'lightweight-charts';
@@ -117,6 +117,15 @@
 	let livePrice = $state<number | null>(null);
 
 	const split = $derived(splitPaneLayers(layers));
+
+	/** Names the pane by what it actually shows. This wrapper is a focus
+	 * target and a container for the chart plus every layer's own controls —
+	 * never a control itself — so its accessible name has to say what
+	 * instrument/timeframe a reader lands on, not describe an action. */
+	const paneLabel = $derived.by(() => {
+		const parsed = parseInstrumentId(instrument);
+		return `${parsed.venue}:${parsed.ticker} ${spec} chart pane`;
+	});
 
 	/** Only the drawings that belong to whatever this pane is showing right
 	 * now. The pane keeps the rest — switching instrument and back brings
@@ -244,14 +253,26 @@
 	</div>
 {/snippet}
 
+<!-- Not a control, and not a tab stop: a region holding the chart and every
+     layer's own buttons. `role="button"` used to wrap all of it, which is an
+     interactive role around other interactive roles — invalid, and it left a
+     screen reader no way to reach "the Ema settings button" separately from
+     the pane itself. `group` is what this actually is, allows the
+     interactive descendants, and promises no keyboard contract it does not
+     implement (`toolbar` would imply arrow-key navigation between the
+     buttons, which nothing here provides).
+
+     Activation follows the two ways a reader actually arrives: a pointer
+     press anywhere in the pane, and focus entering any control inside it.
+     That covers the keyboard without making the wrapper a tab stop of its
+     own — there is nothing on the pane to activate, so a stop there would
+     only be an extra keystroke before reaching the controls. -->
 <div
-	role="button"
-	tabindex="0"
+	role="group"
+	aria-label={paneLabel}
 	class="relative flex h-full min-h-0 w-full min-w-0 flex-col bg-bg2"
-	onclick={onFocus}
-	onkeydown={(e) => {
-		if (e.key === 'Enter' || e.key === ' ') onFocus();
-	}}
+	onpointerdown={onFocus}
+	onfocusin={onFocus}
 >
 	<div class="relative min-h-0 flex-1">
 		{@render mainChart()}

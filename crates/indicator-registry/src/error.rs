@@ -35,13 +35,6 @@ pub enum RegistryError {
     #[error("`{0}` is not a valid indicator name")]
     InvalidName(String),
 
-    /// The source failed to compile. Carries
-    /// [`senken_indicator_lang::CompileError`]'s own line/column message
-    /// verbatim — the same message a trader would see authoring this
-    /// indicator directly, not a registry-specific rewording.
-    #[error(transparent)]
-    InvalidSource(#[from] senken_indicator_lang::CompileError),
-
     /// The published indicator's recorded language version is newer than
     /// what this host currently compiles — see this crate's module docs
     /// for why this can happen even though publishing itself always
@@ -56,26 +49,10 @@ pub enum RegistryError {
         host: String,
     },
 
-    /// The submitted handle is not a legal registry handle — see
-    /// [`crate::Handle::new`] for the exact rule.
-    #[error("`{0}` is not a valid registry handle")]
-    InvalidHandle(String),
-
-    /// Another account already holds this handle. A handle is a pointer at
-    /// exactly one account (see this crate's `handle` module docs), so
-    /// claiming one already claimed is refused rather than moved.
-    #[error("handle `{0}` is already taken")]
-    HandleTaken(String),
-
-    /// No account has claimed the handle a caller addressed by.
-    #[error("no account has claimed the handle `{0}`")]
-    HandleNotFound(String),
-
-    /// The publishing account has not chosen a registry handle yet.
-    /// Publishing is refused rather than accepted under an address nobody
-    /// else can type — see this crate's module docs for why a registry
-    /// entry addressable only by raw account id defeats the point of a
-    /// registry meant for people to search and install from.
+    /// `publish`'s own handle gate found no row in `registry_handles` for
+    /// the publishing account. Nothing in this build can ever populate
+    /// that table any more (see this crate's module docs), so this is now
+    /// the answer every publish attempt gets.
     #[error("choose a registry handle before publishing")]
     HandleNotSet,
 }

@@ -611,6 +611,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bybit-core"
+version = "0.0.0"
+dependencies = [
+ "senken-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3578,6 +3588,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "okx-core"
+version = "0.0.0"
+dependencies = [
+ "senken-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4660,7 +4680,7 @@ dependencies = [
  "senken-dashboard",
  "senken-feed",
  "senken-identity",
- "senken-indicator-lang",
+ "senken-indicator-compile",
  "senken-indicator-registry",
  "senken-indicators",
  "senken-loader",
@@ -4827,18 +4847,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "senken-indicator-lang"
+name = "senken-indicator-compile"
 version = "0.0.5"
 dependencies = [
- "anyhow",
- "senken-core",
- "senken-indicators",
- "senken-series",
+ "senken-plugin-host",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
- "wasm-encoder 0.254.0",
- "wasmtime",
- "wit-component 0.254.0",
- "wit-parser 0.254.0",
+ "tokio",
 ]
 
 [[package]]
@@ -4847,8 +4864,8 @@ version = "0.0.5"
 dependencies = [
  "rusqlite",
  "senken-acl",
+ "senken-core",
  "senken-identity",
- "senken-indicator-lang",
  "tempfile",
  "thiserror 2.0.20",
  "time",
@@ -5082,10 +5099,12 @@ name = "senken-plugin-bybit"
 version = "0.0.5"
 dependencies = [
  "async-trait",
+ "bybit-core",
  "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-plugin-host",
  "senken-series",
  "senken-subscription",
  "senken-venue",
@@ -5199,7 +5218,6 @@ dependencies = [
  "num-traits",
  "reqwest",
  "senken-core",
- "senken-indicator-lang",
  "senken-indicators",
  "senken-marketdata",
  "senken-series",
@@ -5294,17 +5312,18 @@ name = "senken-plugin-okx"
 version = "0.0.5"
 dependencies = [
  "async-trait",
+ "okx-core",
  "reqwest",
  "senken-core",
  "senken-marketdata",
  "senken-plugin",
+ "senken-plugin-host",
  "senken-series",
  "senken-subscription",
  "senken-venue",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
  "wiremock",
 ]
 
@@ -5408,7 +5427,7 @@ dependencies = [
  "senken-acl",
  "senken-core",
  "senken-identity",
- "senken-indicator-lang",
+ "senken-indicator-registry",
  "senken-indicators",
  "senken-loader",
  "senken-marketdata",
@@ -5427,6 +5446,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+ "zip",
 ]
 
 [[package]]

@@ -26,24 +26,6 @@ pub use generated::senken::plugin_api::types::{
     Scaled, SegmentDrawable, SeriesDrawable, SeriesShape, Volume,
 };
 
-/// Host-side bindings for `wit/senken.wit`'s `compiled-indicator` world —
-/// the leaner target `senken_indicator_lang::compile` produces, which
-/// exports a bare `on-bar` function and nothing that could describe itself
-/// (no `descriptor`, no `instance` resource). Generated separately from
-/// [`generated`] above because a `bindgen!` invocation is per-world; the two
-/// modules share nothing at the Rust type level even though both import the
-/// very same `builtins` interface — see `crate::host` for why that does not
-/// require a second `add_to_linker` call.
-#[doc(hidden)]
-pub(crate) mod generated_compiled {
-    wasmtime::component::bindgen!({
-        path: "../../wit/senken.wit",
-        world: "compiled-indicator",
-    });
-}
-
-pub(crate) use generated_compiled::CompiledIndicator;
-
 /// Host-side bindings for `wit/senken.wit`'s `venue-plugin` world — the
 /// dynamic counterpart to a compiled-in [`senken_plugin::MarketDataSource`]/
 /// [`senken_plugin::BarSource`] pair.
@@ -68,7 +50,10 @@ pub(crate) mod generated_venue {
 
 pub(crate) use generated_venue::VenuePlugin;
 pub use generated_venue::exports::senken::plugin_api::venue::{
-    Instrument as VenueInstrument, VenueDescriptor, VenueError,
+    Contract as VenueContract, Instrument as VenueInstrument,
+    InstrumentKind as VenueInstrumentKind, InstrumentStatus as VenueInstrumentStatus,
+    OptionRight as VenueOptionRight, OptionTerms as VenueOptionTerms,
+    Settlement as VenueSettlement, VenueDescriptor, VenueError,
 };
 pub use generated_venue::senken::plugin_api::http::FetchError;
 pub(crate) use generated_venue::senken::plugin_api::http::Host as HttpHost;

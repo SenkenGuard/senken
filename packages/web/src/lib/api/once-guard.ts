@@ -1,9 +1,9 @@
-// The primitive behind B16 point 2's "exactly once, not once per in-flight
-// request." A dead session 401s on every request that was in flight when it
-// died, and on every one fired afterwards until something reacts — without
-// this, each of those independently clears an already-cleared credential
-// and re-fires the "route to login" side effect, which is the concurrent-
-// 401 redirect loop B16 names explicitly.
+// The primitive that makes session-expiry handling run exactly once, not
+// once per in-flight request. A dead session 401s on every request that was
+// in flight when it died, and on every one fired afterwards until something
+// reacts — without this, each of those independently clears an
+// already-cleared credential and re-fires the "route to login" side effect,
+// causing a concurrent-401 redirect loop.
 //
 // Deliberately its own tiny, rune-free class: `ApiClient` (`client.ts`) is
 // otherwise coupled to `$state`-bearing modules that only load under

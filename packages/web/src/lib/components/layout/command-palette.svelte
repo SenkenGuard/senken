@@ -20,21 +20,26 @@
 	// the reference's own `cmdRows` markup (lines 1141-1177) is
 	// static — plain `onClick` divs, no hover state, no keyboard handling —
 	// because a design canvas has no interaction model. bits-ui's `Command`
-	// primitive already drives a real one underneath it for free (arrow keys
-	// move `data-selected` between rows, hovering does the same, Enter
-	// clicks the selected row — all confirmed live via
-	// `hasAttribute('data-selected')` before touching anything), so the
-	// "list you can only click" bug was purely cosmetic, not missing
-	// wiring: `border-ink/18` on `Dialog.Content` sets a border *color* with
-	// no `border` (width) utility alongside it, so there was no line to see
-	// (`getComputedStyle` showed `0px solid …`) — fixed by adding `border`.
-	// And `data-selected:bg-muted` on `ui/command`'s own `Command.Item`
-	// resolves to `--card2`, the exact color this dialog's own
-	// `bg-card2` already paints behind it, so the "selected" row was always
-	// rendering, just in a color identical to its background — fixed here
-	// with `data-selected:bg-ink/7`, the same subtle-highlight token this
-	// app already uses for hover/focus rows elsewhere (nav-rail, the
+	// primitive drives a real one underneath it for free instead: arrow keys
+	// move `data-selected` between rows, hovering does the same, and Enter
+	// clicks the selected row. `border-ink/18` on `Dialog.Content` set a
+	// border *color* with no `border` (width) utility alongside it, so there
+	// was no line to see (`getComputedStyle` showed `0px solid …`) — fixed
+	// by adding `border`. And `data-selected:bg-muted` on `ui/command`'s own
+	// `Command.Item` resolved to `--card2`, the exact color this dialog's
+	// own `bg-card2` already paints behind it, so the "selected" row was
+	// always rendering, just in a color identical to its background — fixed
+	// here with `data-selected:bg-ink/7`, the same subtle-highlight token
+	// this app already uses for hover/focus rows elsewhere (nav-rail, the
 	// workspace menu, pane-header's layer chips).
+	//
+	// Enter applying the highlighted row is guarded by two tests, not just
+	// read off this component in isolation:
+	// `command-palette.browser-test.ts` mounts this component on its own,
+	// and `tests/e2e/charts.spec.ts`'s "pressing Enter in the indicator
+	// picker adds a layer" drives the same keystroke against the real
+	// charts page — toolbar button, dialog and all — which is the only
+	// place a wiring bug in the page *around* this component would show up.
 	import { Command as CommandPrimitive } from 'bits-ui';
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import * as Command from '$lib/components/ui/command/index.js';
@@ -54,6 +59,7 @@
 
 	const rows = $derived(commandPalette.request?.rows(commandPalette.query) ?? []);
 	const busy = $derived(commandPalette.request?.busy?.() ?? false);
+	const footerAction = $derived(commandPalette.request?.footerAction?.() ?? null);
 
 	// bits-ui's Dialog only traps focus inside its content on open — it
 	// does not descend into a search input the way a command palette needs
@@ -89,7 +95,7 @@
 					bind:ref={inputEl}
 					bind:value={commandPalette.query}
 					placeholder={commandPalette.request?.placeholder ?? 'Search…'}
-					class="min-w-0 flex-1 bg-transparent font-mono text-[13px] tracking-[0.04em] text-foreground outline-none placeholder:text-dim"
+					class="min-w-0 flex-1 rounded-none bg-transparent font-mono text-[13px] tracking-[0.04em] text-foreground outline-none placeholder:text-dim focus-visible:ring-[3px] focus-visible:ring-ring/50"
 				/>
 				<span class="flex-none border border-ink/14 px-1.5 py-[3px] font-mono text-[8px] tracking-[0.2em] text-dim">
 					ESC
@@ -114,9 +120,9 @@
 			{/if}
 
 			<Command.List class="max-h-none min-h-0 flex-1 overflow-auto">
-				{#each rows as r (r.title + r.sub)}
+				{#each rows as r (r.id ?? r.title + r.sub)}
 					<Command.Item
-						value={r.title + ' ' + r.sub}
+						value={r.id ?? r.title + ' ' + r.sub}
 						disabled={r.disabled}
 						onSelect={() => {
 							if (!r.disabled) r.onPick();
@@ -145,7 +151,18 @@
 				class="flex flex-none items-center justify-between border-t border-ink/8 px-[15px] py-[9px] font-mono text-[8px] tracking-[0.18em] text-dim"
 			>
 				<span>{commandPalette.request?.footer ?? ''}</span>
-				<span>ENTER TO APPLY</span>
+				<div class="flex items-center gap-3">
+					{#if footerAction}
+						<button
+							type="button"
+							class="cursor-pointer text-foreground underline decoration-dotted underline-offset-2 hover:text-secondary-foreground"
+							onclick={footerAction.onClick}
+						>
+							{footerAction.label}
+						</button>
+					{/if}
+					<span>ENTER TO APPLY</span>
+				</div>
 			</div>
 		</Command.Root>
 	</Dialog.Content>

@@ -74,3 +74,65 @@ export function isFromSandboxedWidget(
 	if (event.source !== iframe.contentWindow) return false;
 	return event.origin === 'null';
 }
+
+// --- host → widget -----------------------------------------------------
+//
+// Everything above this line validates a message a widget's own bundle
+// sent *to* the host, because that content is untrusted. A `theme.changed`
+// message goes the other way — the host is the one constructing it, from
+// its own theme tokens — so there is nothing here to validate on the way
+// out; this only exists so both sides of `plugin-widget-frame.svelte`'s
+// `postMessage` call share one literal list of token names, rather than
+// the sender and `WIDGET-PROTOCOL.md`'s own documentation drifting apart.
+
+/** Every theme token a widget can read off `document.documentElement`
+ * once `theme.changed` reaches it — the exact set `routes/layout.css`
+ * defines on both `:root` and `.dark`, plus the two font tokens and the
+ * corner radius. A widget author picks from this fixed list rather than
+ * being handed the host's entire computed style, which would leak
+ * (and implicitly promise stability for) tokens this platform never meant
+ * to expose across the sandbox boundary. */
+export const THEME_TOKEN_NAMES = [
+	'--bg',
+	'--bg2',
+	'--chrome',
+	'--card',
+	'--card2',
+	'--pop',
+	'--pop2',
+	'--fg',
+	'--fg2',
+	'--inv',
+	'--ink',
+	'--ink-shadow',
+	'--dim',
+	'--dim2',
+	'--gain',
+	'--loss',
+	'--font-sans',
+	'--font-mono',
+	'--radius'
+] as const;
+
+export type ThemeTokenName = (typeof THEME_TOKEN_NAMES)[number];
+
+export interface ThemeChangedMessage {
+	channel: 'senken.widget';
+	v: 1;
+	method: 'theme.changed';
+	params: {
+		mode: 'dark' | 'light';
+		tokens: Record<string, string>;
+	};
+}
+
+/** Builds the `theme.changed` message the host sends into a widget's
+ * sandboxed iframe — never a request needing a reply (there is no `id`),
+ * since nothing the host does depends on how, or whether, a widget acts on
+ * it. */
+export function buildThemeChangedMessage(
+	mode: 'dark' | 'light',
+	tokens: Record<string, string>
+): ThemeChangedMessage {
+	return { channel: 'senken.widget', v: 1, method: 'theme.changed', params: { mode, tokens } };
+}

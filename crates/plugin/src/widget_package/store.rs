@@ -43,7 +43,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 
-use super::manifest::{self, ManifestError, ValidatedWidgetContribution};
+use super::manifest::{
+    self, ManifestError, ValidatedEntryContribution, ValidatedWidgetContribution,
+};
 
 /// The schema version [`PackageStateFile`] is written under.
 const STATE_SCHEMA_VERSION: u32 = 1;
@@ -52,30 +54,39 @@ const STATE_SCHEMA_VERSION: u32 = 1;
 /// on every fresh start, so the dashboard's "add widget" picker and the
 /// widget-plugin manager show a real, working plugin from the first run —
 /// not an empty list nobody has uploaded anything to yet. It is exactly
-/// `examples/widget-plugins/example-clock` (compiled in rather than
-/// requiring an upload), the same package `examples/widget-plugins/README.md`
-/// tells a plugin author to build one like. `example-quotes`, the other
-/// example there, is deliberately left uninstalled: its zip stays sitting
-/// next to it precisely so there is still something to try the upload flow
-/// with on a fresh install. [`WidgetPackageStore::uninstall`] refuses this
-/// id (an admin disables it instead, the same remedy a built-in indicator
-/// plugin gets in `senken_runtime::plugin_host::PluginOrigin`); everything
-/// else — enable, disable, refresh — goes through the exact same path an
-/// uploaded package does.
+/// `plugins/widgets/example-clock` (compiled in rather than requiring an
+/// upload), the same package `plugins/widgets/README.md` tells a plugin
+/// author to build one like. `example-quotes`, the other example there, is
+/// deliberately left uninstalled: its zip stays sitting next to it
+/// precisely so there is still something to try the upload flow with on a
+/// fresh install. [`WidgetPackageStore::uninstall`] refuses this id (an
+/// admin disables it instead, the same remedy a built-in indicator plugin
+/// gets in `senken_runtime::plugin_host::PluginOrigin`); everything else —
+/// enable, disable, refresh — goes through the exact same path an uploaded
+/// package does.
 pub const BUILTIN_PACKAGE_ID: &str = "example-clock";
 
+/// The manifest a plugin package carries. Named the same as the one every
+/// plugin compiled into this build has, so an author writes one file name,
+/// not two.
+const MANIFEST_FILE_NAME: &str = "senken-plugin.json";
+
+/// What packages built before that name existed carry, still read so an
+/// installation does not lose the packages already on its disk.
+const LEGACY_MANIFEST_FILE_NAME: &str = "manifest.json";
+
 /// This build's own compiled-in `manifest.json` for [`BUILTIN_PACKAGE_ID`]
-/// — the checked-in `examples/widget-plugins/example-clock/manifest.json`,
-/// not a copy, so the built-in can never drift from the example it is.
+/// — the checked-in `plugins/widgets/example-clock/manifest.json`, not a
+/// copy, so the built-in can never drift from the example it is.
 const BUILTIN_MANIFEST: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/widget-plugins/example-clock/manifest.json"
+    "/../../plugins/widgets/example-clock/manifest.json"
 ));
 /// This build's own compiled-in `web/index.html` for [`BUILTIN_PACKAGE_ID`]
 /// — see [`BUILTIN_MANIFEST`].
 const BUILTIN_INDEX_HTML: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/widget-plugins/example-clock/web/index.html"
+    "/../../plugins/widgets/example-clock/web/index.html"
 ));
 
 /// Packs [`BUILTIN_MANIFEST`] and [`BUILTIN_INDEX_HTML`] into the same
@@ -138,7 +149,7 @@ pub enum WidgetPackageError {
     #[error("package archive contains an unsafe path: {0:?}")]
     UnsafeArchiveEntry(String),
     /// The archive has no `manifest.json` at its root.
-    #[error("package archive has no manifest.json at its root")]
+    #[error("package archive has no senken-plugin.json at its root")]
     MissingManifest,
     /// A widget's declared `entry` path is not actually present under the
     /// archive's `web/` directory.
@@ -194,6 +205,15 @@ pub struct InstalledPackage {
     pub version: String,
     /// A one-line description, from the manifest.
     pub description: String,
+    /// What this package's manifest says it contributes, whether or not it
+    /// is switched on. The three lists below are the *effective* catalogue
+    /// and go empty while a package is disabled, which is what callers
+    /// resolving a widget or a venue need; this one is what the package
+    /// *is*, which is what a reader deciding whether to switch it back on
+    /// needs. Blanking both would make a disabled package indistinguishable
+    /// from one that declares nothing, and drop it out of any list filtered
+    /// by kind — including the one its own toggle lives in.
+    pub declared: Vec<crate::ContributionKind>,
     /// The admin-controlled enable/disable flag, independent of whether the
     /// manifest currently validates.
     pub enabled: bool,
@@ -208,6 +228,14 @@ pub struct InstalledPackage {
     /// since a disabled or failed package contributes nothing to the
     /// effective catalog.
     pub widgets: Vec<ValidatedWidgetContribution>,
+    /// Every `venue` contribution this package declares — populated only
+    /// when [`Self::status`] is [`PackageStatus::Active`], mirroring
+    /// [`Self::widgets`] exactly.
+    pub venues: Vec<ValidatedEntryContribution>,
+    /// Every `indicator` contribution this package declares — populated
+    /// only when [`Self::status`] is [`PackageStatus::Active`], mirroring
+    /// [`Self::widgets`] exactly.
+    pub indicators: Vec<ValidatedEntryContribution>,
     /// `true` for [`BUILTIN_PACKAGE_ID`] — ships with this server rather
     /// than having been uploaded or dropped into the data directory by
     /// hand. Derived from the id alone (no separate on-disk marker to ever
@@ -317,7 +345,9 @@ impl WidgetPackageStore {
     fn load_one(path: &Path, dir_name: String, state: &PackageStateFile) -> InstalledPackage {
         let enabled = state.enabled.get(&dir_name).copied().unwrap_or(true);
         let is_builtin = dir_name == BUILTIN_PACKAGE_ID;
-        let manifest_bytes = match std::fs::read(path.join("manifest.json")) {
+        let manifest_bytes = match std::fs::read(path.join(MANIFEST_FILE_NAME))
+            .or_else(|_| std::fs::read(path.join(LEGACY_MANIFEST_FILE_NAME)))
+        {
             Ok(bytes) => bytes,
             Err(source) => {
                 return InstalledPackage {
@@ -326,9 +356,14 @@ impl WidgetPackageStore {
                     version: String::new(),
                     description: String::new(),
                     enabled,
-                    status: PackageStatus::Failed(format!("manifest.json unreadable: {source}")),
+                    status: PackageStatus::Failed(format!(
+                        "no readable senken-plugin.json: {source}"
+                    )),
                     digest: String::new(),
+                    declared: Vec::new(),
                     widgets: Vec::new(),
+                    venues: Vec::new(),
+                    indicators: Vec::new(),
                     is_builtin,
                 };
             }
@@ -341,7 +376,23 @@ impl WidgetPackageStore {
                 } else {
                     PackageStatus::Disabled
                 };
+                let mut declared = Vec::new();
+                if !parsed.widgets.is_empty() {
+                    declared.push(crate::ContributionKind::DashboardWidget);
+                }
+                if !parsed.venues.is_empty() {
+                    declared.push(crate::ContributionKind::Venue);
+                }
+                if !parsed.indicators.is_empty() {
+                    declared.push(crate::ContributionKind::Indicator);
+                }
                 let widgets = if enabled { parsed.widgets } else { Vec::new() };
+                let venues = if enabled { parsed.venues } else { Vec::new() };
+                let indicators = if enabled {
+                    parsed.indicators
+                } else {
+                    Vec::new()
+                };
                 InstalledPackage {
                     id: dir_name,
                     name: parsed.name,
@@ -350,7 +401,10 @@ impl WidgetPackageStore {
                     enabled,
                     status,
                     digest,
+                    declared,
                     widgets,
+                    venues,
+                    indicators,
                     is_builtin,
                 }
             }
@@ -365,7 +419,10 @@ impl WidgetPackageStore {
                     parsed.provider_id
                 )),
                 digest,
+                declared: Vec::new(),
                 widgets: Vec::new(),
+                venues: Vec::new(),
+                indicators: Vec::new(),
                 is_builtin,
             },
             Err(source) => InstalledPackage {
@@ -376,7 +433,10 @@ impl WidgetPackageStore {
                 enabled,
                 status: PackageStatus::Failed(source.to_string()),
                 digest,
+                declared: Vec::new(),
                 widgets: Vec::new(),
+                venues: Vec::new(),
+                indicators: Vec::new(),
                 is_builtin,
             },
         }
@@ -451,6 +511,74 @@ impl WidgetPackageStore {
         self.write_state(&state)?;
 
         Ok(provider_id)
+    }
+
+    /// Wraps a bare compiled `.wasm` indicator component — the shape
+    /// `POST /api/indicators/plugins` has always accepted — into a package
+    /// with a generated `senken-plugin.json`, so the same upload keeps
+    /// working through the unified `POST /api/plugins` endpoint instead of
+    /// needing a second upload shape. The generated id is content-addressed
+    /// (`indicator-<8 hex chars>` of `wasm`'s own SHA-256), so re-uploading
+    /// the identical bytes upgrades the same package rather than
+    /// accumulating a new one every time — the one case
+    /// [`install`](Self::install)'s own "same id replaces" rule is meant
+    /// for.
+    ///
+    /// Goes through [`install`](Self::install) itself, not a second
+    /// filesystem path — the generated archive gets the exact same staged,
+    /// validated, atomic install every hand-built zip does.
+    ///
+    /// # Errors
+    /// As [`install`](Self::install).
+    ///
+    /// # Panics
+    /// Never in practice — the zip writes below are to an in-memory
+    /// `Vec<u8>`, which cannot fail the way a real file write can.
+    pub fn install_bare_wasm_as_indicator(
+        &self,
+        wasm: &[u8],
+    ) -> Result<String, WidgetPackageError> {
+        let digest = Sha256::digest(wasm);
+        let short_hash = digest.iter().take(4).fold(String::new(), |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+        let id = format!("indicator-{short_hash}");
+        let manifest = format!(
+            r#"{{
+                "id": "{id}",
+                "name": "Uploaded indicator {short_hash}",
+                "version": "0.0.0",
+                "description": "Wrapped automatically from a bare .wasm upload.",
+                "contributes": [
+                    {{ "point": "indicator", "indicator": {{ "entry": "indicator.wasm" }} }}
+                ]
+            }}"#
+        );
+        let mut buffer = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buffer);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            // Writing to an in-memory `Cursor` cannot fail for any reason a
+            // caller could act on — a failure here would mean a bug in this
+            // function, not a bad upload (`wasm` was already validated as
+            // bytes by the caller; this only wraps them) — see
+            // `builtin_package_archive`'s own identical pattern above.
+            writer
+                .start_file("manifest.json", options)
+                .expect("in-memory zip write");
+            writer
+                .write_all(manifest.as_bytes())
+                .expect("in-memory zip write");
+            writer
+                .start_file("indicator.wasm", options)
+                .expect("in-memory zip write");
+            writer.write_all(wasm).expect("in-memory zip write");
+            writer.finish().expect("in-memory zip write");
+        }
+        self.install(&buffer.into_inner())
     }
 
     /// Sets the admin enable/disable flag for `id`. Never touches this
@@ -547,6 +675,89 @@ impl WidgetPackageStore {
         let full = self.packages_dir().join(id).join("web").join(rel);
         Ok(full.is_file().then_some(full))
     }
+
+    /// Reads the compiled `.wasm` bytes for a `venue`/`indicator`
+    /// contribution's `entry`, relative to package `id`'s own root — unlike
+    /// [`resolve_asset`](Self::resolve_asset), a venue's component sits
+    /// directly under the package directory, not under `web/`.
+    ///
+    /// Returns `Ok(None)` for a package that does not exist or is not
+    /// currently [`PackageStatus::Active`], the same non-error-for-absence
+    /// contract [`resolve_asset`](Self::resolve_asset) makes.
+    ///
+    /// # Errors
+    /// [`WidgetPackageError::UnsafeAssetPath`] if `rel_path` is absolute or
+    /// attempts to escape the package directory; otherwise as
+    /// [`list`](Self::list).
+    pub fn resolve_wasm(
+        &self,
+        id: &str,
+        rel_path: &str,
+    ) -> Result<Option<Vec<u8>>, WidgetPackageError> {
+        let rel = Path::new(rel_path);
+        if !is_safe_relative_path(rel) {
+            return Err(WidgetPackageError::UnsafeAssetPath(rel_path.to_owned()));
+        }
+        let is_active = self
+            .list()?
+            .into_iter()
+            .any(|p| p.id == id && p.status == PackageStatus::Active);
+        if !is_active {
+            return Ok(None);
+        }
+        let full = self.packages_dir().join(id).join(rel);
+        if !full.is_file() {
+            return Ok(None);
+        }
+        Ok(Some(std::fs::read(full)?))
+    }
+
+    /// Every `venue` contribution every currently [`PackageStatus::Active`]
+    /// package declares, alongside the package id that owns it — mirrors
+    /// [`effective_widget_catalog`](Self::effective_widget_catalog) exactly.
+    ///
+    /// # Errors
+    /// See [`list`](Self::list).
+    pub fn effective_venue_catalog(
+        &self,
+    ) -> Result<Vec<(String, ValidatedEntryContribution)>, WidgetPackageError> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .filter(|p| p.status == PackageStatus::Active)
+            .flat_map(|p| {
+                let id = p.id;
+                p.venues
+                    .into_iter()
+                    .map(move |venue| (id.clone(), venue))
+                    .collect::<Vec<_>>()
+            })
+            .collect())
+    }
+
+    /// Every `indicator` contribution every currently
+    /// [`PackageStatus::Active`] package declares, alongside the package id
+    /// that owns it — mirrors
+    /// [`effective_venue_catalog`](Self::effective_venue_catalog) exactly.
+    ///
+    /// # Errors
+    /// See [`list`](Self::list).
+    pub fn effective_indicator_catalog(
+        &self,
+    ) -> Result<Vec<(String, ValidatedEntryContribution)>, WidgetPackageError> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .filter(|p| p.status == PackageStatus::Active)
+            .flat_map(|p| {
+                let id = p.id;
+                p.indicators
+                    .into_iter()
+                    .map(move |indicator| (id.clone(), indicator))
+                    .collect::<Vec<_>>()
+            })
+            .collect())
+    }
 }
 
 /// Extracts `zip_bytes` into `staging`, then validates the manifest and
@@ -590,7 +801,14 @@ fn extract_and_validate(zip_bytes: &[u8], staging: &Path) -> Result<String, Widg
         std::io::copy(&mut file, &mut out)?;
     }
 
-    let manifest_bytes = std::fs::read(staging.join("manifest.json"))
+    // `senken-plugin.json` is the name a plugin author writes, and the one
+    // every plugin compiled into this build carries. `manifest.json` is what
+    // packages installed before that name existed use, including the widget
+    // this build ships, so both are read, newest name first. Accepting only
+    // one of them means either an author following the documentation cannot
+    // install their package, or an already-installed one stops loading.
+    let manifest_bytes = std::fs::read(staging.join(MANIFEST_FILE_NAME))
+        .or_else(|_| std::fs::read(staging.join(LEGACY_MANIFEST_FILE_NAME)))
         .map_err(|_| WidgetPackageError::MissingManifest)?;
     let manifest = manifest::validate(&manifest_bytes)?;
     for widget in &manifest.widgets {
@@ -599,6 +817,18 @@ fn extract_and_validate(zip_bytes: &[u8], staging: &Path) -> Result<String, Widg
             return Err(WidgetPackageError::EntryNotFound(
                 widget.widget_id.clone(),
                 widget.entry.clone(),
+            ));
+        }
+    }
+    // A venue or indicator's `.wasm` component sits at the package root —
+    // there is no bundle of static assets to nest it under the way a
+    // widget's `web/` directory holds one.
+    for contribution in manifest.venues.iter().chain(manifest.indicators.iter()) {
+        let entry_path = staging.join(&contribution.entry);
+        if !entry_path.is_file() {
+            return Err(WidgetPackageError::EntryNotFound(
+                manifest.provider_id.clone(),
+                contribution.entry.clone(),
             ));
         }
     }
@@ -715,6 +945,33 @@ mod tests {
         let catalog = store.effective_widget_catalog().unwrap();
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].widget_type_id, "acme-widgets/clock");
+    }
+
+    #[test]
+    fn wrapping_a_bare_wasm_upload_creates_an_indicator_package_with_a_content_addressed_id() {
+        let (_dir, store) = temp_store();
+        let id = store
+            .install_bare_wasm_as_indicator(b"pretend-wasm-bytes")
+            .unwrap();
+        assert!(
+            id.starts_with("indicator-"),
+            "the generated id must say what it is, not just a hash"
+        );
+
+        let listed = store.list().unwrap();
+        let package = listed.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(package.status, PackageStatus::Active);
+        assert_eq!(package.indicators.len(), 1);
+        assert_eq!(package.indicators[0].entry, "indicator.wasm");
+        assert!(package.widgets.is_empty());
+
+        // Re-uploading the identical bytes must upgrade the same package,
+        // not accumulate a second copy under a new id.
+        let id_again = store
+            .install_bare_wasm_as_indicator(b"pretend-wasm-bytes")
+            .unwrap();
+        assert_eq!(id_again, id);
+        assert_eq!(store.list().unwrap().len(), 1);
     }
 
     #[test]
@@ -883,6 +1140,29 @@ mod tests {
         );
         let err = store.set_enabled("acme-widgets", true).unwrap_err();
         assert!(matches!(err, WidgetPackageError::NotFound(_)));
+    }
+
+    #[test]
+    fn uninstalling_a_package_never_touches_market_data_already_downloaded() {
+        let (dir, store) = temp_store();
+        store.install(&valid_package_zip("acme-venue")).unwrap();
+
+        // Stand in for bars a venue this package's `venue` contribution
+        // sourced would have already written under `senken-store`'s own
+        // tree — an entirely different directory from this package's own
+        // (`<data_dir>/widget-plugins/packages/<id>/`), which is the whole
+        // reason uninstalling one can never reach the other.
+        let market_data = dir.path().join("sources/acme-venue/marker.txt");
+        std::fs::create_dir_all(market_data.parent().unwrap()).unwrap();
+        std::fs::write(&market_data, b"already downloaded").unwrap();
+
+        store.uninstall("acme-venue").unwrap();
+
+        assert!(store.list().unwrap().is_empty());
+        assert!(
+            market_data.exists(),
+            "market data already downloaded must survive uninstalling the package that sourced it"
+        );
     }
 
     #[test]

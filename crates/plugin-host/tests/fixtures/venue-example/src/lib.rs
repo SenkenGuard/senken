@@ -1,7 +1,10 @@
 //! A minimal, well-behaved venue plugin: spot instruments and 1-minute
 //! candles from OKX's own documented shape, fetched entirely through the
 //! host's `fetch` — this crate never imports `wasi:sockets` or
-//! `wasi:http`, and has no way to.
+//! `wasi:http`, and has no way to. Its catalog also carries one perpetual,
+//! one dated future and one option, so `tests/venue.rs` can prove
+//! `wit/senken.wit`'s `instrument` record crosses the boundary intact for
+//! every market kind the contract now names, not only spot.
 //!
 //! This exists to prove the dynamic venue pipeline end to end against a
 //! **recorded** response, not a hand-written one: `crates/plugin-host`'s
@@ -12,16 +15,18 @@
 //! the same bytes. Matching that adapter is the point: this plugin
 //! implements a deliberately small slice of the same OKX shape (spot
 //! instruments, one-minute history candles), not a second, independent
-//! parser that happens to agree by coincidence.
+//! parser that happens to agree by coincidence. The three derivative
+//! instruments below are the one exception — illustrative fixture data,
+//! not parsed from a recorded response, since proving the wire shape
+//! crosses intact needs one example of each kind, not a second real venue
+//! parser; see their own comment for why that is still not "inventing a
+//! venue fact".
 
-wit_bindgen::generate!({
-    path: "../../../../../wit/senken.wit",
-    world: "venue-plugin",
-});
-
-use exports::senken::plugin_api::venue::{Bar, Guest, Instrument, VenueDescriptor, VenueError};
-use senken::plugin_api::http;
-use senken::plugin_api::types::{BarSpec, BarUnit, Scaled, Volume};
+use senken_plugin_api::{
+    Bar, BarSpec, BarUnit, Contract, Instrument, InstrumentKind, InstrumentStatus, OptionRight,
+    OptionTerms, Scaled, Settlement, VenueDescriptor, VenueError, VenueGuest as Guest, Volume,
+    fetch,
+};
 
 struct ExampleVenue;
 
@@ -35,8 +40,8 @@ impl Guest for ExampleVenue {
     }
 
     fn instruments() -> Result<Vec<Instrument>, VenueError> {
-        let body = http::fetch("/api/v5/public/instruments?instType=SPOT", 1)
-            .map_err(VenueError::Fetch)?;
+        let body =
+            fetch("/api/v5/public/instruments?instType=SPOT", 1).map_err(VenueError::Fetch)?;
         let document: serde_json::Value =
             serde_json::from_slice(&body).map_err(|err| VenueError::Decode(err.to_string()))?;
         if document.get("code").and_then(|c| c.as_str()) != Some("0") {
@@ -81,12 +86,100 @@ impl Guest for ExampleVenue {
                 name: format!("{base} / {quote}"),
                 base: base.to_owned(),
                 quote: quote.to_owned(),
+                kind: InstrumentKind::Spot,
+                status: InstrumentStatus::Trading,
                 price_scale: tick_scale,
                 tick_size,
                 qty_scale,
                 step_size,
+                contract: None,
             });
         }
+
+        // Three more, illustrative rather than parsed from a recorded
+        // response: this fixture's whole purpose is proving `wit/senken.wit`'s
+        // `instrument` record crosses the boundary intact for every market
+        // kind the contract now names, not re-deriving OKX's own real
+        // parsing a second time — that already happens, against genuinely
+        // recorded bytes, in `plugins/okx/wasm`'s own equivalence tests.
+        // The expiry timestamps below are not invented: they are OKX's own
+        // recorded `expTime` values from `plugins/okx/tests/fixtures/
+        // futures.json` and `option.json`, converted from milliseconds to
+        // nanoseconds.
+        instruments.push(Instrument {
+            symbol: "BTCUSD".to_owned(),
+            source_symbol: "BTC-USD-SWAP".to_owned(),
+            name: "BTC / USD perpetual".to_owned(),
+            base: "BTC".to_owned(),
+            quote: "USD".to_owned(),
+            kind: InstrumentKind::Perpetual,
+            status: InstrumentStatus::Trading,
+            price_scale: 1,
+            tick_size: 1,
+            qty_scale: 1,
+            step_size: 1,
+            contract: Some(Contract {
+                settle: "BTC".to_owned(),
+                settlement: Settlement::Inverse,
+                // A perpetual never expires — `none`, not a far-future
+                // sentinel date.
+                expiry: None,
+                size_scale: 0,
+                contract_size: 100,
+                option: None,
+            }),
+        });
+        instruments.push(Instrument {
+            symbol: "BTCUSD260904".to_owned(),
+            source_symbol: "BTC-USD-260904".to_owned(),
+            name: "BTC / USD future".to_owned(),
+            base: "BTC".to_owned(),
+            quote: "USD".to_owned(),
+            kind: InstrumentKind::Future,
+            status: InstrumentStatus::Trading,
+            price_scale: 1,
+            tick_size: 1,
+            qty_scale: 1,
+            step_size: 1,
+            contract: Some(Contract {
+                settle: "BTC".to_owned(),
+                settlement: Settlement::Inverse,
+                // OKX's own recorded `expTime` for `BTC-USD-260904`.
+                expiry: Some(1_788_508_800_000_000_000),
+                size_scale: 0,
+                contract_size: 100,
+                option: None,
+            }),
+        });
+        instruments.push(Instrument {
+            symbol: "BTCUSD260830C70000".to_owned(),
+            source_symbol: "BTC-USD-260830-70000-C".to_owned(),
+            name: "BTC / USD option".to_owned(),
+            base: "BTC".to_owned(),
+            quote: "USD".to_owned(),
+            kind: InstrumentKind::Option,
+            status: InstrumentStatus::Trading,
+            price_scale: 4,
+            tick_size: 1,
+            qty_scale: 0,
+            step_size: 1,
+            contract: Some(Contract {
+                settle: "BTC".to_owned(),
+                settlement: Settlement::Inverse,
+                // OKX's own recorded `expTime` for `BTC-USD-260830-70000-C`.
+                expiry: Some(1_788_076_800_000_000_000),
+                size_scale: 0,
+                contract_size: 1,
+                option: Some(OptionTerms {
+                    right: OptionRight::Call,
+                    // OKX's own recorded `stk`, at scale 0 (a whole-dollar
+                    // strike).
+                    strike_scale: 0,
+                    strike: 70_000,
+                }),
+            }),
+        });
+
         Ok(instruments)
     }
 
@@ -114,7 +207,7 @@ impl Guest for ExampleVenue {
         }
         let path =
             format!("/api/v5/market/history-candles?instId={source_symbol}&bar=1m&limit=100");
-        let body = http::fetch(&path, 5).map_err(VenueError::Fetch)?;
+        let body = fetch(&path, 5).map_err(VenueError::Fetch)?;
         let document: serde_json::Value =
             serde_json::from_slice(&body).map_err(|err| VenueError::Decode(err.to_string()))?;
         if document.get("code").and_then(|c| c.as_str()) != Some("0") {
@@ -242,4 +335,4 @@ fn plain_decimal_increment(raw: &str) -> Option<(u8, i64)> {
     scaled_at(raw, scale).map(|scaled| (scaled.scale, scaled.value))
 }
 
-export!(ExampleVenue);
+senken_plugin_api::export_venue!(ExampleVenue);

@@ -1,15 +1,13 @@
 <script lang="ts">
 	// The horizontal stat-cell strip used by both the Overview view's
-	// aggStats row and the
-	// Accounts view's acctStats row (lines 797-805, `size="md"`) — same
-	// shape, different padding/type scale in the reference, so one
-	// component with a size prop instead of two near-duplicates.
+	// aggStats row and the Accounts view's acctStats row (`size="md"`) —
+	// same shape, different padding/type scale, so one component with a
+	// size prop instead of two near-duplicates.
 	//
 	// Not built on `ui/stat-cell`: that primitive's label/value sizes are
 	// fixed (7.5px / text-xs) for the TopBar/FooterBar HUD it was pulled
-	// forward for in P1, and this strip needs the engine page's own sizes
-	// (8px label, 14-15px value) that stat-cell doesn't expose as a prop —
-	// see the P4 implementation report for the full reasoning.
+	// forward for, and this strip needs the engine page's own sizes (8px
+	// label, 14-15px value) that stat-cell doesn't expose as a prop.
 	import { cn } from '$lib/utils.js';
 	import type { StatItem, Tone } from '$lib/trade/view';
 

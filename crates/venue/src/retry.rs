@@ -23,10 +23,10 @@ pub struct RetryPolicy {
 impl RetryPolicy {
     /// A user is waiting: fail fast rather than make a chart hang.
     ///
-    /// Matches the retry behaviour `senken-venue` already had before M3
-    /// (`MAX_ATTEMPTS = 3`, `FIRST_BACKOFF = 250ms`) — M3 adds jitter and
-    /// makes the numbers a parameter, it does not change the interactive
-    /// default.
+    /// Matches the retry behaviour `senken-venue` already had
+    /// (`MAX_ATTEMPTS = 3`, `FIRST_BACKOFF = 250ms`) before jitter was
+    /// added and the numbers became a parameter — the interactive default
+    /// itself did not change.
     pub const INTERACTIVE: Self = Self {
         max_attempts: 3,
         first_backoff: Duration::from_millis(250),
@@ -47,7 +47,7 @@ impl RetryPolicy {
 impl Default for RetryPolicy {
     /// Callers that do not say otherwise get the interactive policy: it is
     /// the behaviour every existing caller of [`fetch_bytes`](crate::fetch_bytes)
-    /// already saw before M3.
+    /// already saw before jitter and configurable retry numbers were added.
     fn default() -> Self {
         Self::INTERACTIVE
     }

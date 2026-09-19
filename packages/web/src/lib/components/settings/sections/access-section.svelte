@@ -36,14 +36,13 @@
 </script>
 
 <script lang="ts">
-	// Users & roles (admin-only). Q6 built this section's
-	// shape against `senken-acl`'s real `Action`/`Resource`/`Scope` enums
-	// (mirrored verbatim from `crates/acl/src/{action,resource,scope}.rs`,
-	// not guessed) but shipped every control disabled, because Q4 had not
-	// built the HTTP endpoints it needs. Q8 built them
-	// (`crates/api/src/admin_handlers.rs`) and Q9.3/Q10.1 closed the
-	// headless bypass on every mutation they front — this file is Q10.2:
-	// wiring this section to that real, tested server surface.
+	// Users & roles (admin-only). This section's shape is built against
+	// `senken-acl`'s real `Action`/`Resource`/`Scope` enums (mirrored
+	// verbatim from `crates/acl/src/{action,resource,scope}.rs`, not
+	// guessed). Its controls shipped disabled until the HTTP endpoints they
+	// need (`crates/api/src/admin_handlers.rs`) existed and the headless
+	// bypass on every mutation they front was closed; this file wires the
+	// section to that real, tested server surface.
 	//
 	// Visibility of this *section itself* (whether it appears in the nav at
 	// all) is handled one layer up, in `../settings-nav.svelte` via

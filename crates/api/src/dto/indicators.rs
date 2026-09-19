@@ -344,12 +344,18 @@ pub(crate) struct IndicatorPluginDto {
 pub(crate) enum IndicatorPluginOriginDto {
     /// Ships with Senken itself.
     BuiltIn,
-    /// Uploaded through the Plugins page, or compiled from indicator-lang
-    /// source and registered by the authoring panel's "run" action.
+    /// Uploaded through the Plugins page.
     Uploaded,
     /// Found under the data directory at startup, not this session's own
     /// upload.
     DataDirectory,
+    /// Compiled by the server from an account's own Rust source. Never
+    /// actually seen through this DTO today — a user's own indicators
+    /// live in their own per-account catalog, never the shared one `GET
+    /// /api/indicators/plugins` reads — but this match must still name
+    /// every [`PluginOrigin`] the domain type has, the same way any other
+    /// exhaustive match over it does.
+    User,
 }
 
 impl From<PluginOrigin> for IndicatorPluginOriginDto {
@@ -358,6 +364,7 @@ impl From<PluginOrigin> for IndicatorPluginOriginDto {
             PluginOrigin::BuiltIn => Self::BuiltIn,
             PluginOrigin::Uploaded => Self::Uploaded,
             PluginOrigin::DataDirectory => Self::DataDirectory,
+            PluginOrigin::User => Self::User,
         }
     }
 }
@@ -522,35 +529,6 @@ impl From<PluginLogLine> for PluginLogLineDto {
 pub(crate) struct SetIndicatorPluginEnabledRequest {
     /// The desired enabled state.
     pub enabled: bool,
-}
-
-/// `POST /api/indicators/compile` request body: indicator-lang source, as
-/// the authoring panel's editor holds it right now.
-#[derive(Debug, Deserialize, ToSchema)]
-pub(crate) struct CompileIndicatorRequest {
-    /// The program, in the language `senken-indicator-lang` implements.
-    pub source: String,
-}
-
-/// `POST /api/indicators/compile`'s error body for a mistake in the
-/// trader's own source (a `senken_indicator_lang::CompileError::Syntax` or
-/// `::Type`) — line and column and message exactly as the compiler reports
-/// them, never collapsed into the crate's usual one-line [`ErrorBody`](crate::dto::ErrorBody):
-/// the authoring panel places this at the offending line, which a flattened
-/// string cannot drive.
-///
-/// Not used for [`senken_indicator_lang::CompileError::Internal`] — that
-/// variant names a bug in the compiler, not in anything the trader wrote,
-/// so it is reported as an ordinary [`ErrorBody`](crate::dto::ErrorBody)-shaped `500` instead of a
-/// line this source never had.
-#[derive(Debug, Serialize, ToSchema)]
-pub(crate) struct CompileIndicatorErrorDto {
-    /// One-based line the problem starts on.
-    pub line: u32,
-    /// One-based column the problem starts on.
-    pub column: u32,
-    /// What was wrong, in the language a trader writing an indicator uses.
-    pub message: String,
 }
 
 /// `POST /api/indicators/compute` response body.

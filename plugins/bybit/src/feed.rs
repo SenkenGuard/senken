@@ -46,17 +46,10 @@ use std::time::Duration;
 use senken_marketdata::InstrumentId;
 use senken_plugin::live::trade;
 use senken_subscription::{ConnectionError, FeedSource, LiveUpdate, SymbolMap, VenueProtocol};
-use senken_venue::normalise_symbol;
 use serde::Deserialize;
 
 /// `wss://stream.bybit.com/v5/public/spot` — confirmed live 2026-09-02.
 pub(crate) const BYBIT_SPOT_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
-
-/// Bybit's spot symbols carry no separator (`BTCUSDT`), but its option
-/// symbols do (`BTC-26SEP25-…`), and this plugin's catalog strips `-` from
-/// every market. Matching that rule here rather than assuming spot's shape
-/// keeps the two from disagreeing if this feed ever serves more markets.
-const SEPARATORS: [char; 1] = ['-'];
 
 /// How often to send the confirmed `{"op":"ping"}`. Our own conservative
 /// choice, not a venue-published number.
@@ -125,9 +118,13 @@ impl VenueProtocol for BybitTradesProtocol {
 
 impl BybitTradesProtocol {
     fn decode(&self, entry: &Trade) -> Option<(InstrumentId, LiveUpdate)> {
+        // The same function `lib.rs`'s catalog builder normalises a symbol
+        // through — see `bybit_core::normalise_bybit_symbol`'s own docs on
+        // why a venue's symbol rule must never be spelled out a second
+        // time at another call site.
         let instrument = InstrumentId::new(
             &self.source_id,
-            &normalise_symbol(&entry.symbol, &SEPARATORS),
+            &bybit_core::normalise_bybit_symbol(&entry.symbol),
         )
         .ok()?;
         let ts = senken_core::UnixNanos::from_millis(entry.time)?;
@@ -279,5 +276,24 @@ mod tests {
         let (every, frame) = protocol().keepalive().unwrap();
         assert_eq!(frame, r#"{"op":"ping"}"#);
         assert!(every < std::time::Duration::from_secs(30));
+    }
+
+    /// The property `AGENTS.md` names directly: a venue's symbol is
+    /// normalised **once**, by one rule. This decoder and `lib.rs`'s
+    /// catalog builder both call `bybit_core::normalise_bybit_symbol`
+    /// rather than each spelling out the dash-stripping rule on their own
+    /// — `AGENTS.md` documents Deribit and Crypto.com each shipping with
+    /// the two call sites silently disagreeing on separators, found only
+    /// by comparing them by hand.
+    #[test]
+    fn the_live_decoder_normalises_a_dashed_option_symbol_the_same_way_the_catalog_does() {
+        let frame = r#"{"topic":"publicTrade.BTC-26SEP25-160000-C-USDT","ts":1,"data":[{"i":"1","T":1,"p":"1","v":"1","S":"Buy","s":"BTC-26SEP25-160000-C-USDT"}]}"#;
+        let updates = protocol().parse_message(frame);
+        let (id, _) = &updates[0];
+        assert_eq!(
+            id.symbol(),
+            bybit_core::normalise_bybit_symbol("BTC-26SEP25-160000-C-USDT")
+        );
+        assert_eq!(id.symbol(), "BTC26SEP25160000CUSDT");
     }
 }

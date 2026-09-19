@@ -11,10 +11,11 @@
 // this file. Instead: request a single-use ticket over REST through
 // `apiClient` (the one funnel), then present *that* on the
 // handshake. Putting the ticket in the query string is safe specifically
-// because B3 designed it to be — "valid for seconds" and single-use, so a
+// because it is designed to be — valid for seconds and single-use, so a
 // leaked ticket is worthless by the time it surfaces in a log. This is not
-// the same mistake as putting the real session token in the query string,
-// which B3 rejects for exactly that reason.
+// the same mistake as putting the real session token in the query string: a
+// credential must never travel in a URL, and this single-use, seconds-lived
+// ticket is deliberately not a credential in that sense.
 import { apiClient } from './client';
 import { activeServer, resolveBaseUrl } from './servers.svelte';
 import { connectionStore, setConnectionState } from './connection.svelte';
@@ -25,9 +26,9 @@ import { TopicRefCounter } from './topic-refcount';
 import { indicatorTopic, type IndicatorSubscribeRequest } from './indicator-topic';
 import type { WsTicketResponse } from './types';
 
-// Q4 landed: `POST /api/ws/ticket` and `GET /api/ws` (`crates/api/src/lib.rs`'s
-// router), matching the provisional paths this file guessed at before the
-// server existed.
+// These endpoints now exist: `POST /api/ws/ticket` and `GET /api/ws`
+// (`crates/api/src/lib.rs`'s router), matching the provisional paths this
+// file guessed at before the server existed.
 const WS_TICKET_PATH = '/api/ws/ticket';
 const WS_PATH = '/api/ws';
 
@@ -56,7 +57,7 @@ function parseWsMessage(data: unknown): WsEvent | null {
 			};
 		}
 	} catch {
-		// Not JSON. Q4 hasn't defined the wire format yet, so this is a
+		// Not JSON. The wire format isn't formally defined yet, so this is a
 		// defensive parse, not a schema violation worth surfacing.
 	}
 	return null;
@@ -71,8 +72,8 @@ function parseWsMessage(data: unknown): WsEvent | null {
  * WS endpoint to hold a socket open, the two can occasionally race and
  * overwrite each other's transition (e.g. a REST heartbeat tick marking
  * `'authenticated'` moments after a WS drop marked `'reconnecting'`); this
- * is flagged in the implementation report as worth revisiting once the * real protocol exists to drive reconciliation instead of two independent
- * pollers.
+ * is worth revisiting once a real protocol exists to drive reconciliation
+ * instead of two independent pollers.
  */
 class WsClient {
 	private socket: WebSocket | null = null;
@@ -102,7 +103,8 @@ class WsClient {
 
 	/** Takes one more reference on `topic`, sending its subscribe frame only
 	 * on the first. Every currently-referenced topic is replayed on future
-	 * reconnect — B16: "re-subscribes on reconnect." */
+	 * reconnect, so a dropped connection never silently loses a
+	 * subscription. */
 	subscribe(topic: string): void {
 		if (this.subscriptions.retain(topic)) this.sendFrame('subscribe', topic);
 	}

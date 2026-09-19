@@ -37,15 +37,20 @@ fn capabilities(
     let mut rows: Vec<SourceCapabilityDto> = sources
         .into_iter()
         .map(|summary| SourceCapabilityDto {
-            bars: chartable.contains(&summary.id.as_str()),
-            live: streamable(&summary.id),
+            // Every capability collapses to false for a venue that is
+            // switched off. Its registrations are all still there — they
+            // are gated, not removed — so asking the registries directly
+            // would answer "yes, bars" for a source that refuses every
+            // fetch, and a chart would offer a control that does nothing.
+            bars: summary.serving && chartable.contains(&summary.id.as_str()),
+            live: summary.serving && streamable(&summary.id),
             // Read from the feed's own `serves_quotes`, not from "has a
             // pool". A venue streaming only last trades has a live feed and
             // no quotes, and a chart that drew bid/ask lines for it would be
             // showing a control that does nothing.
-            quotes: has_quotes(&summary.id),
+            quotes: summary.serving && has_quotes(&summary.id),
             book: BookCapabilityDto {
-                supported: has_book(&summary.id),
+                supported: summary.serving && has_book(&summary.id),
             },
             id: summary.id,
             name: summary.name,
@@ -68,9 +73,11 @@ pub(crate) async fn list_sources(
     State(state): State<AppState>,
     Extension(_auth): Authed,
 ) -> Json<SourcesResponse> {
+    let chartable_ids = state.runtime.series().source_ids();
+    let chartable: Vec<&str> = chartable_ids.iter().map(String::as_str).collect();
     let sources = capabilities(
         state.runtime.marketdata().sources(),
-        &state.runtime.series().source_ids(),
+        &chartable,
         |id| state.feed_pools.contains_key(id),
         |id| {
             state.feed_pools.contains_key(id)
@@ -93,7 +100,25 @@ mod tests {
         SourceSummary {
             id: id.to_owned(),
             name: id.to_uppercase(),
+            serving: true,
         }
+    }
+
+    #[test]
+    fn a_source_that_is_not_serving_reports_no_capabilities_at_all() {
+        let mut off = summary("okx-spot");
+        off.serving = false;
+        let rows = capabilities(vec![off], &["okx-spot"], |_| true, |_| true, |_| true);
+        let row = &rows[0];
+        assert!(
+            !row.bars && !row.live && !row.quotes && !row.book.supported,
+            "a venue switched off must offer nothing: its registrations are \
+             gated rather than removed, so every registry still says yes"
+        );
+        assert_eq!(
+            row.id, "okx-spot",
+            "it stays listed — its stored history is still there to manage"
+        );
     }
 
     #[test]

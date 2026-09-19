@@ -195,6 +195,10 @@ impl Plugin for PhemexPlugin {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             description: "Phemex spot and perpetual market data".to_owned(),
             permissions: Vec::new(),
+            contributes: senken_plugin::parse_static_contributions(include_str!(
+                "../senken-plugin.json"
+            ))
+            .expect("senken-plugin.json is well-formed"),
         }
     }
 

@@ -39,7 +39,7 @@ const ALL_ACTIONS: [Action; 5] = [
 
 /// Every `Resource` this crate knows about, for the same seeding purpose as
 /// [`ALL_ACTIONS`].
-const ALL_RESOURCES: [Resource; 16] = [
+const ALL_RESOURCES: [Resource; 18] = [
     Resource::ChartWorkspace,
     Resource::ChartLayout,
     Resource::DashboardWorkspace,
@@ -56,6 +56,8 @@ const ALL_RESOURCES: [Resource; 16] = [
     Resource::Note,
     Resource::Storage,
     Resource::WidgetPlugin,
+    Resource::UserIndicator,
+    Resource::Plugin,
 ];
 
 /// Idle session lifetime: 30 days, refreshed on every use.
@@ -64,7 +66,7 @@ const SESSION_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// One page of a guarded query's results, plus the total row count *under
 /// the same scope*: counting after applying a narrower filter
 /// than the one shown to the caller would leak existence through the total,
-/// the exact leak B6 exists to prevent.
+/// so the total is always counted under that same scope too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page<T> {
     /// The rows for this page.
@@ -290,7 +292,7 @@ impl IdentityStore {
 
     /// Creates a user. `initial_password` is hashed immediately if given;
     /// `None` leaves `password_hash` `NULL`, i.e. the account is created
-    /// behind the same B4 fence the default admin uses.
+    /// behind the same first-run password fence the default admin uses.
     ///
     /// Requires `auth` to hold `Action::Create` on `Resource::User`
     /// : this is one of the four mutations that, until now, took no
@@ -302,7 +304,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// create a user, [`IdentityError::PasswordTooShort`] if
     /// `initial_password` is given and too short, [`IdentityError::EmailTaken`]
     /// if `email` is already registered, or otherwise as
@@ -339,13 +341,13 @@ impl IdentityStore {
 
     /// Creates a role with the given grants.
     ///
-    /// Requires `auth` to hold `Action::Create` on `Resource::Role` (plan
-    /// 004 Q9.3 — see [`create_user`](Self::create_user)'s doc for why this
-    /// crate, not just `senken-api`, must be the one to check it).
+    /// Requires `auth` to hold `Action::Create` on `Resource::Role` — see
+    /// [`create_user`](Self::create_user)'s doc for why this crate, not
+    /// just `senken-api`, must be the one to check it.
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// create a role, or otherwise as [`IdentityError::Database`].
     pub fn create_role(
         &self,
@@ -380,7 +382,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// edit users, or otherwise as [`IdentityError::Database`].
     pub fn assign_role(
         &self,
@@ -406,7 +408,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// edit users, or otherwise as [`IdentityError::Database`].
     pub fn grant_direct(
         &self,
@@ -559,7 +561,7 @@ impl IdentityStore {
     }
 
     /// Sets `email`'s password, whether that account has one yet or not —
-    /// this is the one operation the B4 fence exempts, so it takes an
+    /// this is the one operation the first-run password fence exempts, so it takes an
     /// email rather than an [`AuthenticatedUser`] (there is nothing to
     /// authorise: a fenced account cannot pass any other check, and
     /// setting your own password never needs a grant).
@@ -763,8 +765,9 @@ impl IdentityStore {
     /// (the `plugin_permissions` table), whether currently
     /// registered or orphaned.
     ///
-    /// This is the read half of the coordination gap Q2 and Q7 each left
-    /// to the other: pass the result as `previous` to
+    /// This is the read half of the coordination gap left when persisting
+    /// reconciled plugin permissions was assumed to be someone else's job:
+    /// pass the result as `previous` to
     /// `senken_plugin::reconcile_plugin_permissions` together with what the
     /// plugin declares this activation, then persist the reconciled result
     /// with [`save_plugin_permissions`](Self::save_plugin_permissions).
@@ -846,6 +849,87 @@ impl IdentityStore {
         Ok(())
     }
 
+    /// Reads plugin `id`'s admin-set enable/disable flag, if anyone has
+    /// ever toggled it. `None` means no row exists yet — the caller
+    /// decides what a plugin defaults to (today, every static plugin
+    /// activates unconditionally; a package defaults to enabled at
+    /// install time, per `senken_plugin::widget_package::WidgetPackageStore::install`).
+    ///
+    /// # Errors
+    /// As [`IdentityError::Database`].
+    pub fn plugin_enabled(&self, plugin_id: &str) -> Result<Option<bool>, IdentityError> {
+        let conn = self.lock();
+        let value: Option<i64> = conn
+            .query_row(
+                "SELECT enabled FROM plugin_state WHERE plugin_id = ?1",
+                params![plugin_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.map(|v| v != 0))
+    }
+
+    /// Records an admin's enable/disable decision for `plugin_id`. Upserts
+    /// — `plugin_state` has no foreign key on purpose (see schema v15's own
+    /// docs), so this succeeds even for a plugin id nothing has loaded yet,
+    /// and calling it again with the same value is idempotent.
+    ///
+    /// This alone does not make a *static* plugin's toggle take effect:
+    /// `RuntimeBuilder::build` activates every registered `Plugin`
+    /// unconditionally today, so a caller reading this value back must
+    /// still show that a restart is required for a static plugin, the same
+    /// way `senken_plugin::widget_package::WidgetPackageStore::set_enabled`
+    /// already takes effect immediately for a package.
+    ///
+    /// # Errors
+    /// As [`IdentityError::Database`].
+    pub fn set_plugin_enabled(&self, plugin_id: &str, enabled: bool) -> Result<(), IdentityError> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO plugin_state (plugin_id, enabled, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(plugin_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at",
+            params![plugin_id, enabled, now_unix()],
+        )?;
+        Ok(())
+    }
+
+    /// First-run seeding: when `plugin_state` holds no row at all, records
+    /// `enabled = true` for each id in `default_enabled_ids` and leaves
+    /// every other plugin with no row — which now means "not enabled" (see
+    /// `RuntimeBuilder::build`'s reading of this table). A no-op on every
+    /// later start, once anyone (this call or an admin) has written a row.
+    ///
+    /// This is the seam that makes a fresh install come up with only a
+    /// deliberately small set of venues live instead of the historical
+    /// "every compiled-in plugin activates" — most of them talk to a real
+    /// exchange over the network the moment they start, and this project's
+    /// own IP has been banned by one already. Call it with the ids the
+    /// caller wants live by default; nothing here hardcodes which those
+    /// are.
+    ///
+    /// # Errors
+    /// As [`IdentityError::Database`].
+    pub fn seed_default_plugin_state(
+        &self,
+        default_enabled_ids: &[&str],
+    ) -> Result<(), IdentityError> {
+        let conn = self.lock();
+        let existing: i64 =
+            conn.query_row("SELECT COUNT(*) FROM plugin_state", [], |row| row.get(0))?;
+        if existing > 0 {
+            return Ok(());
+        }
+        let now = now_unix();
+        for plugin_id in default_enabled_ids {
+            conn.execute(
+                "INSERT INTO plugin_state (plugin_id, enabled, updated_at) VALUES (?1, 1, ?2)
+                 ON CONFLICT(plugin_id) DO NOTHING",
+                params![plugin_id, now],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Enables or disables the account with `email`, invalidating its
     /// existing sessions when disabling it — a disabled account must not
     /// keep working on a session it minted before it was disabled.
@@ -879,7 +963,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s account is behind
-    /// the B4 fence; [`IdentityError::Forbidden`] if the actor may not
+    /// the first-run password fence; [`IdentityError::Forbidden`] if the actor may not
     /// view users at all, or if `decide` returns a [`Scope`] variant this
     /// function does not yet translate to SQL; otherwise as
     /// [`IdentityError::Database`].
@@ -948,7 +1032,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s account is behind
-    /// the B4 fence; [`IdentityError::Forbidden`] if the actor may not view
+    /// the first-run password fence; [`IdentityError::Forbidden`] if the actor may not view
     /// roles at all, or if `decide` returns a [`Scope`] variant this
     /// function does not yet translate to SQL; otherwise as
     /// [`IdentityError::Database`] or [`IdentityError::CorruptGrant`] if a
@@ -1033,8 +1117,8 @@ impl IdentityStore {
 
     /// Removes a direct grant from `user_id` — the inverse of
     /// [`grant_direct`](Self::grant_direct). Invalidates the
-    /// account's other sessions for the same B15 reason `grant_direct`
-    /// does: losing a grant is still a privilege change.
+    /// account's other sessions for the same reason `grant_direct` does:
+    /// losing a grant is still a privilege change.
     ///
     /// Matching by `(user_id, action, resource)` only, not `scope`, mirrors
     /// `user_grants`' own primary key: at most one grant per
@@ -1053,7 +1137,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// edit users, or otherwise as [`IdentityError::Database`].
     pub fn revoke_direct(
         &self,
@@ -1073,7 +1157,7 @@ impl IdentityStore {
     }
 
     /// Grants the plugin permission `name` to `user_id` directly (plugin permissions are opaque names, granted whole, never interpreted by this crate). Invalidates the account's other
-    /// sessions, the same B15 privilege-change rule
+    /// sessions, the same privilege-change rule
     /// [`grant_direct`](Self::grant_direct) follows.
     ///
     /// Requires `auth` to hold `Action::Edit` on `Resource::User` (see [`revoke_direct`](Self::revoke_direct)'s doc for why this
@@ -1084,7 +1168,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// edit users, [`IdentityError::PluginPermissionNotFound`] if `name` has
     /// never been registered by any plugin; [`IdentityError::PluginPermissionOrphaned`]
     /// if it was registered once but the owning plugin has since stopped
@@ -1118,7 +1202,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// edit users, or otherwise as [`IdentityError::Database`].
     pub fn revoke_plugin_permission_from_user(
         &self,
@@ -1142,8 +1226,8 @@ impl IdentityStore {
     ///
     /// Invalidates the sessions of **every** user who currently holds
     /// `role_id`, not just one account: a role's grants are shared by every
-    /// member, so the B15 "sessions rotate on privilege change" rule
-    /// reaches all of them when the role's own grants change.
+    /// member, so the "sessions rotate on privilege change" rule reaches
+    /// all of them when the role's own grants change.
     ///
     /// Requires `auth` to hold `Action::Edit` on `Resource::Role` (see [`revoke_direct`](Self::revoke_direct)'s doc for why this
     /// crate must check it itself): changing what a role grants is a
@@ -1151,7 +1235,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// edit roles, or otherwise as
     /// [`grant_plugin_permission_to_user`](Self::grant_plugin_permission_to_user).
     pub fn grant_plugin_permission_to_role(
@@ -1180,7 +1264,7 @@ impl IdentityStore {
     ///
     /// # Errors
     /// [`IdentityError::PasswordNotSet`] while `auth`'s own account is
-    /// behind the B4 fence, [`IdentityError::Forbidden`] if `auth` may not
+    /// behind the first-run password fence, [`IdentityError::Forbidden`] if `auth` may not
     /// edit roles, or otherwise as [`IdentityError::Database`].
     pub fn revoke_plugin_permission_from_role(
         &self,
@@ -1286,7 +1370,7 @@ mod tests {
     use senken_core::IanaZone;
     use tempfile::TempDir;
 
-    /// Clears the seeded default admin's B4 fence and returns the
+    /// Clears the seeded default admin's first-run password fence and returns the
     /// [`crate::AuthenticatedUser`] needed to call `create_user` — this
     /// module's own minimal counterpart to `crate::tests::admin_auth`
     /// (private to that other test module, so not reusable from here).
@@ -1299,6 +1383,84 @@ mod tests {
             .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
             .unwrap();
         store.resolve_session(token.reveal()).unwrap().unwrap()
+    }
+
+    #[test]
+    fn a_plugin_nobody_has_toggled_reads_back_as_not_yet_set() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+
+        assert_eq!(store.plugin_enabled("okx").unwrap(), None);
+    }
+
+    #[test]
+    fn setting_a_plugins_enabled_flag_and_reading_it_back_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+
+        store.set_plugin_enabled("okx", false).unwrap();
+        assert_eq!(store.plugin_enabled("okx").unwrap(), Some(false));
+
+        // Idempotent re-toggle to the opposite value must overwrite, not
+        // duplicate the row (the primary key already guards this, but the
+        // upsert clause is worth proving directly).
+        store.set_plugin_enabled("okx", true).unwrap();
+        assert_eq!(store.plugin_enabled("okx").unwrap(), Some(true));
+    }
+
+    #[test]
+    fn two_plugins_enabled_flags_are_independent() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+
+        store.set_plugin_enabled("okx", true).unwrap();
+        store.set_plugin_enabled("bybit", false).unwrap();
+
+        assert_eq!(store.plugin_enabled("okx").unwrap(), Some(true));
+        assert_eq!(
+            store.plugin_enabled("bybit").unwrap(),
+            Some(false),
+            "setting okx's flag must not have overwritten bybit's"
+        );
+    }
+
+    #[test]
+    fn seeding_default_plugin_state_on_an_empty_table_enables_only_the_named_ids() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+
+        store
+            .seed_default_plugin_state(&["okx", "simulator"])
+            .unwrap();
+
+        assert_eq!(store.plugin_enabled("okx").unwrap(), Some(true));
+        assert_eq!(store.plugin_enabled("simulator").unwrap(), Some(true));
+        assert_eq!(
+            store.plugin_enabled("bybit").unwrap(),
+            None,
+            "a plugin outside the default set gets no row at all, not an explicit false"
+        );
+    }
+
+    #[test]
+    fn seeding_default_plugin_state_is_a_no_op_once_anyone_has_written_a_row() {
+        let dir = TempDir::new().unwrap();
+        let store = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
+
+        // An admin already made a decision before the seed ever ran (a
+        // migrated database, or a race with an explicit toggle).
+        store.set_plugin_enabled("bybit", true).unwrap();
+
+        store
+            .seed_default_plugin_state(&["okx", "simulator"])
+            .unwrap();
+
+        assert_eq!(
+            store.plugin_enabled("okx").unwrap(),
+            None,
+            "the table was not empty, so the seed must not have run at all"
+        );
+        assert_eq!(store.plugin_enabled("bybit").unwrap(), Some(true));
     }
 
     #[test]

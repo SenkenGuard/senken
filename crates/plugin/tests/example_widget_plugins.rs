@@ -1,6 +1,6 @@
-//! Proves the example widget plugins under `examples/widget-plugins/` in
+//! Proves the example widget plugins under `plugins/widgets/` in
 //! the repository root are not merely plausible-looking — each one is
-//! zipped up exactly the way `examples/widget-plugins/README.md` tells a
+//! zipped up exactly the way `plugins/widgets/README.md` tells a
 //! real plugin author to do it, and installed through the real
 //! [`WidgetPackageStore`], the same entry point `crates/api`'s widget
 //! plugin upload handler calls. If either example ever drifts out of sync
@@ -15,21 +15,21 @@ use senken_plugin::widget_package::{DataSource, PackageStatus, WidgetPackageStor
 use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 
-/// `examples/widget-plugins/<name>`, resolved from this crate's own
+/// `plugins/widgets/<name>`, resolved from this crate's own
 /// manifest directory so the test works regardless of the caller's current
 /// directory.
 fn example_dir(name: &str) -> PathBuf {
     examples_root().join(name)
 }
 
-/// `examples/widget-plugins/`, resolved from this crate's own manifest
+/// `plugins/widgets/`, resolved from this crate's own manifest
 /// directory.
 fn examples_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/widget-plugins")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/widgets")
 }
 
 /// Zips exactly `manifest.json` and `web/index.html` out of `dir` — the
-/// same two files `examples/widget-plugins/README.md`'s packaging
+/// same two files `plugins/widgets/README.md`'s packaging
 /// instructions produce for either example today. A future example with
 /// more assets would extend this list, not switch to a generic recursive
 /// walk, so this test keeps naming exactly what it expects to find rather
@@ -111,7 +111,7 @@ fn the_example_quotes_plugin_installs_and_declares_itself_mock() {
     );
 }
 
-/// `examples/widget-plugins/README.md` also ships a pre-built `<name>.zip`
+/// `plugins/widgets/README.md` also ships a pre-built `<name>.zip`
 /// next to each example, so trying the upload flow needs no `zip` command
 /// at all. This proves that checked-in archive installs for real, through
 /// the same [`WidgetPackageStore`] the upload handler uses — if an editor

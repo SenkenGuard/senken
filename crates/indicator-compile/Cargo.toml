@@ -1,0 +1,38 @@
+[package]
+name = "senken-indicator-compile"
+description = "Runs `cargo build --target wasm32-wasip2` on a user's indicator source, in a generated, dependency-free crate, and reports the result"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+# Deliberately no Senken domain crate: this crate knows nothing about
+# accounts, indicators as a concept, or HTTP — it runs a process and turns
+# its output into a typed result. See the module docs for why that
+# separation is the point of this crate existing on its own.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# `io-util` for `AsyncReadExt` (draining the compiler's piped output) and
+# `macros` for `join!` (draining stdout and stderr at once, so neither
+# pipe can fill and stall the child). Both were reached through another
+# crate's features until this crate was built on its own.
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "sync", "time"] }
+
+[dev-dependencies]
+# Only to load and assert against the component a real compile produces —
+# proving the artifact this crate builds is one `senken-plugin-host` can
+# actually run, not merely that `cargo` exited zero.
+senken-plugin-host = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

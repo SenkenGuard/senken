@@ -280,7 +280,8 @@ pub(crate) async fn set_own_zone(
     Ok(Json(UserZoneResponse { zone: Some(zone) }))
 }
 
-/// `POST /api/set-password` — the one endpoint the B4 fence exempts.
+/// `POST /api/set-password` — the one endpoint the first-run password
+/// fence exempts.
 ///
 /// Two distinct callers reach this, distinguished by whether the shared
 /// [`crate::auth::EndpointPermission::AuthenticatedFenceExempt`] guard
@@ -496,8 +497,8 @@ mod tests {
     const ADMIN_PASSWORD: &str = "correct horse battery staple";
 
     /// A server whose default admin has already set a password — most of
-    /// this module's tests are about the endpoints themselves, not the B4
-    /// fence (which `lib.rs`'s tests own).
+    /// this module's tests are about the endpoints themselves, not the
+    /// first-run password fence (which `lib.rs`'s tests own).
     async fn serve_unfenced() -> (ServerHandle, tempfile::TempDir) {
         let (dir, store) = temp_identity_store();
         store

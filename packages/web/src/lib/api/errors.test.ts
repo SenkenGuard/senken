@@ -88,7 +88,7 @@ describe('getErrorMessage — surfacing the server\'s own ErrorBody.error', () =
 		expect(getErrorMessage(new NetworkError('offline'), 'fallback')).toBe('fallback');
 	});
 
-	test("uses ForbiddenError's own message — B16 point 3: never treated as a login problem", () => {
+	test("uses ForbiddenError's own message — a 403 must never be treated as a login problem", () => {
 		expect(getErrorMessage(new ForbiddenError('you do not have permission to do that'), 'fallback')).toBe(
 			'you do not have permission to do that'
 		);

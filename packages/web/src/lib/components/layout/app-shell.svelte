@@ -28,8 +28,8 @@
 	// a brief flash of the *real* shell before the next heartbeat tick
 	// corrects it, but never the reverse (there is no path that shows the
 	// shell to someone this component has already determined has no
-	// credential at all) — the case B4/B8 actually cares about ("do not
-	// assume access before checking") is closed; the residual window is a
+	// credential at all) — the case this gate actually cares about, never
+	// assuming access before checking, is closed; the residual window is a
 	// consequence of authentication being fundamentally asynchronous, not a
 	// gap in this gate.
 	import type { Snippet } from 'svelte';
@@ -61,7 +61,7 @@
 	const isLoginRoute = $derived(page.url.pathname === '/login');
 	const authorized = $derived(sessionStore.hasCredential);
 
-	// B16 point 2: "route to login exactly once" — wired here, once, so a
+	// Routing to login must happen exactly once — wired here, once, so a
 	// session that dies while the user is on *any* route (not just ones that
 	// happen to import the login page) still gets routed there. `AppShell`
 	// mounts exactly once for the whole app (it is the root layout's only

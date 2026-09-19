@@ -86,10 +86,10 @@
 	 * to guess something the server already knows. */
 	const form = $derived(needsSetup === true ? 'setup' : 'login');
 
-	// B15: "the client must warn when the chosen server is neither loopback
-	// nor `https`... in the UI, not just a log line" — and per the brief,
-	// prominently here, not only as `connection-status.svelte`'s small
-	// top-bar badge (which this route doesn't even render — see
+	// The client must warn when the chosen server is neither loopback nor
+	// `https`, prominently in the UI and not just a log line — and
+	// prominently here specifically, not only as `connection-status.svelte`'s
+	// small top-bar badge (which this route doesn't even render — see
 	// `app-shell.svelte`).
 	const insecure = $derived(!isSecureConnection(activeServer()));
 

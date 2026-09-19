@@ -1,8 +1,8 @@
 <script lang="ts">
 	// The header + body frame every placed dashboard widget sits in.
 	//
-	// Two properties the plan is explicit about, both enforced here rather
-	// than left to whatever widget happens to be mounted inside:
+	// Two properties enforced here rather than left to whatever widget
+	// happens to be mounted inside:
 	//
 	// - The mockup label is drawn by this host frame, never by the widget
 	//   itself — so a widget can never suppress its own "this is a fixture"
@@ -53,18 +53,21 @@
 	data-dashboard-widget-frame
 	data-placeholder={isPlaceholder ? 'true' : undefined}
 >
-	<div class="flex h-8 flex-none items-center justify-between border-b border-ink/7 px-[11px]">
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="flex h-8 flex-none touch-none items-center justify-between border-b border-ink/7 px-[11px] cursor-grab active:cursor-grabbing"
+		onpointerdown={onDragHandlePointerDown}
+	>
 		<div class="flex min-w-0 items-center gap-2.5">
 			<button
 				type="button"
-				class="flex size-5 flex-none cursor-grab items-center justify-center text-dim active:cursor-grabbing"
+				class="flex size-5 flex-none items-center justify-center text-dim"
 				aria-label={`Move ${title}`}
-				onpointerdown={onDragHandlePointerDown}
 			>
 				<GripIcon class="size-3" />
 			</button>
 			<span
-				class="flex-none text-[10.5px] font-semibold tracking-[0.2em] whitespace-nowrap text-secondary-foreground uppercase"
+				class="flex-none select-none text-[10.5px] font-semibold tracking-[0.2em] whitespace-nowrap text-secondary-foreground uppercase"
 			>
 				{title}
 			</span>
@@ -80,8 +83,9 @@
 		</div>
 		<button
 			type="button"
-			class="flex size-5 flex-none items-center justify-center text-dim"
+			class="flex size-7 flex-none items-center justify-center text-dim"
 			aria-label={`Remove ${title}`}
+			onpointerdown={(event) => event.stopPropagation()}
 			onclick={onRemove}
 		>
 			<XIcon class="size-3" />
@@ -106,7 +110,13 @@
 		<button
 			type="button"
 			class={cn(
-				'absolute right-0.5 bottom-0.5 flex size-4 cursor-nwse-resize items-center justify-center text-dim/60'
+				// 20x20 px, not the 28 px minimum touch target this app otherwise
+				// requires for interactive controls: this handle sits inside the
+				// widget's own body, in its corner — growing it to 28 px would eat
+				// into content every widget this small (`position-size`'s min size
+				// is 4x5 cells) still needs to show. Stated exception, not an
+				// oversight.
+				'absolute right-0.5 bottom-0.5 flex size-5 touch-none cursor-nwse-resize items-center justify-center text-dim/60'
 			)}
 			aria-label={`Resize ${title}`}
 			onpointerdown={onResizeHandlePointerDown}

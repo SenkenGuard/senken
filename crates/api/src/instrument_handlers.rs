@@ -122,6 +122,7 @@ mod tests {
                 version: "0".to_owned(),
                 description: String::new(),
                 permissions: Vec::new(),
+                contributes: Vec::new(),
             }
         }
 

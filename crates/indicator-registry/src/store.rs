@@ -1,5 +1,5 @@
-//! [`RegistryStore`]: publish, search, install, revoke, and claim a handle
-//! for indicator-lang source.
+//! [`RegistryStore`]: publish, search, install, and revoke a published
+//! indicator's source.
 //!
 //! Follows the same guarded-query shape `senken_notes`/`senken_dashboard`
 //! establish — an [`AuthenticatedUser`] and [`AuthenticatedUser::authorize`]
@@ -14,9 +14,20 @@
 //! [`RegistryStore::list_mine`] (an author's own view of what they have
 //! published) go through a permission check, and `list_mine`'s total obeys
 //! [`Scope`] the same way every other listing in this workspace does.
-//! [`RegistryStore::set_handle`]/[`RegistryStore::get_handle`] take a bare
-//! [`UserId`], not an [`AuthenticatedUser`] — choosing your own address
-//! needs no grant, see their own docs for why.
+//!
+//! # This module is not wired to anything right now
+//!
+//! Publishing to a public registry, and the handle a human would address
+//! one by, are both out of scope for the MVP a trader actually asked for
+//! (write Rust, compile it, use it on your own charts). Nothing in
+//! `senken-api` mounts [`RegistryStore::publish`]/[`Self::install`]
+//! any more, and no source published here is validated by a compiler —
+//! `publish` and `install` stay compiled and tested for whenever a
+//! registry is designed again, but neither runs as a request from a real
+//! user today. `senken-identity`'s own `registry_handles` table is
+//! untouched by that change: it still exists, still migrates forward, and
+//! `publish`'s own handle gate still checks it — there is simply no
+//! surface left that can ever populate it.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -25,7 +36,6 @@ use senken_acl::{Action, Resource, Scope};
 use senken_identity::{AuthenticatedUser, IdentityError, IdentityStore, Page, UserId};
 
 use crate::error::RegistryError;
-use crate::handle::Handle;
 use crate::id::IndicatorEntryId;
 use crate::version;
 
@@ -64,9 +74,9 @@ pub struct IndicatorEntry {
     pub namespace: UserId,
     /// See [`IndicatorSummary::name`].
     pub name: String,
-    /// The indicator-lang source exactly as published — never a compiled
-    /// artifact. See this crate's README for why source, not a binary, is
-    /// what this registry ever stores or serves.
+    /// The source exactly as published — never a compiled artifact. See
+    /// this crate's README for why source, not a binary, is what this
+    /// registry ever stores or serves.
     pub source: String,
     /// See [`IndicatorSummary::language_version`].
     pub language_version: String,
@@ -77,25 +87,25 @@ pub struct IndicatorEntry {
 }
 
 /// The result of a successful install: the source that was fetched, and
-/// the WebAssembly component this host just compiled from it — proof that
-/// "compiled on the installing machine" actually happened, not merely a
-/// promise.
+/// the metadata that came with it.
+///
+/// Carries no compiled artifact: this crate has no compiler of its own to
+/// produce one (see this module's own docs for why installing does not run
+/// one today), so there is nothing honest to put in that field until
+/// installing is redesigned around whatever actually turns this source
+/// into something runnable next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledIndicator {
     /// See [`IndicatorSummary::namespace`].
     pub namespace: UserId,
     /// See [`IndicatorSummary::name`].
     pub name: String,
-    /// The indicator-lang source this component was compiled from.
+    /// The source exactly as published.
     pub source: String,
     /// The language version this component was published against, already
     /// checked against [`version::HOST_LANGUAGE_VERSION`] by the time this
     /// value exists.
     pub language_version: String,
-    /// The `compiled-indicator` component `senken_indicator_lang::compile`
-    /// produced from `source`, just now, on this host — never fetched from
-    /// anywhere.
-    pub component: Vec<u8>,
 }
 
 /// Guarded and public queries over the indicator registry.
@@ -130,23 +140,20 @@ impl RegistryStore {
     /// `namespace` must equal `auth.user_id()` — `ensure_owns_namespace`
     /// is the check that closes author impersonation, the whole reason a
     /// registry entry is namespaced by account rather than by a free-text
-    /// name a publisher chooses. `namespace` must also already have a
-    /// [`Handle`] claimed via [`set_handle`](Self::set_handle) — a
-    /// registry entry addressable only by raw account id is not
-    /// meaningfully published, see this crate's module docs — checked
-    /// before `source` is even compiled. `source` is then compiled right
-    /// here, with `senken_indicator_lang::compile`, before anything is
-    /// written: a registry never stores source nobody has confirmed
-    /// actually compiles.
+    /// name a publisher chooses. `namespace` must also already hold a
+    /// handle in `registry_handles` — a registry entry addressable only by
+    /// raw account id is not meaningfully published — but nothing in this
+    /// build can ever claim one (see this module's own docs), so this
+    /// check can no longer pass for anyone. `source` itself is stored
+    /// as-is: this crate has no compiler to validate it against any more.
     ///
     /// # Errors
     /// [`RegistryError::Identity`] if `auth` may not publish at all;
     /// [`RegistryError::ForeignNamespace`] if `namespace` is not `auth`'s
-    /// own; [`RegistryError::HandleNotSet`] if `namespace` has not claimed
-    /// a handle yet; [`RegistryError::InvalidName`] for an empty name or
-    /// one containing `/` (which would make `{namespace}/{name}`
-    /// ambiguous to parse back apart); [`RegistryError::InvalidSource`] if
-    /// `source` does not compile; otherwise as [`RegistryError::Database`].
+    /// own; [`RegistryError::HandleNotSet`] always, for the reason above;
+    /// [`RegistryError::InvalidName`] for an empty name or one containing
+    /// `/` (which would make `{namespace}/{name}` ambiguous to parse back
+    /// apart); otherwise as [`RegistryError::Database`].
     pub fn publish(
         &self,
         auth: &AuthenticatedUser,
@@ -190,11 +197,6 @@ impl RegistryStore {
         if !handle_chosen {
             return Err(RegistryError::HandleNotSet);
         }
-
-        // Compiled for validation only — the bytes are discarded. A fresh
-        // compile also runs on every install, which is the artifact that
-        // is actually ever loaded; see this crate's README.
-        senken_indicator_lang::compile(source)?;
 
         let now = now_unix();
         if let Some(id) = existing_id {
@@ -368,22 +370,19 @@ impl RegistryStore {
         .ok_or(RegistryError::NotFound)
     }
 
-    /// Installs one published indicator: fetches its current source,
+    /// Installs one published indicator: fetches its current source and
     /// checks its recorded language version against
-    /// [`version::HOST_LANGUAGE_VERSION`], and — only once that check
-    /// passes — compiles it with `senken_indicator_lang::compile`, right
-    /// here, on this host. Requires no account: see this crate's README
-    /// for why publishing and installing sit on opposite sides of that
-    /// line.
+    /// [`version::HOST_LANGUAGE_VERSION`]. Requires no account: see this
+    /// crate's README for why publishing and installing sit on opposite
+    /// sides of that line.
+    ///
+    /// Does not compile the source — see this module's own docs for why
+    /// this crate has nothing to compile it with any more.
     ///
     /// # Errors
     /// [`RegistryError::NotFound`] if no entry exists at `namespace/name`;
     /// [`RegistryError::LanguageVersionTooNew`] naming both versions if
-    /// this host is too old for it; [`RegistryError::InvalidSource`] if the
-    /// stored source no longer compiles against this host's language
-    /// (which should not happen for a source this same check already
-    /// admitted at publish time, but is not assumed); otherwise as
-    /// [`RegistryError::Database`].
+    /// this host is too old for it; otherwise as [`RegistryError::Database`].
     pub fn install(
         &self,
         namespace: UserId,
@@ -391,13 +390,11 @@ impl RegistryStore {
     ) -> Result<InstalledIndicator, RegistryError> {
         let entry = self.get(namespace, name)?;
         version::ensure_host_supports(&entry.language_version)?;
-        let component = senken_indicator_lang::compile(&entry.source)?;
         Ok(InstalledIndicator {
             namespace: entry.namespace,
             name: entry.name,
             source: entry.source,
             language_version: entry.language_version,
-            component,
         })
     }
 
@@ -437,100 +434,6 @@ impl RegistryStore {
             return Err(RegistryError::NotFound);
         }
         Ok(())
-    }
-
-    /// Claims, or replaces, the calling account's registry handle — the
-    /// human-readable address other users type instead of its raw account
-    /// id (see [`crate::Handle`]'s own module docs). Deliberately takes a
-    /// bare [`UserId`], not an [`AuthenticatedUser`]: choosing your own
-    /// address needs no grant, the same reasoning
-    /// `senken_identity::IdentityStore::set_zone` documents for itself,
-    /// and this is safe only because every caller supplies a `UserId` it
-    /// already obtained from a resolved session, never one taken from a
-    /// request parameter naming someone else.
-    ///
-    /// Checked-then-inserted against another account already holding
-    /// `handle`, same as `senken_identity::IdentityStore::create_user`
-    /// checks `email` — the database's own `UNIQUE` constraint on
-    /// `registry_handles.handle` is what actually closes the race this
-    /// alone cannot, so a caller never needs to distinguish "lost the
-    /// database-level race" from "checked and it was already taken".
-    ///
-    /// # Errors
-    /// [`RegistryError::HandleTaken`] if another account already holds
-    /// `handle`; otherwise as [`RegistryError::Database`].
-    pub fn set_handle(&self, user_id: UserId, handle: &Handle) -> Result<(), RegistryError> {
-        let conn = self.lock();
-        let held_by: Option<UserId> = conn
-            .query_row(
-                "SELECT owner_id FROM registry_handles WHERE handle = ?1",
-                params![handle],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if held_by.is_some_and(|owner| owner != user_id) {
-            return Err(RegistryError::HandleTaken(handle.as_str().to_owned()));
-        }
-
-        conn.execute(
-            "INSERT INTO registry_handles (owner_id, handle, created_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT (owner_id) DO UPDATE SET handle = excluded.handle",
-            params![user_id, handle, now_unix()],
-        )
-        .map_err(|error| match &error {
-            // The database's own `UNIQUE` constraint on `handle` closing
-            // the race the check above cannot: two concurrent callers
-            // both pass the check, then one loses here. Translated to the
-            // exact same error a caller who lost the check itself gets,
-            // never a raw constraint-violation message.
-            rusqlite::Error::SqliteFailure(sqlite_error, _)
-                if sqlite_error.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
-                RegistryError::HandleTaken(handle.as_str().to_owned())
-            }
-            _ => RegistryError::Database(error),
-        })?;
-        Ok(())
-    }
-
-    /// The registry handle `user_id` has claimed, or `None` if it never
-    /// has. Deliberately unguarded, for the same reason
-    /// [`set_handle`](Self::set_handle) is: reading your own address needs
-    /// no grant.
-    ///
-    /// # Errors
-    /// [`RegistryError::Database`] on a storage failure.
-    pub fn get_handle(&self, user_id: UserId) -> Result<Option<Handle>, RegistryError> {
-        let conn = self.lock();
-        let handle = conn
-            .query_row(
-                "SELECT handle FROM registry_handles WHERE owner_id = ?1",
-                params![user_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(handle)
-    }
-
-    /// Resolves a claimed handle back to the account that holds it — the
-    /// address a human types (`@alice/supertrend`), translated to the
-    /// canonical [`UserId`] every stored entry and every authorisation
-    /// check in this module actually reasons about. Public, like
-    /// [`search`](Self::search): resolving an address to install from it
-    /// needs no account.
-    ///
-    /// # Errors
-    /// [`RegistryError::HandleNotFound`] if no account has claimed
-    /// `handle`; otherwise as [`RegistryError::Database`].
-    pub fn resolve_handle(&self, handle: &Handle) -> Result<UserId, RegistryError> {
-        let conn = self.lock();
-        conn.query_row(
-            "SELECT owner_id FROM registry_handles WHERE handle = ?1",
-            params![handle],
-            |row| row.get(0),
-        )
-        .optional()?
-        .ok_or_else(|| RegistryError::HandleNotFound(handle.as_str().to_owned()))
     }
 }
 
@@ -596,16 +499,14 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use senken_acl::{Action, Grant, Resource, Scope};
-    use senken_identity::{AuthenticatedUser, IdentityError, IdentityStore};
+    use senken_identity::{AuthenticatedUser, IdentityError, IdentityStore, UserId};
     use tempfile::TempDir;
 
     use super::{RegistryError, RegistryStore};
-    use crate::handle::Handle;
 
-    /// A minimal indicator-lang program every publish test uses — this
-    /// crate cares that publishing and installing round-trip *some* valid
-    /// source correctly, not about the language's own surface, which
-    /// `senken-indicator-lang`'s own test suite already covers.
+    /// A minimal source string every publish test uses — this crate never
+    /// validates it (see this module's own docs for why), so any non-empty
+    /// text proves the same thing a real program would.
     const VALID_SOURCE: &str = "let fast = ema(close, 5)\nplot fast\n";
 
     fn temp_stores() -> (TempDir, IdentityStore, RegistryStore) {
@@ -613,6 +514,24 @@ mod tests {
         let identity = IdentityStore::open(dir.path().join("accounts.db")).unwrap();
         let registry = RegistryStore::new(&identity);
         (dir, identity, registry)
+    }
+
+    /// Inserts a `registry_handles` row directly through SQL, standing in
+    /// for the removed `RegistryStore::set_handle` — this crate's tests
+    /// still need a way to satisfy `publish`'s handle gate to exercise
+    /// everything downstream of it, even though nothing in production
+    /// code can populate this table any more (see this module's own
+    /// docs).
+    fn claim_handle_for_test(identity: &IdentityStore, user_id: UserId, handle: &str) {
+        identity
+            .shared_connection()
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO registry_handles (owner_id, handle, created_at) VALUES (?1, ?2, 0)",
+                rusqlite::params![user_id, handle],
+            )
+            .unwrap();
     }
 
     const ADMIN_TEST_PASSWORD: &str = "correct horse battery staple";
@@ -634,12 +553,11 @@ mod tests {
     /// Creates an ordinary account with exactly the grants a real
     /// "Indicator Author" role would carry — View/Create/Edit/Delete on
     /// `IndicatorRegistry`, at `Scope::Own` — and claims a registry handle
-    /// derived from `email`'s local part, so this fixture already
-    /// satisfies [`RegistryStore::publish`]'s handle gate the same way a
-    /// real onboarded author would.
+    /// derived from `email`'s local part via [`claim_handle_for_test`], so
+    /// this fixture already satisfies [`RegistryStore::publish`]'s handle
+    /// gate, which nothing in production code can satisfy any more.
     fn author(
         identity: &IdentityStore,
-        registry: &RegistryStore,
         admin: &AuthenticatedUser,
         email: &str,
     ) -> AuthenticatedUser {
@@ -661,18 +579,16 @@ mod tests {
                 .unwrap();
         }
         let local_part = email.split('@').next().unwrap();
-        registry
-            .set_handle(user_id, &Handle::new(local_part).unwrap())
-            .unwrap();
+        claim_handle_for_test(identity, user_id, local_part);
         let (_uid, token) = identity.login(email, "a very long password").unwrap();
         identity.resolve_session(token.reveal()).unwrap().unwrap()
     }
 
     #[test]
-    fn publishing_then_installing_from_a_different_account_compiles_a_real_component() {
+    fn publishing_then_installing_from_a_different_account_round_trips_the_source() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice@example.com");
+        let alice = author(&identity, &admin, "alice@example.com");
 
         registry
             .publish(&alice, alice.user_id(), "rsi-cross", VALID_SOURCE)
@@ -682,23 +598,19 @@ mod tests {
         // takes no account at all.
         let installed = registry.install(alice.user_id(), "rsi-cross").unwrap();
         assert_eq!(installed.name, "rsi-cross");
-        assert!(
-            !installed.component.is_empty(),
-            "install must produce real compiled bytes, not a placeholder"
+        assert_eq!(installed.namespace, alice.user_id());
+        assert_eq!(
+            installed.source, VALID_SOURCE,
+            "install must fetch exactly the source that was published"
         );
-        // A well-formed WebAssembly component starts with the standard
-        // 4-byte magic number, the same fact `senken-indicator-lang`'s own
-        // tests check on `compile`'s output — proof this is a real
-        // artifact, not an echo of the source.
-        assert_eq!(&installed.component[0..4], b"\0asm");
     }
 
     #[test]
     fn two_authors_may_publish_the_same_name_in_their_own_namespaces() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice2@example.com");
-        let bob = author(&identity, &registry, &admin, "bob2@example.com");
+        let alice = author(&identity, &admin, "alice2@example.com");
+        let bob = author(&identity, &admin, "bob2@example.com");
 
         registry
             .publish(&alice, alice.user_id(), "macd-plus", VALID_SOURCE)
@@ -722,8 +634,8 @@ mod tests {
     fn publishing_into_another_authors_namespace_is_refused() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice3@example.com");
-        let bob = author(&identity, &registry, &admin, "bob3@example.com");
+        let alice = author(&identity, &admin, "alice3@example.com");
+        let bob = author(&identity, &admin, "bob3@example.com");
 
         let error = registry
             .publish(&alice, bob.user_id(), "hijack", VALID_SOURCE)
@@ -737,33 +649,10 @@ mod tests {
     }
 
     #[test]
-    fn a_source_that_does_not_compile_is_refused_at_publish_time() {
-        let (_dir, identity, registry) = temp_stores();
-        let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice4@example.com");
-
-        let error = registry
-            .publish(
-                &alice,
-                alice.user_id(),
-                "broken",
-                "plot this is not a real program",
-            )
-            .unwrap_err();
-        assert!(matches!(error, RegistryError::InvalidSource(_)));
-
-        let error = registry.get(alice.user_id(), "broken").unwrap_err();
-        assert!(
-            matches!(error, RegistryError::NotFound),
-            "a rejected publish must not leave a partial row behind"
-        );
-    }
-
-    #[test]
     fn an_indicator_that_needs_a_newer_language_version_is_refused_with_a_named_message() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice5@example.com");
+        let alice = author(&identity, &admin, "alice5@example.com");
         registry
             .publish(&alice, alice.user_id(), "future", VALID_SOURCE)
             .unwrap();
@@ -797,7 +686,7 @@ mod tests {
     fn republishing_the_same_name_updates_the_source_in_place_not_a_second_row() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice6@example.com");
+        let alice = author(&identity, &admin, "alice6@example.com");
 
         let first_id = registry
             .publish(&alice, alice.user_id(), "iterating", VALID_SOURCE)
@@ -819,8 +708,8 @@ mod tests {
     fn a_second_authors_entries_are_invisible_and_not_counted_in_list_mines_total() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice7@example.com");
-        let bob = author(&identity, &registry, &admin, "bob7@example.com");
+        let alice = author(&identity, &admin, "alice7@example.com");
+        let bob = author(&identity, &admin, "bob7@example.com");
 
         registry
             .publish(&alice, alice.user_id(), "alices-own", VALID_SOURCE)
@@ -848,8 +737,8 @@ mod tests {
     fn a_superadmin_sees_every_authors_entries_in_list_mine() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice8@example.com");
-        let bob = author(&identity, &registry, &admin, "bob8@example.com");
+        let alice = author(&identity, &admin, "alice8@example.com");
+        let bob = author(&identity, &admin, "bob8@example.com");
         registry
             .publish(&alice, alice.user_id(), "a", VALID_SOURCE)
             .unwrap();
@@ -893,7 +782,7 @@ mod tests {
     fn searching_and_installing_need_no_account_at_all() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice9@example.com");
+        let alice = author(&identity, &admin, "alice9@example.com");
         registry
             .publish(&alice, alice.user_id(), "public-one", VALID_SOURCE)
             .unwrap();
@@ -909,7 +798,7 @@ mod tests {
     fn an_empty_or_slash_containing_name_is_rejected() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice10@example.com");
+        let alice = author(&identity, &admin, "alice10@example.com");
 
         let error = registry
             .publish(&alice, alice.user_id(), "", VALID_SOURCE)
@@ -999,14 +888,17 @@ mod tests {
     }
 
     #[test]
-    fn claiming_a_handle_then_publishing_succeeds() {
+    fn a_handle_row_claimed_directly_through_sql_satisfies_the_publish_gate() {
+        // `RegistryStore` has no method left that can ever write a
+        // `registry_handles` row (`set_handle` was removed along with the
+        // rest of the account-handle feature) — this proves `publish`'s
+        // own gate still reads that table correctly, via the one way
+        // left to populate it.
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
         let alice = author_with_no_handle(&identity, &admin, "alice12@example.com");
 
-        registry
-            .set_handle(alice.user_id(), &Handle::new("alice12").unwrap())
-            .unwrap();
+        claim_handle_for_test(&identity, alice.user_id(), "alice12");
 
         registry
             .publish(&alice, alice.user_id(), "now-addressable", VALID_SOURCE)
@@ -1014,74 +906,10 @@ mod tests {
     }
 
     #[test]
-    fn a_handle_resolves_back_to_the_account_that_claimed_it() {
-        let (_dir, identity, registry) = temp_stores();
-        let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice13@example.com");
-
-        let resolved = registry
-            .resolve_handle(&Handle::new("alice13").unwrap())
-            .unwrap();
-        assert_eq!(resolved, alice.user_id());
-        assert_eq!(
-            registry.get_handle(alice.user_id()).unwrap(),
-            Some(Handle::new("alice13").unwrap())
-        );
-    }
-
-    #[test]
-    fn resolving_an_unclaimed_handle_fails_with_a_named_handle() {
-        let (_dir, _identity, registry) = temp_stores();
-        let error = registry
-            .resolve_handle(&Handle::new("nobody-here").unwrap())
-            .unwrap_err();
-        match error {
-            RegistryError::HandleNotFound(handle) => assert_eq!(handle, "nobody-here"),
-            other => panic!("expected HandleNotFound, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_second_account_cannot_claim_a_handle_the_first_already_holds() {
-        let (_dir, identity, registry) = temp_stores();
-        let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice14@example.com");
-        let bob = author_with_no_handle(&identity, &admin, "bob14@example.com");
-
-        // `author` already claimed `alice14` for alice; bob tries to claim
-        // the exact same text.
-        let error = registry
-            .set_handle(bob.user_id(), &Handle::new("alice14").unwrap())
-            .unwrap_err();
-        assert!(matches!(error, RegistryError::HandleTaken(_)));
-
-        // Unaffected: alice's own handle still resolves to alice, not bob.
-        assert_eq!(
-            registry
-                .resolve_handle(&Handle::new("alice14").unwrap())
-                .unwrap(),
-            alice.user_id()
-        );
-    }
-
-    #[test]
-    fn setting_the_same_handle_you_already_hold_is_a_harmless_no_op() {
-        let (_dir, identity, registry) = temp_stores();
-        let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice15@example.com");
-
-        // `author` already claimed `alice15`; re-claiming it must not be
-        // treated as a collision with yourself.
-        registry
-            .set_handle(alice.user_id(), &Handle::new("alice15").unwrap())
-            .unwrap();
-    }
-
-    #[test]
     fn an_author_can_delete_their_own_published_indicator() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice16@example.com");
+        let alice = author(&identity, &admin, "alice16@example.com");
         registry
             .publish(&alice, alice.user_id(), "revocable", VALID_SOURCE)
             .unwrap();
@@ -1098,7 +926,7 @@ mod tests {
     fn deleting_a_nonexistent_entry_reports_not_found() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice17@example.com");
+        let alice = author(&identity, &admin, "alice17@example.com");
 
         let error = registry
             .delete(&alice, alice.user_id(), "never-published")
@@ -1110,8 +938,8 @@ mod tests {
     fn deleting_another_authors_indicator_is_refused_and_leaves_it_installable() {
         let (_dir, identity, registry) = temp_stores();
         let admin = admin_auth(&identity);
-        let alice = author(&identity, &registry, &admin, "alice18@example.com");
-        let bob = author(&identity, &registry, &admin, "bob18@example.com");
+        let alice = author(&identity, &admin, "alice18@example.com");
+        let bob = author(&identity, &admin, "bob18@example.com");
         registry
             .publish(&alice, alice.user_id(), "alices-only", VALID_SOURCE)
             .unwrap();

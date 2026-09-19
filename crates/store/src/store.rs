@@ -141,9 +141,9 @@ impl Store {
     /// only, taking an exclusive per-series lock. Never on the read
     /// path.").
     ///
-    /// No compaction logic exists yet — this crate stops at M5 (`Store`
+    /// No compaction logic exists yet (`Store`
     /// does not merge small files into larger ones; extending coverage
-    /// only ever adds one file and unlinks superseded ones, per design
+    /// only ever adds one file and unlinks superseded ones).
     /// This method reserves the *shape* a future compactor and any
     /// caller that must never run concurrently with one already agree on:
     /// two calls naming the same series (same directory, so same

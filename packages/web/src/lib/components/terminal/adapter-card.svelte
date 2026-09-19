@@ -1,17 +1,16 @@
 <script lang="ts">
-	// Adapters view's card grid: adapter
-	// header + status pill, supported-symbol chips, the accounts attached
-	// through this adapter (each with a `live-dot` status indicator), and an
-	// attach/connect footer row. Reuses `ui/card` and `ui/badge` per the reference;
-	// `ui/live-dot` replaces the reference's raw 5px dot div.
+	// Adapters view's card grid: adapter header + status pill,
+	// supported-symbol chips, the accounts attached through this adapter
+	// (each with a `live-dot` status indicator), and an attach/connect
+	// footer row. Reuses `ui/card` and `ui/badge`; `ui/live-dot` replaces a
+	// raw 5px dot div.
 	//
-	// Correction to this file's earlier P4 comment: the
-	// footer attach/connect row does *not* open the command palette in the
-	// reference — `a.onAttach` (line 837) calls `attachAccount(a.key)`
-	// directly (line 2958), same as `onSelectAccount` below. Only the page's
-	// own top-bar "ATTACH ACCOUNT" button (`openAdapterCmd`, line 731) opens
-	// the palette, in `'adapter'` mode, to *choose* which adapter to attach
-	// next — this per-card button already knows which adapter it is.
+	// Correction to this file's earlier comment: the footer attach/connect
+	// row does *not* open the command palette — it calls
+	// `attachAccount(a.key)` directly, same as `onSelectAccount` below. Only
+	// the page's own top-bar "ATTACH ACCOUNT" button (`openAdapterCmd`)
+	// opens the palette, in `'adapter'` mode, to *choose* which adapter to
+	// attach next — this per-card button already knows which adapter it is.
 	import { cn } from '$lib/utils.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';

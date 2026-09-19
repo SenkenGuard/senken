@@ -79,6 +79,21 @@ pub enum Resource {
     /// "how much disk this install is using", even though both are
     /// properties of the whole server rather than any one account.
     WidgetPlugin,
+    /// An indicator a user wrote and compiled themselves; the source is
+    /// theirs, the compiled artifact is derived from it.
+    UserIndicator,
+    /// A plugin — static or a package — in the unified `plugins/` system:
+    /// installing, updating, enabling/disabling, changing its settings, or
+    /// removing one. Distinct from `WidgetPlugin` (its own narrower,
+    /// widget-only resource that predates this one and stays wired to the
+    /// legacy `/api/widget-plugins/*` routes for one wave): installing
+    /// arbitrary code that runs on this server — a venue's network access,
+    /// a trade adapter, a dashboard widget's iframe — is one administrative
+    /// concern, and mixing "widget packages" and "everything else a plugin
+    /// can be" into two resources would just mean two places to check the
+    /// same authority. **Reading** the plugin list is not admin-only: every
+    /// authenticated user needs to know which venues are active.
+    Plugin,
 }
 
 #[cfg(test)]

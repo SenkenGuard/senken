@@ -875,6 +875,10 @@ impl Plugin for SimulatorPlugin {
             description: "Paper trading against Senken's own prices, on every instrument"
                 .to_owned(),
             permissions: Vec::new(),
+            contributes: senken_plugin::parse_static_contributions(include_str!(
+                "../senken-plugin.json"
+            ))
+            .expect("senken-plugin.json is well-formed"),
         }
     }
 

@@ -16,6 +16,11 @@ workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+# Parsing shared with `wasm/` (the `wasm32-wasip2` component that now
+# serves this venue's spot catalog and bars) — see that crate's own
+# `Cargo.toml` for why it is a plain path dependency rather than a
+# `workspace.dependencies` entry.
+bybit-core = { path = "core" }
 senken-core = { workspace = true }
 senken-marketdata = { workspace = true }
 senken-plugin = { workspace = true, features = ["http"] }
@@ -28,5 +33,10 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+# Loads the built `bybit-venue` component for the wasm/native equivalence
+# tests (`tests/wasm_parity.rs`) — the same crate `crates/plugin-host`'s
+# own `tests/venue.rs` uses for the generic fixture this one is modelled
+# on.
+senken-plugin-host = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 wiremock = { workspace = true }

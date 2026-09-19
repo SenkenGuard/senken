@@ -47,8 +47,8 @@ pub(crate) enum EndpointPermission {
     /// (a browser cannot set an `Authorization` header on a WebSocket handshake, so that endpoint authenticates itself via the ticket in its query string instead of this middleware).
     Public,
     /// A valid session is required if one is presented, but its absence is
-    /// allowed through to the handler — and the B4 fence is **not**
-    /// checked here even when a session is presented. Used by exactly one
+    /// allowed through to the handler — and the first-run password fence
+    /// is **not** checked here even when a session is presented. Used by exactly one
     /// endpoint, `set-password`: the anonymous first-run case has no
     /// session to present at all, and the fenced case is the one this
     /// endpoint exists to clear. The handler itself decides which case it
@@ -115,8 +115,9 @@ fn internal_error(source: &senken_identity::IdentityError) -> Response {
 }
 
 /// The middleware [`mount`] attaches to every route: resolves the session
-/// (if any is required and presented), enforces the B4 fence for every
-/// permission except [`EndpointPermission::AuthenticatedFenceExempt`], and
+/// (if any is required and presented), enforces the first-run password
+/// fence for every permission except
+/// [`EndpointPermission::AuthenticatedFenceExempt`], and
 /// inserts an [`AuthContext`] extension the handler reads back — all before
 /// the handler's own body runs at all ("the runtime checks before dispatch, so a handler cannot forget").
 async fn enforce_permission(

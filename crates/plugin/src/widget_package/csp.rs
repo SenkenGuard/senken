@@ -28,7 +28,7 @@
 //!   *host* builds, so the host can write the matching `nonce="..."`
 //!   attribute into the very tag it is templating. A widget bundle here is
 //!   the opposite: an already-built, static file a plugin author zipped up
-//!   with no build step at all (see `examples/widget-plugins/README.md`).
+//!   with no build step at all (see `plugins/widgets/README.md`).
 //!   Making a nonce match would mean this server rewriting a third party's
 //!   markup on every response to splice an attribute into whatever
 //!   `<script>`/`<style>` tag it finds — a second, home-grown HTML mutation
@@ -52,7 +52,7 @@
 //!
 //! A hash source sidesteps both problems for the shape every widget bundle
 //! actually has today: a single static document with its script and style
-//! inlined directly into it (`examples/widget-plugins/example-clock` and
+//! inlined directly into it (`plugins/widgets/example-clock` and
 //! `example-quotes` both look exactly like this). [`content_security_policy`]
 //! reads the exact inline content HTML5 itself defines for a `<script>` or
 //! `<style>` element — see this module's own private `raw_text_contents`
@@ -118,7 +118,7 @@ pub fn content_security_policy(html: &str) -> String {
 /// `<tag>...</tag>` this document contains, in the order they appear.
 ///
 /// Deliberately narrow: this matches only the exact `<script>`/`<style>`
-/// form `examples/widget-plugins/README.md` tells a plugin author to write
+/// form `plugins/widgets/README.md` tells a plugin author to write
 /// (no build tooling, no attributes). A tag with an attribute — `<script
 /// type="module">`, `<script src="...">` — is not matched at all, so it
 /// contributes no hash and the browser blocks it, which is the safe
@@ -247,5 +247,29 @@ mod tests {
         for html in ["<script>x</script>", "<p>no script or style at all</p>", ""] {
             assert!(content_security_policy(html).contains("connect-src 'none'"));
         }
+    }
+
+    #[test]
+    fn the_example_clock_widgets_html_passes_its_own_content_security_policy() {
+        // Reads the same file the built-in Clock package compiles in
+        // (`senken_plugin::widget_package::store`'s own `BUILTIN_INDEX_HTML`)
+        // directly, rather than importing that private constant — proving
+        // that this platform's CSP still authorises the widget's own
+        // `<script>`/`<style>` after the theme-handling code this plan
+        // added to it, i.e. that both tags stayed in the bare,
+        // attribute-free form `hash_sources` understands.
+        let html = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../plugins/widgets/example-clock/web/index.html"
+        ));
+        let policy = content_security_policy(html);
+        assert!(
+            policy.contains("script-src 'sha256-"),
+            "the clock widget's inline <script> must still earn a hash source: {policy}"
+        );
+        assert!(
+            policy.contains("style-src 'sha256-"),
+            "the clock widget's inline <style> must still earn a hash source: {policy}"
+        );
     }
 }

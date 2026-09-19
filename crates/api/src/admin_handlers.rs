@@ -1,9 +1,9 @@
-//! User, role and grant management: the endpoints Q6 found
-//! missing when it built the Users & Roles settings section against a
-//! server that had none — `senken_identity::IdentityStore` already had
-//! `create_user`, `create_role`, `assign_role`, `grant_direct` and
-//! `list_users`; its brief simply never listed the HTTP endpoints for
-//! them. This module is exactly that HTTP layer, plus the plugin-grant and
+//! User, role and grant management: the HTTP endpoints for functionality
+//! `senken_identity::IdentityStore` already had — `create_user`,
+//! `create_role`, `assign_role`, `grant_direct` and `list_users` — but had
+//! never been exposed over HTTP, found missing when the Users & Roles
+//! settings section was built against a server that had none. This
+//! module is exactly that HTTP layer, plus the plugin-grant and
 //! `revoke_direct`/`list_roles` methods added to
 //! `senken-identity` alongside it.
 //!
@@ -25,8 +25,8 @@
 //! would only be checking the same thing twice, never tighter.
 //!
 //! The same gap is closed for the remaining mutations here —
-//! `revoke_direct` and the four plugin-grant methods — which Q9.3 flagged
-//! but left for future work. All five now take an `AuthenticatedUser` and
+//! `revoke_direct` and the four plugin-grant methods — left for later
+//! when the four mutations above were fixed. All five now take an `AuthenticatedUser` and
 //! check it themselves, so every handler below extracts `Extension(ctx):
 //! Authed` and passes `&ctx.user` through rather than relying on the
 //! router, and every route in `crate::lib::mount_admin_routes` is mounted
@@ -192,7 +192,7 @@ pub(crate) async fn create_role(
 
 /// `POST /api/users/{user_id}/roles`: assigns an existing
 /// role to an existing user. Mounted at plain
-/// `EndpointPermission::Authenticated` (guard moved to the store in Q9.3,
+/// `EndpointPermission::Authenticated` (the store checks this itself now,
 /// see [`create_user`]'s doc): `IdentityStore::assign_role` now checks
 /// `Action::Edit`/`Resource::User` itself — assigning a role is a change to
 /// the target *user's* record, the same category as [`grant_direct`].
@@ -221,7 +221,7 @@ pub(crate) async fn assign_role(
 
 /// `POST /api/users/{user_id}/grants`: attaches a direct
 /// grant to a user, independent of any role. Mounted at plain
-/// `EndpointPermission::Authenticated` (guard moved to the store in Q9.3,
+/// `EndpointPermission::Authenticated` (the store checks this itself now,
 /// see [`create_user`]'s doc): `IdentityStore::grant_direct` now checks
 /// `Action::Edit`/`Resource::User` itself.
 #[utoipa::path(
@@ -250,7 +250,7 @@ pub(crate) async fn grant_direct(
 
 /// `POST /api/users/{user_id}/grants/revoke`: the inverse of
 /// [`grant_direct`]. Mounted at plain `EndpointPermission::Authenticated`
-/// (guard moved to the store in Q10.1, see the module doc):
+/// (the store checks this itself now, see the module doc):
 /// `IdentityStore::revoke_direct` now checks `Action::Edit`/`Resource::User`
 /// itself.
 #[utoipa::path(
@@ -280,8 +280,8 @@ pub(crate) async fn revoke_direct(
 /// `POST /api/users/{user_id}/plugin-grants`: grants a
 /// plugin permission to a user directly, by name — an opaque grant, never
 /// interpreted, unlike [`grant_direct`]'s structured `(Action, Resource,
-/// Scope)`. Mounted at plain `EndpointPermission::Authenticated` (guard
-/// moved to the store in Q10.1, see the module doc):
+/// Scope)`. Mounted at plain `EndpointPermission::Authenticated`
+/// (the store checks this itself now, see the module doc):
 /// `IdentityStore::grant_plugin_permission_to_user` now checks
 /// `Action::Edit`/`Resource::User` itself.
 #[utoipa::path(
@@ -311,7 +311,7 @@ pub(crate) async fn grant_plugin_permission_to_user(
 
 /// `POST /api/users/{user_id}/plugin-grants/revoke`: the
 /// inverse of [`grant_plugin_permission_to_user`]. Mounted at plain
-/// `EndpointPermission::Authenticated` (guard moved to the store in Q10.1,
+/// `EndpointPermission::Authenticated` (the store checks this itself now,
 /// see the module doc).
 #[utoipa::path(
     post,
@@ -340,7 +340,7 @@ pub(crate) async fn revoke_plugin_permission_from_user(
 
 /// `POST /api/roles/{role_id}/plugin-grants`: grants a
 /// plugin permission to every user holding `role_id`. Mounted at plain
-/// `EndpointPermission::Authenticated` (guard moved to the store in Q10.1,
+/// `EndpointPermission::Authenticated` (the store checks this itself now,
 /// see the module doc): `IdentityStore::grant_plugin_permission_to_role`
 /// now checks `Action::Edit`/`Resource::Role` itself.
 #[utoipa::path(
@@ -370,7 +370,7 @@ pub(crate) async fn grant_plugin_permission_to_role(
 
 /// `POST /api/roles/{role_id}/plugin-grants/revoke`: the
 /// inverse of [`grant_plugin_permission_to_role`]. Mounted at plain
-/// `EndpointPermission::Authenticated` (guard moved to the store in Q10.1,
+/// `EndpointPermission::Authenticated` (the store checks this itself now,
 /// see the module doc).
 #[utoipa::path(
     post,
@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(
             response.status(),
             reqwest::StatusCode::FORBIDDEN,
-            "403, not 401 -- Q3's client treats an authenticated-but-forbidden \
+            "403, not 401 -- the client treats an authenticated-but-forbidden \
              caller very differently from one with no credential at all"
         );
 
@@ -676,7 +676,8 @@ mod tests {
 
         // Assigning a role rotates the target's sessions; log in
         // fresh, then confirm `/api/me` reports the new role and grant --
-        // the exact flow Q6 could not exercise with no endpoint to call.
+        // exactly the flow that had no endpoint to call before this module
+        // existed.
         let user_token = login_token(addr, "promote@example.com", "a very long password").await;
         let me = get_auth(format!("http://{addr}/api/me"), &user_token).await;
         assert_eq!(me.status(), reqwest::StatusCode::OK);

@@ -6,8 +6,8 @@
 //! path-key-based helpers rather than pulling in a whole extra crate for
 //! three string templates. `source_id` and `symbol` are both untrusted
 //! input (a plugin author chooses them), so both go through
-//! [`senken_core::path_key()`], exactly as `senken-marketdata`'s M2.3
-//! helpers already do.
+//! [`senken_core::path_key()`], exactly as `senken-marketdata`'s own
+//! path-building helpers already do.
 //!
 //! No Arrow/Parquet dependency: pure string building.
 

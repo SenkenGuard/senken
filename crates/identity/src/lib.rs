@@ -3,7 +3,7 @@
 //! password hashing, and the guarded query API that is the only way to
 //! read any of it back.
 //!
-//! # The B4 fence is data, not a flag
+//! # The first-run password fence is data, not a flag
 //!
 //! `users.password_hash` is nullable. `NULL` *is* the fence: while it is
 //! unset, `AuthenticatedUser::authorize` (private — every guarded query
@@ -82,7 +82,8 @@ mod tests {
     /// account can log in.
     const ADMIN_TEST_PASSWORD: &str = "correct horse battery staple";
 
-    /// Sets the seeded default admin's password (clearing the B4 fence),
+    /// Sets the seeded default admin's password (clearing the first-run
+    /// password fence),
     /// logs in, and resolves the session — the [`AuthenticatedUser`] most
     /// tests in this module need to call a guarded mutation
     /// (`create_user`/`create_role`/`assign_role`/`grant_direct`, closing the headless bypass gave those four the same guarded
@@ -100,7 +101,7 @@ mod tests {
         store.resolve_session(token.reveal()).unwrap().unwrap()
     }
 
-    // --- B4 fence -----------------------------------------------------
+    // --- First-run password fence ---------------------------------------
 
     #[test]
     fn the_default_admin_is_seeded_with_no_password() {
@@ -179,7 +180,7 @@ mod tests {
         assert!(auth.password_set());
     }
 
-    // --- B13: password change invalidates other sessions --------------
+    // --- Password change invalidates other sessions ---------------------
 
     #[test]
     fn setting_a_password_invalidates_every_other_session_for_the_account() {
@@ -230,7 +231,7 @@ mod tests {
         assert!(store.resolve_session(session.reveal()).unwrap().is_none());
     }
 
-    // --- B15: login does not reveal whether an account exists ----------
+    // --- Login does not reveal whether an account exists ----------------
 
     #[test]
     fn an_unknown_email_and_a_wrong_password_produce_the_same_error() {
@@ -269,7 +270,7 @@ mod tests {
         );
     }
 
-    // --- B6/B7: scope reaches the query, including the total -----------
+    // --- Guarded queries: scope reaches the query, including the total --
 
     #[test]
     fn a_scoped_query_returns_only_the_actors_own_row_and_the_total_respects_it_too() {
@@ -360,7 +361,7 @@ mod tests {
         assert!(matches!(err, IdentityError::Forbidden));
     }
 
-    // --- B12: sessions are hashed and compared in constant time --------
+    // --- Sessions are hashed and compared in constant time --------------
 
     #[test]
     fn a_logged_in_sessions_raw_token_is_never_stored_in_the_database_file() {
@@ -566,7 +567,7 @@ mod tests {
         ));
     }
 
-    // --- plugin_permissions (the Q2/Q7 coordination gap) --
+    // --- plugin_permissions (each side left persisting it to the other) --
 
     #[test]
     fn a_freshly_opened_store_has_no_plugin_permissions_for_an_unknown_plugin() {
@@ -1130,8 +1131,8 @@ mod tests {
         assert!(store.resolve_session(token.reveal()).unwrap().is_none());
     }
 
-    // --- Q9.3: create_user/create_role/assign_role/grant_direct are ------
-    // --- guarded at the store, not just over HTTP -------------------------
+    // --- create_user/create_role/assign_role/grant_direct are guarded ----
+    // --- at the store, not just over HTTP ---------------------------------
     //
     // Before this cleanup, none of these four methods took an
     // `AuthenticatedUser` at all — the only thing standing between an
@@ -1234,12 +1235,12 @@ mod tests {
         assert!(matches!(err, IdentityError::Forbidden));
     }
 
-    // --- Q10.1: revoke_direct and the four plugin-grant methods are ------
-    // --- guarded at the store too, not just over HTTP ---------------------
+    // --- revoke_direct and the four plugin-grant methods are guarded -----
+    // --- at the store too, not just over HTTP -----------------------------
     //
-    // Q9.3 closed this same gap for `create_user`/`create_role`/
-    // `assign_role`/`grant_direct`, but flagged `revoke_direct` and the
-    // plugin-grant methods as still relying solely on `senken-api`'s
+    // The cleanup above closed this same gap for `create_user`/
+    // `create_role`/`assign_role`/`grant_direct`, but left `revoke_direct`
+    // and the plugin-grant methods still relying solely on `senken-api`'s
     // router-level `Acl` guard — a check a headless caller (a backtest, a
     // CLI, a test calling `IdentityStore` directly, exactly like every test
     // in this module) has no HTTP layer to inherit. These five tests prove

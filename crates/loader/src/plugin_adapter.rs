@@ -22,7 +22,8 @@
 //! out of fetching through a `VenueClient` and decoding JSON, exactly like
 //! every existing `MarketDataSource` implementation already does.
 //!
-//! Finding F6 requires these not to silently drift apart into two
+//! Two independently-maintained trait definitions like these must not be
+//! allowed to silently drift apart into two
 //! definitions that quietly diverge over time. The fix chosen here is
 //! **not** to merge them: doing that would force either every plugin
 //! author to depend on this crate's cache/single-flight machinery just to

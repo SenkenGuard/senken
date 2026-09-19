@@ -10,21 +10,18 @@ import type { Component } from 'svelte';
 import LayoutDashboardIcon from '@lucide/svelte/icons/layout-dashboard';
 import TrendingUpIcon from '@lucide/svelte/icons/trending-up';
 import ZapIcon from '@lucide/svelte/icons/zap';
-import PackageSearchIcon from '@lucide/svelte/icons/package-search';
 import ActivityIcon from '@lucide/svelte/icons/activity';
 import TerminalIcon from '@lucide/svelte/icons/terminal';
 import BellIcon from '@lucide/svelte/icons/bell';
 import ClockIcon from '@lucide/svelte/icons/clock';
 import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 
-/** The reference's three routes, plus two the reference never had and so
+/** The reference's three routes, plus one the reference never had and so
  * has no line to port from: `workspaces` for the real, server-backed
- * dashboard at `/dashboard` (`routes/dashboard/+page.svelte`), and
- * `registry` for the indicator registry at `/registry`
- * (`routes/registry/+page.svelte`). `href` is real SvelteKit routing, not
- * the reference's `page` state variable. */
+ * dashboard at `/dashboard` (`routes/dashboard/+page.svelte`). `href` is
+ * real SvelteKit routing, not the reference's `page` state variable. */
 export interface NavEntry {
-	key: 'dashboard' | 'workspaces' | 'charts' | 'engine' | 'registry';
+	key: 'dashboard' | 'workspaces' | 'charts' | 'engine';
 	href: string;
 	icon: Component;
 	label: string;
@@ -52,13 +49,6 @@ export const NAV: NavEntry[] = [
 		icon: ZapIcon,
 		label: 'TRADE ENGINE',
 		desc: 'Order routing, risk caps, execution log'
-	},
-	{
-		key: 'registry',
-		href: '/registry',
-		icon: PackageSearchIcon,
-		label: 'REGISTRY',
-		desc: 'Search, read, fork, and install published indicators'
 	}
 ];
 

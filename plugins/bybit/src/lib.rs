@@ -16,7 +16,7 @@ use senken_marketdata::instrument::{
 };
 use senken_marketdata::source::SourceError;
 use senken_plugin::{HttpActivationContext, Plugin, PluginError, PluginManifest};
-use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
+use senken_venue::{HttpSource, VenueClient, skip};
 
 use crate::api::{InstrumentsResponse, RawInstrument};
 
@@ -184,7 +184,11 @@ fn to_instrument(raw: RawInstrument, market: Market) -> Option<Instrument> {
         return skip(source, &raw.symbol, "unusable quantity step");
     };
 
-    let symbol = normalise_symbol(&raw.symbol, &['-']);
+    // The one function this venue normalises a symbol through — shared
+    // with `wasm/`'s `bybit-venue` component (its own catalog builder) and
+    // `feed.rs`'s live decoder, so all three call sites can never drift
+    // the way `AGENTS.md` documents Deribit and Crypto.com once did.
+    let symbol = bybit_core::normalise_bybit_symbol(&raw.symbol);
     let status = map_status(&raw.status, &raw.symbol);
     let instrument = match market.settlement() {
         None => Instrument::spot(symbol, raw.symbol, raw.base_coin, &raw.quote_coin),
@@ -295,6 +299,10 @@ impl Plugin for BybitPlugin {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             description: "Bybit spot, linear and inverse market data".to_owned(),
             permissions: Vec::new(),
+            contributes: senken_plugin::parse_static_contributions(include_str!(
+                "../senken-plugin.json"
+            ))
+            .expect("senken-plugin.json is well-formed"),
         }
     }
 
@@ -308,15 +316,33 @@ impl Plugin for BybitPlugin {
     ) -> Result<(), PluginError> {
         let group = context.limit_group("bybit");
         let client = context.venue_client(&group)?;
-        context.register_marketdata_source(Arc::new(spot_source(client.clone())));
+        // Spot's own `MarketDataSource`/`BarSource` no longer registers
+        // here: `Self::venue_components` hands the runtime this venue's
+        // `wasm32-wasip2` component instead, and the runtime registers
+        // spot's catalog and bars from that dynamic source — see this
+        // method's own module docs and `crate::venue_components`. Linear,
+        // inverse and options have not been ported to a component yet, so
+        // they stay native below; so does the live feed, which the world
+        // does not export yet.
         context.register_marketdata_source(Arc::new(linear_source(client.clone())));
         context.register_marketdata_source(Arc::new(inverse_source(client.clone())));
-        context.register_marketdata_source(Arc::new(option_source(client.clone())));
-        // Bar traffic shares the same group as every market data source
-        // above — one shared budget per venue.
-        context.register_bar_source(Arc::new(bar_source_spot(client)));
+        context.register_marketdata_source(Arc::new(option_source(client)));
         context.register_feed_source(Arc::new(crate::feed::BybitFeedSource::new()));
         Ok(())
+    }
+
+    fn venue_components(&self) -> Vec<&'static [u8]> {
+        // Built by `plugins/build-venue.sh bybit` into `dist/`, gitignored,
+        // and embedded here rather than read from disk at startup — see
+        // this crate's `wasm/` for the component itself and this method's
+        // caller (`senken_runtime::RuntimeBuilder::build`) for what
+        // registering it replaces. `include_bytes!` fails to compile this
+        // crate if the artifact is missing, which is why CI (and any local
+        // build of this crate) runs the build script first. Bybit has
+        // ported only spot so far, so this is a single-element `Vec` —
+        // see `senken_plugin::Plugin::venue_components`'s own docs for why
+        // the return type is a `Vec` rather than an `Option` regardless.
+        vec![include_bytes!("../dist/bybit-venue.wasm")]
     }
 }
 

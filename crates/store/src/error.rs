@@ -93,7 +93,7 @@ pub enum WriteAssertionError {
     },
 
     /// Two consecutive bars (after sorting is not performed — order is the
-    /// caller's/M5.3 "timestamps not strictly increasing") did
+    /// caller's responsibility) did
     /// not strictly increase. Covers duplicates too: `next == previous` is
     /// rejected by the same check.
     #[error("timestamps are not strictly increasing: {previous} is not before {next}")]

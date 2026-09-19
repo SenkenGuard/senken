@@ -1,12 +1,12 @@
 // The settings-section registry.
 //
-// B10 is explicit that this must be a registry, not a hardcoded array:
-// "plugins will add sections, and a hardcoded list cannot be extended
-// without surgery. Core registers its own sections through the same
-// mechanism plugins will use, so the mechanism is exercised from the start
-// rather than theorised." This module is that mechanism. Core's own five
-// sections (`register-core-sections.ts`) call exactly the function a future
-// plugin would call — there is no second, privileged registration path.
+// This must be a registry, not a hardcoded array: plugins will add
+// sections, and a hardcoded list cannot be extended without surgery. Core
+// registers its own sections through the same mechanism plugins will use,
+// so the mechanism is exercised from the start rather than theorised. This
+// module is that mechanism. Core's own five sections
+// (`register-core-sections.ts`) call exactly the function a future plugin
+// would call — there is no second, privileged registration path.
 //
 // Module-level rune store, the same pattern `$lib/state/command-palette.svelte.ts`
 // and `$lib/api/servers.svelte.ts` already use for shell-wide singletons:
@@ -35,7 +35,7 @@ export interface SettingsRow {
 	label: string;
 	description: string;
 	/** Renders the row's control (a switch, a native `<select>`, a button —
-	 * B10: "controls are mixed"). A snippet, not a `Component`, so a
+	 * these are deliberately mixed). A snippet, not a `Component`, so a
 	 * section can close over its own local state without inventing a prop
 	 * contract every control shape would have to fit. */
 	control: Snippet;
@@ -75,7 +75,7 @@ export interface SettingsSection {
 	/** Stable, namespaced like a plugin permission id would be — core's own
 	 * sections use a bare name (`'account'`) since they have no namespace to
 	 * collide with; a future plugin section should prefix its own id with
-	 * its plugin id for the same reason B9 namespaces permission names. */
+	 * its plugin id for the same reason permission names are namespaced. */
 	id: string;
 	label: string;
 	icon: Component;
@@ -162,8 +162,8 @@ export interface SettingsSearchResult {
 
 /** Cross-section search. Case-insensitive substring match over each
  * row's label, description and parent group heading — deliberately simple:
- * the point B10 makes is that search must reach *every* section, not that
- * it needs fuzzy ranking. */
+ * the goal is that search must reach *every* section, not that it needs
+ * fuzzy ranking. */
 export function searchSettings(
 	query: string,
 	context: SettingsVisibilityContext

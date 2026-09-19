@@ -33,7 +33,8 @@
 //! has no instrument catalog to consult, so the best it can do is
 //! [`senken_marketdata::SourceSymbol::assume`] — trust, not prove, that
 //! whatever string it was handed is already venue-native. Passing it a
-//! normalised symbol would be exactly the F7 mistake, one layer down.
+//! normalised symbol would be exactly the normalised-symbol mistake, one
+//! layer down.
 //! `senken-runtime` is the layer that actually holds an instrument catalog
 //! ("wires plugins → sources → store → loader"), so this is
 //! where the real translation belongs: [`CatalogBarSource`] looks up the
@@ -42,16 +43,17 @@
 //! instrument's own [`senken_marketdata::Instrument::source_symbol`] —
 //! never with the raw, normalised string the loader started from. This is
 //! why [`SeriesData::build`] does **not** wrap sources in
-//! `senken_loader::PluginBarSource`, despite that being the plan's own
-//! illustrative M8.1 sketch: doing so would compile, and would work for
-//! Binance and Bybit by coincidence (their wire format already equals their
-//! normalised symbol), but would send OKX a bare `BTCUSDT` where it needs
-//! the dashed `BTC-USDT` — silently wrong in exactly the venue-specific way
-//! F7 warns is "miserable to diagnose."
+//! `senken_loader::PluginBarSource`, despite that being the obvious,
+//! naive way to bridge the two traits: doing so would compile, and would
+//! work for Binance and Bybit by coincidence (their wire format already
+//! equals their normalised symbol), but would send OKX a bare `BTCUSDT`
+//! where it needs the dashed `BTC-USDT` — silently wrong in exactly the
+//! venue-specific way the normalised-symbol mistake is "miserable to
+//! diagnose."
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
 use senken_core::TimeRange;
@@ -67,8 +69,16 @@ use senken_store::Store;
 /// by that source's own `source_id` (`binance-spot`, `okx-spot`, ...). See
 /// this module's docs for why this is a small registry rather than a single
 /// loader the way [`MarketData`] is a single registry of many sources.
+///
+/// Held behind a `RwLock` for the same reason
+/// `senken_marketdata::MarketData` holds its own source list behind one: a
+/// plugin that never activated at startup can now activate later, while the
+/// server is already serving requests (see
+/// `senken_runtime::Runtime::activate_stored_plugin`), and every reader here
+/// (`loader`, `source_ids`) already pays only a short, uncontended lock to
+/// clone what it needs.
 pub struct SeriesData {
-    loaders: HashMap<String, SeriesLoader>,
+    loaders: RwLock<HashMap<String, SeriesLoader>>,
 }
 
 impl fmt::Debug for SeriesData {
@@ -79,16 +89,47 @@ impl fmt::Debug for SeriesData {
     }
 }
 
+/// Builds one [`SeriesLoader`] for `source`, or `None` when
+/// [`senken_plugin::BarSource::supported`] contains no spec with a fixed
+/// duration (chunk sizing needs one — see
+/// [`senken_loader::SeriesLoaderBuilder::build`]'s own `# Panics`), logging
+/// a warning in that case rather than failing the caller. Shared by
+/// [`SeriesData::build`] (every bar source registered at startup) and
+/// [`SeriesData::insert`] (one registered later, live).
+fn build_loader(
+    store: &Store,
+    marketdata: &Arc<MarketData>,
+    source: Arc<dyn PluginBarSource>,
+) -> Option<(String, SeriesLoader)> {
+    let source_id = source.source_id().to_owned();
+    let supported = source.supported().to_vec();
+    let Some(base_spec) = finest(&supported) else {
+        tracing::warn!(
+            source = source_id,
+            "bar source supports no spec with a fixed duration; not building a loader for it"
+        );
+        return None;
+    };
+    let finer_specs: Vec<BarSpec> = supported
+        .into_iter()
+        .filter(|spec| *spec != base_spec)
+        .collect();
+
+    let bridge: Arc<dyn LoaderBarSource> = Arc::new(CatalogBarSource {
+        inner: source,
+        marketdata: Arc::clone(marketdata),
+    });
+    let loader = SeriesLoaderBuilder::new(store.clone(), bridge, Arc::new(SystemClock), base_spec)
+        .finer_specs(finer_specs)
+        .build();
+    Some((source_id, loader))
+}
+
 impl SeriesData {
     /// Builds one [`SeriesLoader`] per entry in `bar_sources`, all rooted at
     /// `store`'s data directory but each with its own coverage cache, bar
-    /// cache and job state.
-    ///
-    /// A source whose [`senken_plugin::BarSource::supported`] contains no
-    /// spec with a fixed duration (chunk sizing needs one — see
-    /// [`senken_loader::SeriesLoaderBuilder::build`]'s own `# Panics`) is
-    /// skipped with a logged warning rather than panicking the whole
-    /// runtime over one malformed plugin.
+    /// cache and job state. See [`build_loader`] for what makes one entry
+    /// skipped rather than built.
     #[must_use]
     pub(crate) fn build(
         store: &Store,
@@ -97,46 +138,61 @@ impl SeriesData {
     ) -> Self {
         let mut loaders = HashMap::with_capacity(bar_sources.len());
         for source in bar_sources {
-            let source_id = source.source_id().to_owned();
-            let supported = source.supported().to_vec();
-            let Some(base_spec) = finest(&supported) else {
-                tracing::warn!(
-                    source = source_id,
-                    "bar source supports no spec with a fixed duration; not building a loader for it"
-                );
-                continue;
-            };
-            let finer_specs: Vec<BarSpec> = supported
-                .into_iter()
-                .filter(|spec| *spec != base_spec)
-                .collect();
-
-            let bridge: Arc<dyn LoaderBarSource> = Arc::new(CatalogBarSource {
-                inner: source,
-                marketdata: Arc::clone(marketdata),
-            });
-            let loader =
-                SeriesLoaderBuilder::new(store.clone(), bridge, Arc::new(SystemClock), base_spec)
-                    .finer_specs(finer_specs)
-                    .build();
-            loaders.insert(source_id, loader);
+            if let Some((source_id, loader)) = build_loader(store, marketdata, source) {
+                loaders.insert(source_id, loader);
+            }
         }
-        Self { loaders }
+        Self {
+            loaders: RwLock::new(loaders),
+        }
     }
 
     /// The loader registered for `source_id`, if a bar source registered
     /// under that id exists and supports at least one fixed-duration spec.
+    /// Returns an owned, cheaply-cloned [`SeriesLoader`] (an `Arc` inside)
+    /// rather than a reference, since a reference into the lock this holds
+    /// could not outlive the call.
     #[must_use]
-    pub fn loader(&self, source_id: &str) -> Option<&SeriesLoader> {
-        self.loaders.get(source_id)
+    pub fn loader(&self, source_id: &str) -> Option<SeriesLoader> {
+        self.loaders
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(source_id)
+            .cloned()
     }
 
     /// Every source id with a registered loader, sorted for stable display.
     #[must_use]
-    pub fn source_ids(&self) -> Vec<&str> {
-        let mut ids: Vec<&str> = self.loaders.keys().map(String::as_str).collect();
+    pub fn source_ids(&self) -> Vec<String> {
+        let loaders = self.loaders.read().unwrap_or_else(PoisonError::into_inner);
+        let mut ids: Vec<String> = loaders.keys().cloned().collect();
         ids.sort_unstable();
         ids
+    }
+
+    /// Registers one more bar source into an already-running registry —
+    /// the live-activation counterpart to [`Self::build`], for a plugin
+    /// turned on after startup through
+    /// `senken_runtime::Runtime::activate_stored_plugin`. A source with no
+    /// fixed-duration spec is skipped exactly like one passed to
+    /// [`Self::build`] would be (see [`build_loader`]); a `source_id` that
+    /// already has a loader is left alone rather than replaced, which in
+    /// practice never happens — the runtime drains a stored plugin exactly
+    /// once before this is ever called for it.
+    pub(crate) fn insert(
+        &self,
+        store: &Store,
+        marketdata: &Arc<MarketData>,
+        source: Arc<dyn PluginBarSource>,
+    ) {
+        let Some((source_id, loader)) = build_loader(store, marketdata, source) else {
+            return;
+        };
+        self.loaders
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(source_id)
+            .or_insert(loader);
     }
 }
 
@@ -333,7 +389,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let storage = Storage::new(dir.path().join("data"));
         storage.init().unwrap();
-        let mut marketdata = MarketData::new(Arc::new(storage));
+        let marketdata = MarketData::new(Arc::new(storage));
         marketdata.register_source(Arc::new(DemoSource)).unwrap();
         let marketdata = Arc::new(marketdata);
 
@@ -412,6 +468,6 @@ mod tests {
         let store = Store::new(dir.path().join("store"));
 
         let series = SeriesData::build(&store, &marketdata, vec![Arc::new(MonthOnly) as _]);
-        assert_eq!(series.source_ids(), Vec::<&str>::new());
+        assert_eq!(series.source_ids(), Vec::<String>::new());
     }
 }

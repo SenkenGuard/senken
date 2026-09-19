@@ -2,7 +2,7 @@
 //! `bars/` tree, extended to carry a
 //! Day-or-above series' anchor when it is not UTC.
 //!
-//! F3, measured live against OKX: `bar=1D` opens at UTC+8 while `bar=1Dutc`
+//! Measured live against OKX: `bar=1D` opens at UTC+8 while `bar=1Dutc`
 //! opens at UTC — the same nominal spec, two different series. Persisting
 //! both under one `venue-1d` directory would silently interleave bars
 //! eight hours apart, the same class of bug already paid for once with
@@ -38,7 +38,7 @@ pub(crate) fn anchor_applies_to(unit: BarUnit) -> bool {
 ///
 /// The number after `utc` is the venue's own UTC offset in the ordinary
 /// human sense — `utc8` reads as "this series' day rolls over at UTC+8
-/// (Hong Kong) midnight", matching how F3 itself describes OKX. That is
+/// (Hong Kong) midnight", matching that description of OKX above. That is
 /// the *negation* of [`Anchor::offset_nanos`]: a venue ahead of UTC rolls
 /// its day over *before* UTC midnight arrives, which is
 /// [`Anchor::from_offset_nanos`]'s documented *negative* case. Getting
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn two_anchors_for_the_same_nominal_spec_produce_different_directory_names() {
-        // The whole point of F3: these must not collide.
+        // The whole point of this encoding: these must not collide.
         let utc = encode_bars_dir_name(Origin::Venue, BarSpec::new(1, BarUnit::Day), Anchor::UTC);
         let utc8 = encode_bars_dir_name(
             Origin::Venue,

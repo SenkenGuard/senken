@@ -1,10 +1,7 @@
 //! [`PluginHost`]: the entry point that turns compiled component bytes into
-//! either a [`LoadedPlugin`] (the `indicator-plugin` world) or a
-//! [`LoadedCompiledIndicator`] (the leaner `compiled-indicator` world
-//! `senken_indicator_lang::compile` targets), and those two types
-//! themselves, which turn a loaded component into a running
-//! [`crate::instance::PluginInstance`] or
-//! [`crate::compiled_instance::CompiledIndicatorInstance`] respectively.
+//! a [`LoadedPlugin`] (the `indicator-plugin` world), and that type itself,
+//! which turns a loaded component into a running
+//! [`crate::instance::PluginInstance`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,12 +11,11 @@ use wasmtime::{Config, Engine, Store};
 
 use crate::PluginHostError;
 use crate::bindings::{
-    Bar, BarSpec, CompiledIndicator, IndicatorDescriptor, IndicatorPlugin, ParamValue,
-    VenueDescriptor, VenueError, VenueInstrument, VenuePlugin,
+    Bar, BarSpec, IndicatorDescriptor, IndicatorPlugin, ParamValue, VenueDescriptor, VenueError,
+    VenueInstrument, VenuePlugin,
 };
 use crate::builtins;
 use crate::circuit::PluginCircuit;
-use crate::compiled_instance::CompiledIndicatorInstance;
 use crate::execution::{EpochTicker, ExecutionMode, configure_engine};
 use crate::health::{PluginHealth, RuntimeHealth};
 use crate::http_host::{FetchExecutor, HostHttp};
@@ -250,74 +246,6 @@ impl PluginHost {
             health,
         })
     }
-
-    /// Loads a compiled `wasm32-wasip2` component against `wit/senken.wit`'s
-    /// `compiled-indicator` world instead of `indicator-plugin` — the world
-    /// `senken_indicator_lang::compile` targets, which exports a bare
-    /// `on-bar` function and nothing that could describe itself.
-    ///
-    /// Enforces exactly the same capability-zero surface, memory ceiling and
-    /// linker as [`Self::load`]: the same `Engine`, the same `Linker`
-    /// (already wired with the `builtins` import both worlds share — see
-    /// this crate's own `builtins` module for why a second registration is
-    /// not needed), the same memory limiter. There is no `descriptor` to
-    /// probe, so unlike `load`, nothing here calls into the guest at all —
-    /// instantiation against this host's capability-zero linker is already
-    /// the whole check, exactly as it is for `indicator-plugin` before its
-    /// own `descriptor` probe runs.
-    ///
-    /// # Errors
-    /// A [`PluginHostError::Incompatible`] if the component names a
-    /// `senken:plugin-api` version other than [`SUPPORTED_API_VERSION`]; a
-    /// [`PluginHostError::Load`] if the bytes are not a valid component or
-    /// if instantiation cannot satisfy every import this host's `Linker`
-    /// does not provide — including a component that does not implement
-    /// `compiled-indicator` at all (for instance, one built for
-    /// `indicator-plugin` instead).
-    pub fn load_compiled(&self, wasm: &[u8]) -> Result<LoadedCompiledIndicator, PluginHostError> {
-        self.try_load_compiled(wasm).inspect_err(|err| {
-            tracing::warn!(error = %err, "compiled indicator failed to load");
-        })
-    }
-
-    fn try_load_compiled(&self, wasm: &[u8]) -> Result<LoadedCompiledIndicator, PluginHostError> {
-        let component = Component::new(&self.inner.engine, wasm)
-            .map_err(|err| PluginHostError::Load(format!("not a valid component: {err}")))?;
-        if let Some(found) = mismatched_api_version(&component, &self.inner.engine) {
-            return Err(PluginHostError::Incompatible {
-                found,
-                supported: SUPPORTED_API_VERSION.to_owned(),
-            });
-        }
-
-        let log = PluginLog::new();
-        let health = Arc::new(RuntimeHealth::new());
-        let mut store = Store::new(
-            &self.inner.engine,
-            PluginState::new(
-                &log,
-                self.inner.limits.max_memory_bytes,
-                Arc::clone(&health),
-            ),
-        );
-        store.limiter(|state| &mut state.limits);
-        ExecutionMode::Live {
-            deadline: LOAD_PROBE_DEADLINE,
-        }
-        .apply(&mut store)
-        .map_err(|err| PluginHostError::Load(err.to_string()))?;
-
-        CompiledIndicator::instantiate(&mut store, &component, &self.inner.linker)
-            .map_err(|err| PluginHostError::Load(format!("failed to instantiate: {err:#}")))?;
-
-        Ok(LoadedCompiledIndicator {
-            host: self.clone(),
-            component,
-            circuit: Arc::new(PluginCircuit::new()),
-            log,
-            health,
-        })
-    }
 }
 
 /// A component that has already proven it links against this host's
@@ -428,93 +356,6 @@ impl LoadedPlugin {
             self.log.clone(),
             Arc::clone(&self.health),
         )
-    }
-}
-
-/// A component that has already proven it links against this host's
-/// capability-zero surface as a `compiled-indicator`.
-///
-/// Its circuit breaker, ring log and runtime health are all shared across
-/// every [`crate::compiled_instance::CompiledIndicatorInstance`] spawned
-/// from it — the same "per plugin, not per instance" scope [`LoadedPlugin`]'s
-/// own fields are shared at, for the same reason.
-pub struct LoadedCompiledIndicator {
-    host: PluginHost,
-    component: Component,
-    circuit: Arc<PluginCircuit>,
-    log: PluginLog,
-    health: Arc<RuntimeHealth>,
-}
-
-impl std::fmt::Debug for LoadedCompiledIndicator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoadedCompiledIndicator")
-            .finish_non_exhaustive()
-    }
-}
-
-impl LoadedCompiledIndicator {
-    /// A snapshot of this plugin's own ring log — see [`LoadedPlugin::logs`].
-    #[must_use]
-    pub fn logs(&self) -> Vec<crate::log::PluginLogLine> {
-        self.log.snapshot()
-    }
-
-    /// This plugin's current runtime health — see [`LoadedPlugin::health`].
-    #[must_use]
-    pub fn health(&self) -> PluginHealth {
-        self.health.snapshot(self.circuit.status())
-    }
-
-    /// Explicitly closes this plugin's circuit breaker — see
-    /// [`LoadedPlugin::reset_circuit_breaker`].
-    pub fn reset_circuit_breaker(&self) {
-        self.circuit.reset();
-    }
-
-    /// Spawns a new, independent instance, bounded by `mode` for every call
-    /// made through it. There are no parameters to pass — a compiled
-    /// indicator-lang program has no way to declare any; whatever a trader
-    /// wrote (a period, a multiplier) is already baked into the compiled
-    /// bytes.
-    ///
-    /// Fails immediately, without touching the component at all, if this
-    /// plugin's circuit breaker is currently open from repeated traps on an
-    /// earlier instance.
-    ///
-    /// # Errors
-    /// A [`PluginHostError::CircuitOpen`] if the breaker is open; a
-    /// [`PluginHostError::Load`] if a fresh instantiation of the same,
-    /// already-validated component somehow fails (it should not, since
-    /// `load_compiled` already proved it links).
-    pub fn spawn(&self, mode: ExecutionMode) -> Result<CompiledIndicatorInstance, PluginHostError> {
-        self.circuit
-            .ensure_closed()
-            .map_err(PluginHostError::CircuitOpen)?;
-
-        let mut store = Store::new(
-            &self.host.inner.engine,
-            PluginState::new(
-                &self.log,
-                self.host.inner.limits.max_memory_bytes,
-                Arc::clone(&self.health),
-            ),
-        );
-        store.limiter(|state| &mut state.limits);
-        mode.apply(&mut store)
-            .map_err(|err| PluginHostError::Trap(err.to_string()))?;
-
-        let plugin =
-            CompiledIndicator::instantiate(&mut store, &self.component, &self.host.inner.linker)
-                .map_err(|err| PluginHostError::Load(format!("failed to instantiate: {err:#}")))?;
-
-        Ok(CompiledIndicatorInstance::new(
-            store,
-            plugin,
-            Arc::clone(&self.circuit),
-            self.log.clone(),
-            Arc::clone(&self.health),
-        ))
     }
 }
 
@@ -865,17 +706,6 @@ mod tests {
             }
             other => panic!("expected Incompatible, got {other:?}"),
         }
-
-        // The same check applies to the leaner `compiled-indicator` load
-        // path, not only `indicator-plugin` — both worlds live in the same
-        // versioned package.
-        let err = host.load_compiled(&wasm).expect_err(
-            "a mismatched plugin-api version must not load as a compiled indicator either",
-        );
-        assert!(
-            matches!(err, PluginHostError::Incompatible { .. }),
-            "got {err:?}"
-        );
     }
 
     #[test]

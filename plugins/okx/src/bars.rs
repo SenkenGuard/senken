@@ -1,21 +1,13 @@
 //! OKX bar fetching — `GET /api/v5/market/history-candles`.
 //!
-//! # Cross-venue traps
-//!
-//! 1. **Sort direction**: descending by open time (opposite of Binance) —
-//!    this implementation re-sorts to ascending before returning.
-//! 2. **Timestamps**: JSON strings, including the timestamp itself — "all
-//!    strings including the timestamp".
-//! 3. **Closed-candle detection**: the `confirm` field — `"1"` closed,
-//!    `"0"` still forming — verified present even on the history endpoint
-//!    used here.
-//! 4. **Row cap**: 100, the tested cap of `/market/history-candles` — used
-//!    uniformly (see below), never the 300 the plain `/market/candles`
-//!    accepts.
-//! 5. **Pagination**: `after=X` returns candles strictly **older** than
-//!    `X` (the opposite of what the name suggests); `before=X` is the
-//!    newer direction. Both are used together here to bound a request to
-//!    exactly one `TimeRange`.
+//! Parsing the response body — row shape, closed-candle detection, the
+//! fixed-point scale batching, the pagination direction — lives in
+//! `okx-core`, shared with `wasm/`'s `okx-venue` component: this module is
+//! the native HTTP/`BarSource` wrapper around
+//! [`okx_core::parse_history_candles`], not a second implementation of it.
+//! See that crate's own module docs for the cross-venue traps (sort
+//! direction, timestamp shape, `confirm`, the 100-row cap, the `after`/
+//! `before` inversion) it documents once for both callers.
 //!
 //! # Why `/market/history-candles`, not `/market/candles`
 //!
@@ -28,14 +20,6 @@
 //! Using it uniformly, at its lower, verified cap of 100 rather than the
 //! other endpoint's 300, is therefore not a loss of capability, only of an
 //! optimisation this stage leaves for later.
-//!
-//! # The anchor
-//!
-//! OKX's plain `1D`/`1W`/`1M` open at 16:00 UTC (00:00 Hong Kong), not UTC
-//! midnight — a real, silent 8-hour shift. This source always requests the
-//! `utc` variant (`1Dutc`, `1Wutc`, `1Mutc`) for Day and above, so every
-//! bar it ever returns is UTC-anchored and the anchor never needs to reach
-//! a store path token (its fallback path) at all.
 //!
 //! # What `symbol` means here
 //!
@@ -51,21 +35,15 @@
 //! `Instrument::source_symbol()`, so a caller that reaches for
 //! `Instrument::symbol` instead gets a compile error, not a wrong `instId`.
 
-use senken_core::{TimeRange, UnixNanos, parse_scaled};
+use okx_core::{BarSpec as CoreBarSpec, BarUnit as CoreBarUnit};
+use senken_core::TimeRange;
 use senken_marketdata::SourceSymbol;
 use senken_marketdata::source::SourceError;
 use senken_plugin::BarSource;
 use senken_series::{Bar, BarSpec, BarUnit, Volume};
-use senken_venue::{VenueClient, common_scale};
-use serde::Deserialize;
+use senken_venue::VenueClient;
 
 const HISTORY_CANDLES_URL: &str = "https://www.okx.com/api/v5/market/history-candles";
-
-/// The tested cap of `/market/history-candles`: "verified,
-/// returned exactly 100 rows". Deliberately not the 300 the sibling
-/// `/market/candles` endpoint accepts — see the module docs for why this
-/// source never calls that endpoint at all.
-const MAX_ROWS: usize = 100;
 
 /// The weight charged against this source's [`senken_venue::LimitGroup`]
 /// per call. OKX's public endpoints send no rate-limit headers to
@@ -77,66 +55,51 @@ const MAX_ROWS: usize = 100;
 /// for a claim about their relative real cost.
 const CANDLES_FETCH_COST: u32 = 5;
 
-/// One row of `GET /api/v5/market/history-candles`: nine positional
-/// strings — open time, O, H, L, C, volume, quote volume, a
-/// second quote-volume variant (unused here — see the module docs on A4's
-/// own labelling), and `confirm`.
-type RawCandle = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-);
-
-#[derive(Debug, Deserialize)]
-struct CandlesResponse {
-    code: String,
-    #[serde(default)]
-    msg: String,
-    #[serde(default)]
-    data: Vec<RawCandle>,
+/// `senken_series::BarSpec` -> `okx_core::BarSpec`, the boundary crossing
+/// every call into `okx-core` makes so that crate never has to depend on
+/// `senken-series` (a wasm guest has no such crate to name).
+fn core_spec(spec: BarSpec) -> CoreBarSpec {
+    let unit = match spec.unit {
+        BarUnit::Second => CoreBarUnit::Second,
+        BarUnit::Minute => CoreBarUnit::Minute,
+        BarUnit::Hour => CoreBarUnit::Hour,
+        BarUnit::Day => CoreBarUnit::Day,
+        BarUnit::Week => CoreBarUnit::Week,
+        // `BarUnit` is `#[non_exhaustive]`; a wildcard also catches any
+        // future unit this crate has never seen, mapped to a spec
+        // `okx_interval` already rejects (`None`) rather than guessed.
+        _ => CoreBarUnit::Month,
+    };
+    CoreBarSpec {
+        step: spec.step.get(),
+        unit,
+    }
 }
 
-/// The specs this source maps to an OKX `bar` string. Only 1-minute has
-/// actually been fetched and verified; the rest follow OKX's
-/// public interval syntax for a *request parameter*, preferring the `utc`
-/// variant for Day and above.
+/// The specs this source maps to an OKX `bar` string — see
+/// `okx_core::supported_bar_specs`'s own docs for provenance.
 fn supported_specs() -> Vec<BarSpec> {
-    vec![
-        BarSpec::new(1, BarUnit::Minute),
-        BarSpec::new(3, BarUnit::Minute),
-        BarSpec::new(5, BarUnit::Minute),
-        BarSpec::new(15, BarUnit::Minute),
-        BarSpec::new(30, BarUnit::Minute),
-        BarSpec::new(1, BarUnit::Hour),
-        BarSpec::new(2, BarUnit::Hour),
-        BarSpec::new(4, BarUnit::Hour),
-        BarSpec::new(1, BarUnit::Day),
-        BarSpec::new(1, BarUnit::Week),
-    ]
+    okx_core::supported_bar_specs()
+        .into_iter()
+        .map(|spec| {
+            let unit = match spec.unit {
+                CoreBarUnit::Second => BarUnit::Second,
+                CoreBarUnit::Minute => BarUnit::Minute,
+                CoreBarUnit::Hour => BarUnit::Hour,
+                CoreBarUnit::Day => BarUnit::Day,
+                CoreBarUnit::Week => BarUnit::Week,
+                CoreBarUnit::Month => BarUnit::Month,
+            };
+            BarSpec::new(spec.step, unit)
+        })
+        .collect()
 }
 
-/// OKX's `bar` string for `spec`, e.g. `15m`, `4H`, `1Dutc`. `None` when
-/// `spec` is not one this source maps ([`supported_specs`]).
-fn interval_of(spec: BarSpec) -> Option<String> {
-    let step = spec.step;
-    match spec.unit {
-        BarUnit::Minute => Some(format!("{step}m")),
-        BarUnit::Hour => Some(format!("{step}H")),
-        // Finding F3: always the UTC variant, never the plain `D`/`W`/`M`
-        // that opens at 16:00 UTC.
-        BarUnit::Day => Some(format!("{step}Dutc")),
-        BarUnit::Week => Some(format!("{step}Wutc")),
-        BarUnit::Month => Some(format!("{step}Mutc")),
-        // `Second` is not offered by OKX's documented interval set, and
-        // `BarUnit` is `#[non_exhaustive]`: a wildcard also catches any
-        // future unit this crate has never seen, rather than guessing.
-        _ => None,
+/// Maps a [`SourceError`] onto `okx_core`'s decode/rejected split.
+fn source_error(error: okx_core::CoreError) -> SourceError {
+    match error {
+        okx_core::CoreError::Decode(message) => SourceError::decode(message),
+        okx_core::CoreError::Rejected(message) => SourceError::rejected(message),
     }
 }
 
@@ -160,20 +123,15 @@ impl OkxBarSource {
         self
     }
 
-    /// Builds the request URL for one `bars()` call.
-    ///
-    /// `after=X` returns candles strictly **older** than `X`; `before=X`
-    /// is the newer direction ("the single most commonly
-    /// mis-implemented parameter in this API"). Passing both bounds the
-    /// request to exactly this half-open `range` server-side: everything
-    /// strictly older than `range.end()` and strictly newer than one
-    /// millisecond before `range.start()`.
-    fn candles_url(&self, symbol: &str, bar: &str, range: TimeRange) -> String {
+    /// Builds the request URL for one `bars()` call — the pagination
+    /// query itself comes from `okx_core::history_candles_query`, the one
+    /// place either this native source or the wasm component spells out
+    /// OKX's `after`/`before` inversion.
+    fn candles_url(&self, symbol: &str, interval: &str, range: TimeRange) -> String {
         format!(
-            "{}?instId={symbol}&bar={bar}&limit={MAX_ROWS}&after={}&before={}",
+            "{}?{}",
             self.url,
-            range.end().as_millis(),
-            range.start().as_millis() - 1,
+            okx_core::history_candles_query(symbol, interval, range)
         )
     }
 }
@@ -205,7 +163,7 @@ impl BarSource for OkxBarSource {
     }
 
     fn max_rows(&self) -> usize {
-        MAX_ROWS
+        okx_core::HISTORY_CANDLES_MAX_ROWS as usize
     }
 
     async fn bars(
@@ -217,82 +175,28 @@ impl BarSource for OkxBarSource {
         if range.start() >= range.end() {
             return Ok(Vec::new());
         }
-        let bar = interval_of(spec)
+        let interval = okx_core::okx_interval(core_spec(spec))
             .ok_or_else(|| SourceError::rejected(format!("unsupported bar spec {spec}")))?;
-        let url = self.candles_url(symbol.as_str(), &bar, range);
+        let url = self.candles_url(symbol.as_str(), &interval, range);
         let body = self.client.get(&url, CANDLES_FETCH_COST).await?;
-        let response: CandlesResponse =
-            serde_json::from_slice(&body).map_err(SourceError::decode)?;
-        if response.code != "0" {
-            return Err(SourceError::rejected(format!(
-                "code {}: {}",
-                response.code, response.msg
-            )));
-        }
+        let candles = okx_core::parse_history_candles(&body, range).map_err(source_error)?;
 
-        let price_scale = common_scale(response.data.iter().flat_map(|row| {
-            [
-                row.1.as_str(),
-                row.2.as_str(),
-                row.3.as_str(),
-                row.4.as_str(),
-            ]
-        }));
-        let qty_scale = common_scale(
-            response
-                .data
-                .iter()
-                .flat_map(|row| [row.5.as_str(), row.6.as_str()]),
-        );
-
-        let mut bars = Vec::with_capacity(response.data.len());
-        for (ts, open, high, low, close, volume, quote_volume, _quote_volume_variant, confirm) in
-            response.data
-        {
-            // `confirm == "0"` on the newest row, verified present even on
-            // this history endpoint: never persist it.
-            if confirm != "1" {
-                continue;
-            }
-
-            let ts_ms: i64 = ts
-                .parse()
-                .map_err(|_| SourceError::decode(format!("{ts:?} is not a valid timestamp")))?;
-            let ts_open = UnixNanos::from_millis(ts_ms)
-                .ok_or_else(|| SourceError::decode(format!("open time {ts_ms} overflowed")))?;
-            if !range.contains(ts_open) {
-                // Defensive: the query is bounded server-side already, but
-                // never trust a venue's pagination boundaries alone.
-                continue;
-            }
-
-            bars.push(Bar {
-                ts_open,
-                open: scaled(&open, price_scale)?,
-                high: scaled(&high, price_scale)?,
-                low: scaled(&low, price_scale)?,
-                close: scaled(&close, price_scale)?,
-                volume: Volume::Real(scaled(&volume, qty_scale)?),
-                quote_volume: Some(scaled(&quote_volume, qty_scale)?),
+        Ok(candles
+            .into_iter()
+            .map(|candle| Bar {
+                ts_open: candle.ts_open,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                volume: Volume::Real(candle.volume),
+                quote_volume: Some(candle.quote_volume),
                 // Neither reported by this endpoint.
                 trade_count: None,
                 taker_buy_volume: None,
-            });
-        }
-
-        // Ascending regardless of what the venue returns — OKX
-        // is descending.
-        bars.sort_by_key(|bar| bar.ts_open);
-        Ok(bars)
+            })
+            .collect())
     }
-}
-
-/// Parses `raw` at `scale`, mapping an unparseable value — which should
-/// never happen given `scale` was computed from this exact batch of
-/// strings — to a decode error rather than panicking or guessing.
-fn scaled(raw: &str, scale: u8) -> Result<i64, SourceError> {
-    parse_scaled(raw, scale)
-        .ok_or_else(|| SourceError::decode(format!("{raw:?} does not parse at scale {scale}")))
 }
 
 #[cfg(test)]
@@ -419,11 +323,11 @@ mod tests {
     #[test]
     fn day_and_above_always_request_the_utc_variant() {
         assert_eq!(
-            super::interval_of(BarSpec::new(1, BarUnit::Day)).as_deref(),
+            okx_core::okx_interval(super::core_spec(BarSpec::new(1, BarUnit::Day))).as_deref(),
             Some("1Dutc")
         );
         assert_eq!(
-            super::interval_of(BarSpec::new(1, BarUnit::Week)).as_deref(),
+            okx_core::okx_interval(super::core_spec(BarSpec::new(1, BarUnit::Week))).as_deref(),
             Some("1Wutc")
         );
     }

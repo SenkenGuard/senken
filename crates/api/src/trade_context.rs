@@ -107,7 +107,7 @@ impl StoredMarkPrice {
     /// The loader for `id`'s source, or `None` when no plugin registered a
     /// bar source for it.
     fn loader(&self, id: &InstrumentId) -> Option<SeriesLoader> {
-        self.state.runtime.series().loader(id.source()).cloned()
+        self.state.runtime.series().loader(id.source())
     }
 }
 

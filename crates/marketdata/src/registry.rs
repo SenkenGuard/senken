@@ -4,7 +4,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use futures::stream::{self, StreamExt};
@@ -155,8 +155,10 @@ type CatalogCell = Arc<OnceCell<Arc<SourceCatalog>>>;
 
 /// A registry of sources with a cached catalog per source.
 ///
-/// Cheap to share behind an `Arc`; every method except
-/// [`register_source`](Self::register_source) takes `&self`.
+/// Cheap to share behind an `Arc`; every method takes `&self` —
+/// [`register_source`](Self::register_source) included, so a source can be
+/// added to an already-running registry (see that method's own docs for
+/// why and how).
 ///
 /// # Examples
 ///
@@ -199,7 +201,7 @@ type CatalogCell = Arc<OnceCell<Arc<SourceCatalog>>>;
 /// let storage = Storage::new(dir.path());
 /// storage.init()?;
 ///
-/// let mut marketdata = MarketData::new(Arc::new(storage));
+/// let marketdata = MarketData::new(Arc::new(storage));
 /// marketdata.register_source(Arc::new(Demo))?;
 ///
 /// let page = marketdata.instruments(InstrumentQuery::new("btc")).await;
@@ -208,7 +210,22 @@ type CatalogCell = Arc<OnceCell<Arc<SourceCatalog>>>;
 /// # }
 /// ```
 pub struct MarketData {
-    sources: Vec<Arc<dyn MarketDataSource>>,
+    /// A `RwLock`, not a `Mutex`: every search and every catalog lookup
+    /// reads this list (`instruments`, `instrument`, `source_detail`,
+    /// `refresh`, `sources`), while a registration only ever happens at
+    /// startup or, since a plugin can now activate after the server is
+    /// already running, on the rare admin action that turns one on. An
+    /// uncontended `RwLock` read is one atomic increment — the same cost a
+    /// `Mutex` would have paid on that hot path anyway — and readers never
+    /// block each other the way a `Mutex` would under concurrent searches.
+    /// Every reader takes the lock just long enough to clone the `Arc`s it
+    /// needs and drops it before doing any real work (a catalog fetch, a
+    /// rank, a disk read), so the lock itself is never held across an
+    /// `.await`. This mirrors `plugin_host::DynamicVenues`'s own
+    /// `Arc<RwLock<HashMap<..>>>` — the same shape already chosen in this
+    /// codebase for a capability registry that must stay live-mutable
+    /// without taxing the reads that dominate its traffic.
+    sources: RwLock<Vec<Arc<dyn MarketDataSource>>>,
     storage: Arc<Storage>,
     cache_ttl: Duration,
     /// One cell per source id. The cell is the single-flight guard: the
@@ -223,7 +240,7 @@ impl MarketData {
     #[must_use]
     pub fn new(storage: Arc<Storage>) -> Self {
         Self {
-            sources: Vec::new(),
+            sources: RwLock::new(Vec::new()),
             storage,
             cache_ttl: DEFAULT_CACHE_TTL,
             catalogs: Mutex::new(HashMap::new()),
@@ -239,30 +256,47 @@ impl MarketData {
 
     /// Adds a source. Its id must be lowercase `[a-z0-9-]` and unique.
     ///
+    /// Takes `&self`, not `&mut self`: a plugin that never activated at
+    /// startup can now be turned on while the server is already serving
+    /// requests, and there is no way to hand that late activation a unique
+    /// `&mut MarketData` when every other holder of this registry only
+    /// ever has an `Arc<MarketData>`. See [`Self::sources`]'s field docs
+    /// for why the lock this needs costs nothing on the read paths that
+    /// dominate this registry's traffic.
+    ///
     /// # Errors
     /// [`MarketDataError::InvalidSourceId`] or
     /// [`MarketDataError::DuplicateSource`].
     pub fn register_source(
-        &mut self,
+        &self,
         source: Arc<dyn MarketDataSource>,
     ) -> Result<(), MarketDataError> {
         let id = source.id();
         if !InstrumentId::is_valid_source(id) {
             return Err(MarketDataError::InvalidSourceId(id.to_owned()));
         }
-        if self.find_source(id).is_some() {
+        let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
+        if sources.iter().any(|existing| existing.id() == id) {
             return Err(MarketDataError::DuplicateSource(id.to_owned()));
         }
-        self.sources.push(source);
+        sources.push(source);
         Ok(())
     }
 
     /// Registered sources. Cheap: no disk, no network.
+    ///
+    /// A source switched off stays listed — it is still registered, and its
+    /// stored history is still there to manage. What changes is
+    /// [`SourceSummary::serving`], so a caller offering bars, quotes or
+    /// depth for a venue can tell that this one would refuse them all.
     #[must_use]
     pub fn sources(&self) -> Vec<SourceSummary> {
         self.sources
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .map(|source| SourceSummary {
+                serving: source.is_serving(),
                 id: source.id().to_owned(),
                 name: source.name().to_owned(),
             })
@@ -321,8 +355,14 @@ impl MarketData {
     pub async fn instruments(&self, query: impl Into<InstrumentQuery>) -> InstrumentPage {
         let query = query.into();
 
+        // A short read lock just to snapshot the matching sources as owned
+        // `Arc`s — released before any catalog is loaded or ranked, so a
+        // slow venue never holds up a registration and one search never
+        // blocks another.
         let selected: Vec<Arc<dyn MarketDataSource>> = self
             .sources
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .filter(|source| query.accepts_source(source.id()))
             .cloned()
@@ -478,8 +518,13 @@ impl MarketData {
         (id, self.catalog_of(source.as_ref()).await)
     }
 
-    fn find_source(&self, source_id: &str) -> Option<&Arc<dyn MarketDataSource>> {
-        self.sources.iter().find(|source| source.id() == source_id)
+    fn find_source(&self, source_id: &str) -> Option<Arc<dyn MarketDataSource>> {
+        self.sources
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|source| source.id() == source_id)
+            .cloned()
     }
 
     fn cell_for(&self, source_id: &str) -> CatalogCell {
@@ -496,6 +541,18 @@ impl MarketData {
         &self,
         source: &dyn MarketDataSource,
     ) -> Result<Arc<SourceCatalog>, MarketDataError> {
+        if !source.is_serving() {
+            // Ahead of both caches deliberately: the memoised cell and the
+            // on-disk snapshot both still hold this source's rows, and
+            // serving them would mean a venue switched off still filling a
+            // search — and still counted in its total.
+            return Ok(Arc::new(SourceCatalog::new(
+                Arc::from(source.id()),
+                Arc::from(source.name()),
+                chrono::DateTime::UNIX_EPOCH,
+                Vec::new(),
+            )));
+        }
         let cell = self.cell_for(source.id());
         let catalog = cell.get_or_try_init(|| self.load_catalog(source)).await?;
         Ok(Arc::clone(catalog))
@@ -582,7 +639,13 @@ impl fmt::Debug for MarketData {
         f.debug_struct("MarketData")
             .field(
                 "sources",
-                &self.sources.iter().map(|s| s.id()).collect::<Vec<_>>(),
+                &self
+                    .sources
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .iter()
+                    .map(|s| s.id().to_owned())
+                    .collect::<Vec<_>>(),
             )
             .field("loaded_catalogs", &loaded)
             .field("cache_ttl", &self.cache_ttl)
@@ -607,7 +670,7 @@ fn describe(catalog: &SourceCatalog) -> SourceDetail {
 
 /// Rejects a freshly fetched catalog that reports one symbol twice.
 ///
-/// Measured fact (design record, Part A3): zero duplicates exist across all
+/// Measured fact: zero duplicates exist across all
 /// 51 live sources today, so this must never fire in practice — but the
 /// invariant `path_key` and every persisted path rest on is `(source_id,
 /// symbol)` uniqueness, and that must be asserted, not assumed. The
@@ -794,7 +857,7 @@ mod tests {
     use async_trait::async_trait;
     use senken_storage::{Snapshot, Storage};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
@@ -805,6 +868,7 @@ mod tests {
         fetches: Arc<AtomicUsize>,
         failures_left: AtomicUsize,
         delay: Duration,
+        serving: Arc<AtomicBool>,
     }
 
     #[async_trait]
@@ -815,6 +879,10 @@ mod tests {
 
         fn name(&self) -> &str {
             self.name
+        }
+
+        fn is_serving(&self) -> bool {
+            self.serving.load(Ordering::SeqCst)
         }
 
         async fn instruments(&self) -> Result<Vec<Instrument>, SourceError> {
@@ -851,6 +919,7 @@ mod tests {
             fetches: Arc::new(AtomicUsize::new(0)),
             failures_left: AtomicUsize::new(0),
             delay: Duration::ZERO,
+            serving: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -859,7 +928,7 @@ mod tests {
         let storage = Storage::new(dir.path());
         storage.init().unwrap();
 
-        let mut md = MarketData::new(Arc::new(storage));
+        let md = MarketData::new(Arc::new(storage));
         for source in sources {
             md.register_source(Arc::new(source)).unwrap();
         }
@@ -884,7 +953,7 @@ mod tests {
 
     #[test]
     fn registration_rejects_bad_and_duplicate_ids() {
-        let (_dir, mut md) = market_data(vec![fake("okx", "OKX", vec![])]);
+        let (_dir, md) = market_data(vec![fake("okx", "OKX", vec![])]);
         assert!(matches!(
             md.register_source(Arc::new(fake("OKX", "OKX", vec![]))),
             Err(MarketDataError::InvalidSourceId(_))
@@ -1245,6 +1314,91 @@ mod tests {
     async fn a_query_can_match_the_source_name() {
         let (_dir, md) = market_data(vec![fake("fake", "Fake Venue", vec!["AUSDT", "BUSDT"])]);
         assert_eq!(md.instruments("fake venue").await.matches.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_source_that_stops_serving_leaves_the_catalog_even_though_both_caches_are_warm() {
+        let serving = Arc::new(AtomicBool::new(true));
+        let warm = Arc::new(AtomicUsize::new(0));
+        let dir = TempDir::new().unwrap();
+        let storage = Arc::new(Storage::new(dir.path()));
+        let md = MarketData::new(storage);
+        md.register_source(Arc::new(FakeSource {
+            id: "okx",
+            name: "OKX",
+            symbols: vec!["BTC-USDT", "ETH-USDT"],
+            fetches: Arc::clone(&warm),
+            failures_left: AtomicUsize::new(0),
+            delay: Duration::ZERO,
+            serving: Arc::clone(&serving),
+        }))
+        .unwrap();
+
+        // Warm both caches first: the memoised cell and the disk snapshot.
+        // Without this the test would prove nothing — an unwarmed registry
+        // asks the source every time, which is the easy case.
+        assert_eq!(md.instruments("btc").await.total_matched, 1);
+        assert_eq!(warm.load(Ordering::SeqCst), 1);
+
+        serving.store(false, Ordering::SeqCst);
+        let page = md.instruments("btc").await;
+        assert!(
+            page.matches.is_empty(),
+            "a source that stopped serving must be absent from the results"
+        );
+        assert_eq!(
+            page.total_matched, 0,
+            "and absent from the total too: a count that still reports rows \
+             nobody can see is the same leak as showing them"
+        );
+        assert_eq!(
+            warm.load(Ordering::SeqCst),
+            1,
+            "it must not have been re-fetched either — the answer is known \
+             without asking a source that is switched off"
+        );
+
+        serving.store(true, Ordering::SeqCst);
+        assert_eq!(
+            md.instruments("btc").await.total_matched,
+            1,
+            "switching it back on restores the catalog from the warm cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_source_that_stops_serving_stays_listed_but_says_it_is_not_serving() {
+        let serving = Arc::new(AtomicBool::new(true));
+        let dir = TempDir::new().unwrap();
+        let md = MarketData::new(Arc::new(Storage::new(dir.path())));
+        md.register_source(Arc::new(FakeSource {
+            id: "bybit",
+            name: "Bybit",
+            symbols: vec!["BTCUSDT"],
+            fetches: Arc::new(AtomicUsize::new(0)),
+            failures_left: AtomicUsize::new(0),
+            delay: Duration::ZERO,
+            serving: Arc::clone(&serving),
+        }))
+        .unwrap();
+
+        assert!(md.sources()[0].serving);
+
+        serving.store(false, Ordering::SeqCst);
+        let listed = md.sources();
+        assert_eq!(
+            listed.len(),
+            1,
+            "it stays registered — its stored history is still there to manage"
+        );
+        assert!(
+            !listed[0].serving,
+            "but it must say so, or a caller offering its bars, quotes or \
+             depth would be offering controls that refuse everything"
+        );
+
+        serving.store(true, Ordering::SeqCst);
+        assert!(md.sources()[0].serving, "and it says so again when it does");
     }
 
     #[tokio::test]

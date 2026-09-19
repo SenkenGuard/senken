@@ -23,12 +23,12 @@
 	import { accessVisibility, loadAccessVisibility, grantedResources } from './access-visibility.svelte';
 	import { isDesktopShell } from '$lib/shell';
 
-	// `section.adminOnly` now does filter this list, as of
-	// Q10.2: `GET /api/me`'s `roles`/`grants` fields finally
-	// give the client an honest signal to hide on, via
-	// `access-visibility.svelte.ts`. This remains purely cosmetic — the
-	// actual requirement, that every endpoint re-checks a real grant on
-	// every request, is unaffected by whatever this list shows or hides.
+	// `section.adminOnly` now does filter this list: `GET /api/me`'s
+	// `roles`/`grants` fields finally give the client an honest signal to
+	// hide on, via `access-visibility.svelte.ts`. This remains purely
+	// cosmetic — the actual requirement, that every endpoint re-checks a
+	// real grant on every request, is unaffected by whatever this list
+	// shows or hides.
 	onMount(loadAccessVisibility);
 
 	const visibility = $derived<SettingsVisibilityContext>({

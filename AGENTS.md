@@ -304,13 +304,30 @@ is a tax: it is slow enough that it stops being run at all, and a check nobody
 runs catches nothing. Widen the scope only when your change crosses a crate
 boundary.
 
+**`senken-api`'s own tests must run serially.** At the harness's default
+thread count they abort the whole test binary, roughly four runs in five,
+with `signal: 6, SIGABRT` and no panic message — at a different test each
+time. The cause is on the last line of the captured output, not in cargo's:
+`mach_msg failed with 268451845`. These tests spawn `cargo` as a subprocess
+(the toolchain probe, a user indicator's own compile, a WASM fixture build)
+from a process already holding a server and a runtime per running test, and
+one of those spawns eventually fails that way. Bounding threads does not
+help — it aborts at 4 and at 8 as readily as at 12 — and it is not memory:
+swapouts do not move across a failing run. So the workspace sweep runs
+`-- --test-threads=1` (about four minutes, against roughly one at the
+default), and a scoped run of that crate needs the same flag. Two fixes
+already landed from chasing it and are worth keeping either way: the
+compile service's "one build at a time" guard is process-wide rather than
+per-instance, and this crate's fixture builder uses the shared
+`target/fixture-wasm` and builds each fixture once per process.
+
 **Run the full sweep once, at the end, before reporting work done** — that is
 where workspace-wide breakage is meant to be caught, and it is not optional:
 
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --locked --workspace
+cargo test --locked --workspace -- --test-threads=1
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo machete
 bun run --filter web check
@@ -402,6 +419,16 @@ when it obviously should. And when a UI bug resists code reading, an opt-in
 trace at every write site, run by the owner on a session that actually fails,
 settles in one round what inspection has already failed at several times.
 
+Every measurement taken in a browser test harness starts with the same two
+checks: `document.visibilityState === 'visible'`, and one
+`requestAnimationFrame` that actually fires. A pane that never paints leaves
+`requestAnimationFrame` dead, which leaves a component's own unmount gate
+dead, which reads as a stuck dialog or a locked body — a harness artifact,
+not the application misbehaving. If either check fails, no component
+lifecycle observation taken in that session may be reported. This project's
+web test harness refuses that environment on its own, failing loudly before
+a single test runs, rather than letting a silent artifact pass as a finding.
+
 ### Generated artifacts
 
 `packages/web/src/lib/api/generated.ts` is produced by `openapi-typescript` from
@@ -414,7 +441,11 @@ generator: change the source, run the generator.
 ## This machine
 
 - **Do not run two Rust builds concurrently.** It has twice exhausted disk and
-  CPU here, killing both.
+  CPU here, killing both. In practice: at most 2 Rust agents and 1–2 web
+  agents share this one checkout, and only one `cargo` process runs at a
+  time — before `cargo build`/`test`/`clippy`/`check`, run
+  `pgrep -fl "cargo (build|test|clippy|check)"` and wait if one is already
+  running.
 - `target/` reached 61 GB before `[profile.dev] debug = "line-tables-only"`
   landed. Do not remove that setting to get a stepping debugger without saying
   so.
@@ -531,8 +562,8 @@ else should justify itself.
 
 ## Git and public interaction
 
-- **The repository has no commits yet, and committing is deferred by the owner.**
-  Do not commit, stage, push, branch, or tag unless explicitly asked.
+- **Committing is the owner's.** Do not commit, stage, push, branch, or tag
+  unless explicitly asked.
 - Do not open, edit, comment on, or review GitHub issues or pull requests unless
   explicitly asked.
 - Do not add `Co-authored-by:` trailers for AI tools or models, and do not add

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "bybit",
+  "name": "Bybit",
+  "version": "0.0.5",
+  "contributes": [
+    {
+      "point": "venue",
+      "entry": "bybit-venue.wasm",
+      "base_url": "https://api.bybit.com"
+    }
+  ]
+}

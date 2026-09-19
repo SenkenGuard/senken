@@ -15,10 +15,10 @@
 //! candidate specs.
 //!
 //! Entries are `Arc<[Bar]>`, not `Arc<RecordBatch>` as first
-//! illustrates — deliberately: Arrow stays confined to `senken-store` (plan
-//! Part C1), and this crate does not depend on it (see [`crate::source`]'s
+//! illustrates — deliberately: Arrow stays confined to `senken-store`,
+//! and this crate does not depend on it (see [`crate::source`]'s
 //! module docs for the same substitution made for the fetch port). The
-//! eviction property D17 actually cares about — evicting drops only *the
+//! eviction property that matters here — evicting drops only *the
 //! cache's* strong reference, so a chart still reading a batch keeps it
 //! alive — holds identically for `Arc<[Bar]>`.
 

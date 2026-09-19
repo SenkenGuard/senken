@@ -262,6 +262,10 @@ impl Plugin for HtxPlugin {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             description: "HTX spot, linear and inverse derivatives market data".to_owned(),
             permissions: Vec::new(),
+            contributes: senken_plugin::parse_static_contributions(include_str!(
+                "../senken-plugin.json"
+            ))
+            .expect("senken-plugin.json is well-formed"),
         }
     }
 

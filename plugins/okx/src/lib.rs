@@ -1,26 +1,31 @@
 //! OKX market data for Senken: spot, perpetual swaps, dated futures and
 //! options.
 //!
-//! Each market is its own [`MarketDataSource`]. Options are listed per
+//! Every market's catalog (and, for spot/swap/futures, its bars) is served
+//! by a `wasm32-wasip2` component — see [`Plugin::venue_components`] — not
+//! by the [`MarketDataSource`]/[`BarSource`] functions this crate still
+//! defines ([`spot_source`], [`swap_source`], [`futures_source`],
+//! [`option_source`], [`bar_source`]): those are kept as plain library
+//! functions purely so `tests/wasm_parity.rs` has a native reference to
+//! compare each component's output against. Options are listed per
 //! underlying family — OKX refuses to enumerate them all at once — so
-//! [`option_source`] takes the family and the plugin registers the liquid
-//! ones; add more with a call per family.
+//! [`option_source`] takes the family; `okx-option-btc-usd` and
+//! `okx-option-eth-usd` are the two components this plugin actually
+//! embeds, one per liquid family.
 //!
 //! [`MarketDataSource`]: senken_marketdata::MarketDataSource
+//! [`BarSource`]: senken_plugin::BarSource
+//! [`Plugin::venue_components`]: senken_plugin::Plugin::venue_components
 
 use std::sync::Arc;
 
-use senken_core::UnixNanos;
 use senken_marketdata::instrument::{
     Contract, Instrument, InstrumentKind, InstrumentStatus, OptionRight, Settlement,
 };
 use senken_marketdata::source::SourceError;
 use senken_plugin::{HttpActivationContext, Plugin, PluginError, PluginManifest};
-use senken_venue::{HttpSource, VenueClient, normalise_symbol, skip};
+use senken_venue::{HttpSource, VenueClient};
 
-use crate::api::{InstrumentsResponse, RawInstrument};
-
-mod api;
 mod bars;
 mod book;
 mod feed;
@@ -35,30 +40,6 @@ pub const SWAP_ID: &str = "okx-swap";
 pub const FUTURES_ID: &str = "okx-futures";
 
 const BASE_URL: &str = "https://www.okx.com/api/v5/public/instruments";
-
-/// Option families the plugin registers by default. OKX lists options one
-/// underlying at a time, and these are the two with real liquidity.
-const DEFAULT_OPTION_FAMILIES: [&str; 2] = ["BTC-USD", "ETH-USD"];
-
-/// Which OKX market a document came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Market {
-    Spot,
-    Swap,
-    Futures,
-    Option,
-}
-
-impl Market {
-    fn kind(self) -> InstrumentKind {
-        match self {
-            Self::Spot => InstrumentKind::Spot,
-            Self::Swap => InstrumentKind::Perpetual,
-            Self::Futures => InstrumentKind::Future,
-            Self::Option => InstrumentKind::Option,
-        }
-    }
-}
 
 /// The spot market.
 #[must_use]
@@ -112,153 +93,112 @@ pub fn option_source(client: VenueClient, family: &str) -> HttpSource {
 }
 
 fn parse_spot(body: &[u8]) -> Result<Vec<Instrument>, SourceError> {
-    parse(body, Market::Spot)
+    parse(body, okx_core::Market::Spot)
 }
 
 fn parse_swap(body: &[u8]) -> Result<Vec<Instrument>, SourceError> {
-    parse(body, Market::Swap)
+    parse(body, okx_core::Market::Swap)
 }
 
 fn parse_futures(body: &[u8]) -> Result<Vec<Instrument>, SourceError> {
-    parse(body, Market::Futures)
+    parse(body, okx_core::Market::Futures)
 }
 
 fn parse_option(body: &[u8]) -> Result<Vec<Instrument>, SourceError> {
-    parse(body, Market::Option)
+    parse(body, okx_core::Market::Option)
 }
 
-/// Decodes an `instruments` document, skipping (and logging) any entry that
-/// cannot satisfy the fixed-point contract.
-fn parse(body: &[u8], market: Market) -> Result<Vec<Instrument>, SourceError> {
-    let response: InstrumentsResponse =
-        serde_json::from_slice(body).map_err(SourceError::decode)?;
-    if response.code != "0" {
-        return Err(SourceError::rejected(format!(
-            "code {}: {}",
-            response.code, response.msg
-        )));
-    }
-    Ok(response
-        .data
-        .into_iter()
-        .filter_map(|raw| to_instrument(raw, market))
-        .collect())
+/// Decodes an `instruments` document through `okx-core`'s shared parser —
+/// the same one `plugins/okx/wasm` calls for the markets it serves — and
+/// adapts its neutral result onto the domain [`Instrument`] every
+/// `senken-marketdata` consumer speaks. This crate no longer parses OKX's
+/// wire shape itself: `okx-core` is the one place either side of the
+/// native/wasm boundary makes sense of an OKX document.
+fn parse(body: &[u8], market: okx_core::Market) -> Result<Vec<Instrument>, SourceError> {
+    let instruments = okx_core::parse_instruments(body, market).map_err(to_source_error)?;
+    Ok(instruments.into_iter().map(to_domain_instrument).collect())
 }
 
-fn to_instrument(raw: RawInstrument, market: Market) -> Option<Instrument> {
-    let source = "okx";
-    if raw.inst_id.trim().is_empty() {
-        return skip(source, "", "empty instId");
-    }
-
-    let Some((base, quote)) = pair_of(&raw) else {
-        return skip(source, &raw.inst_id, "no base/quote and no usable uly");
-    };
-    let Some(price) = raw.tick_sz.increment() else {
-        return skip(source, &raw.inst_id, "unusable tickSz");
-    };
-    let Some(qty) = raw.lot_sz.increment() else {
-        return skip(source, &raw.inst_id, "unusable lotSz");
-    };
-
-    let symbol = normalise_symbol(raw.inst_id.trim_end_matches("-SWAP"), &['-']);
-    let kind = market.kind();
-
-    let status = map_status(&raw.state, &raw.inst_id);
-    let name = name_of(base, quote, kind);
-    let (base, quote) = (base.to_owned(), quote.to_owned());
-
-    let instrument = if kind == InstrumentKind::Spot {
-        Instrument::spot(symbol, raw.inst_id, base, quote)
-    } else {
-        let settlement = if raw.ct_type.eq_ignore_ascii_case("inverse") {
-            Settlement::Inverse
-        } else {
-            Settlement::Linear
-        };
-        let settle = if raw.settle_ccy.is_empty() {
-            quote.clone()
-        } else {
-            raw.settle_ccy.clone()
-        };
-
-        let mut contract = Contract::new(settle, settlement);
-        if let Some(expiry) = raw.exp_time.as_i64().filter(|ms| *ms > 0) {
-            let Some(expiry) = UnixNanos::from_millis(expiry) else {
-                return skip(source, &raw.inst_id, "expTime overflowed UnixNanos");
-            };
-            contract = contract.with_expiry(expiry);
-        }
-        if let Some((scale, size)) = raw.ct_val.increment() {
-            contract = contract.with_contract_size(scale, size);
-        }
-        if let Some(right) = option_right(&raw.opt_type) {
-            let (strike_scale, strike) = raw.stk.increment()?;
-            contract = contract.with_option(right, strike_scale, strike);
-        }
-
-        Instrument::derivative(symbol, raw.inst_id, base, quote, kind, contract).with_name(name)
-    };
-
-    Some(
-        instrument
-            .with_status(status)
-            .with_price_increment(price)
-            .with_qty_increment(qty),
-    )
-}
-
-/// Base and quote for any instrument type.
-///
-/// Spot carries them directly; every derivative leaves them empty and puts
-/// the pair in `uly` instead.
-fn pair_of(raw: &RawInstrument) -> Option<(&str, &str)> {
-    if !raw.base_ccy.is_empty() && !raw.quote_ccy.is_empty() {
-        return Some((&raw.base_ccy, &raw.quote_ccy));
-    }
-    // Index-tracking swaps leave `uly` empty and carry the pair only in
-    // `instFamily`; one not yet launched — `JP225-USDT-SWAP` in `preopen` —
-    // leaves every field empty and names its legs only in the id. Each is
-    // tried in turn before giving up.
-    raw.uly
-        .split_once('-')
-        .or_else(|| raw.inst_family.split_once('-'))
-        .or_else(|| {
-            raw.inst_id
-                .trim_end_matches("-SWAP")
-                .split_once('-')
-                .filter(|(base, quote)| !base.is_empty() && !quote.is_empty())
-        })
-}
-
-fn option_right(opt_type: &str) -> Option<OptionRight> {
-    match opt_type {
-        "C" => Some(OptionRight::Call),
-        "P" => Some(OptionRight::Put),
-        _ => None,
+fn to_source_error(error: okx_core::CoreError) -> SourceError {
+    match error {
+        okx_core::CoreError::Decode(message) => SourceError::decode(message),
+        okx_core::CoreError::Rejected(message) => SourceError::rejected(message),
     }
 }
 
-fn name_of(base: &str, quote: &str, kind: InstrumentKind) -> String {
+fn to_domain_instrument(instrument: okx_core::Instrument) -> Instrument {
+    let built = match instrument.contract {
+        Some(contract) => Instrument::derivative(
+            instrument.symbol,
+            instrument.source_symbol,
+            instrument.base,
+            instrument.quote,
+            to_domain_kind(instrument.kind),
+            to_domain_contract(contract),
+        ),
+        None => Instrument::spot(
+            instrument.symbol,
+            instrument.source_symbol,
+            instrument.base,
+            instrument.quote,
+        ),
+    };
+    built
+        .with_name(instrument.name)
+        .with_status(to_domain_status(instrument.status))
+        .with_price_increment((instrument.price_scale, instrument.tick_size))
+        .with_qty_increment((instrument.qty_scale, instrument.step_size))
+}
+
+fn to_domain_kind(kind: okx_core::InstrumentKind) -> InstrumentKind {
     match kind {
-        InstrumentKind::Perpetual => format!("{base} / {quote} perpetual"),
-        InstrumentKind::Option => format!("{base} / {quote} option"),
-        _ => format!("{base} / {quote} future"),
+        okx_core::InstrumentKind::Spot => InstrumentKind::Spot,
+        okx_core::InstrumentKind::Future => InstrumentKind::Future,
+        okx_core::InstrumentKind::Option => InstrumentKind::Option,
+        okx_core::InstrumentKind::Perpetual => InstrumentKind::Perpetual,
     }
 }
 
-fn map_status(raw: &str, inst_id: &str) -> InstrumentStatus {
-    match raw {
-        "live" | "post_only" => InstrumentStatus::Trading,
-        "suspend" | "rebase" | "settling" => InstrumentStatus::Halted,
-        "preopen" => InstrumentStatus::PreOpen,
-        "expired" => InstrumentStatus::Closed,
-        "test" => InstrumentStatus::Test,
-        other => {
-            tracing::warn!(inst_id, state = other, "unknown okx instrument state");
-            InstrumentStatus::Unknown
-        }
+fn to_domain_status(status: okx_core::InstrumentStatus) -> InstrumentStatus {
+    match status {
+        okx_core::InstrumentStatus::Trading => InstrumentStatus::Trading,
+        okx_core::InstrumentStatus::Halted => InstrumentStatus::Halted,
+        okx_core::InstrumentStatus::PreOpen => InstrumentStatus::PreOpen,
+        okx_core::InstrumentStatus::Closed => InstrumentStatus::Closed,
+        okx_core::InstrumentStatus::Test => InstrumentStatus::Test,
+        okx_core::InstrumentStatus::Unknown => InstrumentStatus::Unknown,
     }
+}
+
+fn to_domain_settlement(settlement: okx_core::Settlement) -> Settlement {
+    match settlement {
+        okx_core::Settlement::Linear => Settlement::Linear,
+        okx_core::Settlement::Inverse => Settlement::Inverse,
+        okx_core::Settlement::Quanto => Settlement::Quanto,
+    }
+}
+
+fn to_domain_option_right(right: okx_core::OptionRight) -> OptionRight {
+    match right {
+        okx_core::OptionRight::Call => OptionRight::Call,
+        okx_core::OptionRight::Put => OptionRight::Put,
+    }
+}
+
+fn to_domain_contract(contract: okx_core::Contract) -> Contract {
+    let mut built = Contract::new(contract.settle, to_domain_settlement(contract.settlement));
+    if let Some(expiry) = contract.expiry {
+        built = built.with_expiry(expiry);
+    }
+    built = built.with_contract_size(contract.size_scale, contract.contract_size);
+    if let Some(option) = contract.option {
+        built = built.with_option(
+            to_domain_option_right(option.right),
+            option.strike_scale,
+            option.strike,
+        );
+    }
+    built
 }
 
 /// Registers every OKX market with the Senken runtime.
@@ -273,6 +213,10 @@ impl Plugin for OkxPlugin {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             description: "OKX spot, swap, futures and options market data".to_owned(),
             permissions: Vec::new(),
+            contributes: senken_plugin::parse_static_contributions(include_str!(
+                "../senken-plugin.json"
+            ))
+            .expect("senken-plugin.json is well-formed"),
         }
     }
 
@@ -286,22 +230,22 @@ impl Plugin for OkxPlugin {
     ) -> Result<(), PluginError> {
         let group = context.limit_group("okx");
         let client = context.venue_client(&group)?;
-        context.register_marketdata_source(Arc::new(spot_source(client.clone())));
-        context.register_marketdata_source(Arc::new(swap_source(client.clone())));
-        context.register_marketdata_source(Arc::new(futures_source(client.clone())));
-        for family in DEFAULT_OPTION_FAMILIES {
-            context.register_marketdata_source(Arc::new(option_source(client.clone(), family)));
-        }
-        // Bar traffic shares the same group as every market data source
-        // above: one Binance-scale ban has already
-        // happened this project because bar fetching is the request-hungry
-        // traffic that a doubled budget would exhaust fastest.
-        // One candles endpoint and one depth endpoint serve all three
-        // markets — both address by `instId` and take no market in their
-        // path — so each is registered once per source rather than
-        // reimplemented.
+        // No market's `MarketDataSource`/`BarSource` registers here
+        // anymore: `Self::venue_components` hands the runtime all five of
+        // this venue's `wasm32-wasip2` components instead (spot, swap,
+        // futures, and the two liquid option families), and the runtime
+        // registers each market's catalog — and, for spot/swap/futures,
+        // its bars — from that dynamic source. See this method's own
+        // module docs and `crate::venue_components`. `swap_source`/
+        // `futures_source`/`option_source`/`bar_source` below are kept as
+        // plain library functions (not registered as this plugin's live
+        // sources) purely so `tests/wasm_parity.rs` still has a native
+        // reference to compare each component's output against — the same
+        // reason `spot_source` was kept when spot made this same move.
+        //
+        // Every order-book and the live feed stay native below: neither
+        // is exported by `wit/senken.wit`'s `venue-plugin` world yet.
         for market in [SPOT_ID, SWAP_ID, FUTURES_ID] {
-            context.register_bar_source(Arc::new(bar_source(market, client.clone())));
             context
                 .register_book_source(Arc::new(crate::book::book_source(market, client.clone())));
         }
@@ -312,11 +256,32 @@ impl Plugin for OkxPlugin {
         context.register_feed_source(Arc::new(crate::feed::OkxFeedSource::new()));
         Ok(())
     }
+
+    fn venue_components(&self) -> Vec<&'static [u8]> {
+        // Built by `plugins/build-venue.sh okx` (spot) and
+        // `plugins/build-venue.sh okx <wasm-dir> <crate-name>` (the other
+        // four — see that script's own usage docs) into `dist/`,
+        // gitignored, and embedded here rather than read from disk at
+        // startup — see this crate's `wasm*/` directories for the
+        // components themselves and this method's caller
+        // (`senken_runtime::RuntimeBuilder::build`) for what registering
+        // them replaces. Each `include_bytes!` fails to compile this crate
+        // if its artifact is missing, which is why CI (and any local build
+        // of this crate) runs the build script five times first.
+        vec![
+            include_bytes!("../dist/okx-venue.wasm"),
+            include_bytes!("../dist/okx-venue-swap.wasm"),
+            include_bytes!("../dist/okx-venue-futures.wasm"),
+            include_bytes!("../dist/okx-venue-option-btc-usd.wasm"),
+            include_bytes!("../dist/okx-venue-option-eth-usd.wasm"),
+        ]
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Market, map_status, option_source, parse};
+    use super::{option_source, parse};
+    use okx_core::Market;
     use senken_marketdata::MarketDataSource;
     use senken_marketdata::instrument::{
         InstrumentKind, InstrumentStatus, OptionRight, Settlement,
@@ -370,6 +335,13 @@ mod tests {
         let instruments = parse(SWAP, Market::Swap).unwrap();
         let inverse = instruments.iter().find(|i| i.symbol == "BTCUSD").unwrap();
 
+        // The same function `feed.rs`'s live decoder calls on this exact
+        // `instId` — see that module's own
+        // `the_live_decoder_normalises_a_perpetual_swaps_instid_the_same_way_the_catalog_does`.
+        assert_eq!(
+            inverse.symbol,
+            okx_core::normalise_okx_symbol(&inverse.source_symbol)
+        );
         assert_eq!(inverse.base, "BTC");
         assert_eq!(inverse.quote, "USD");
         assert_eq!(inverse.kind, InstrumentKind::Perpetual);
@@ -408,7 +380,11 @@ mod tests {
         assert_eq!(call.kind, InstrumentKind::Option);
         let terms = call.contract.as_ref().unwrap().option.as_ref().unwrap();
         assert_eq!(terms.right, OptionRight::Call);
-        assert!(terms.strike > 0);
+        // The fixture's own recorded `stk` (`"70000"`, a bare integer) and
+        // its scale (`0`, since it carries no fractional digits) —
+        // asserted exactly rather than `> 0`, which a wrong scale would
+        // still satisfy.
+        assert_eq!((terms.strike_scale, terms.strike), (0, 70_000));
     }
 
     #[test]
@@ -432,13 +408,10 @@ mod tests {
         assert!(btc.url().contains("instFamily=BTC-USD"));
     }
 
-    #[test]
-    fn maps_every_documented_state() {
-        assert_eq!(map_status("live", "X"), InstrumentStatus::Trading);
-        assert_eq!(map_status("post_only", "X"), InstrumentStatus::Trading);
-        assert_eq!(map_status("suspend", "X"), InstrumentStatus::Halted);
-        assert_eq!(map_status("preopen", "X"), InstrumentStatus::PreOpen);
-        assert_eq!(map_status("test", "X"), InstrumentStatus::Test);
-        assert_eq!(map_status("something_new", "X"), InstrumentStatus::Unknown);
-    }
+    // `map_status`'s own case-for-case coverage now lives in `okx-core`'s
+    // test module (`maps_every_documented_state`), alongside the function
+    // itself — this crate's tests above still prove the *adapter* from
+    // `okx-core`'s neutral result onto the domain `Instrument` (`status`,
+    // among the rest, crossing that adapter correctly), just not the state
+    // string mapping a second time.
 }

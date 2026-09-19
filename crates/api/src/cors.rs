@@ -12,7 +12,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 /// CORS to *cross-origin* requests, and the desktop client's embedded
 /// server, `senken serve`'s own page, and the Vite dev proxy all serve the
 /// API from the same origin the page was loaded from. This layer exists
-/// only for the case B1 introduces — a client pointed at a different,
+/// only for a client pointed at a different,
 /// remote server — and an empty `allowed_origins` denies every one of
 /// those, matching "deny by default."
 ///

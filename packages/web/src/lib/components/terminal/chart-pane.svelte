@@ -43,7 +43,7 @@
 	import { userZoneStore } from '$lib/state/user-zone.svelte';
 	import { loadBars, loadIndicatorSeries, type BarLoadProgress } from '$lib/charts/bars';
 	import { objectDrawablesFromIndicatorDisplay } from '$lib/charts/indicator-display';
-	import { fetchIndicatorCatalog } from '$lib/charts/indicator-catalog';
+	import { indicatorCatalog, subscribeIndicatorCatalog } from '$lib/charts/indicator-catalog.svelte';
 	import { GenerationGuard } from '$lib/charts/generation-guard';
 	import { indicatorFieldScale, plotsForLayer, LINE_STYLE_MAP, OVERLAY_INSTRUMENT_PLOT } from '$lib/charts/layer-style';
 	import {
@@ -392,23 +392,18 @@
 	// still-resolving indicator fetch can be told apart from the current one.
 	const indicatorGeneration = new GenerationGuard();
 	const subPaneGeneration = new GenerationGuard();
-	/** Indicator names `GET /api/indicators` currently reports — the ten
-	 * built-ins (always present) plus every dynamic indicator loaded from
-	 * an uploaded `.wasm` component that is not currently disabled.
-	 * Refreshed on mount and periodically after (`refreshIndicatorCatalog`
-	 * in `onMount`), so a plugin someone disables or re-enables elsewhere
-	 * is picked up here without reloading this chart. A layer whose
-	 * `indicatorName` is outside this set is excluded from both batch
-	 * reconciliation effects below — never removed, never mutated, just
-	 * left out of the fetch — which is what turns it into a placeholder:
-	 * its plot disappears through the exact same "not seen -> removed"
-	 * cleanup a deleted layer already goes through, and the moment its
-	 * name reappears here the same effects pick it back up with its
-	 * stored `params` untouched. Reassigned wholesale on every refresh
-	 * (never mutated in place), the same convention `liveIndicatorTopics`
-	 * below uses.
-	 */
-	let indicatorCatalog = $state<Set<string>>(new Set());
+	// Indicator names `GET /api/indicators` currently reports — the ten
+	// built-ins (always present) plus every dynamic indicator loaded from an
+	// uploaded `.wasm` component that is not currently disabled — come from
+	// `$lib/charts/indicator-catalog.svelte`'s shared poll (`indicatorCatalog()`),
+	// not a copy of it: a plugin someone disables or re-enables elsewhere is
+	// picked up here without reloading this chart. A layer whose
+	// `indicatorName` is outside it is excluded from both batch reconciliation
+	// effects below — never removed, never mutated, just left out of the
+	// fetch — which is what turns it into a placeholder: its plot disappears
+	// through the exact same "not seen -> removed" cleanup a deleted layer
+	// already goes through, and the moment its name reappears the same
+	// effects pick it back up with its stored `params` untouched.
 	// The overlay-instrument reconciliation effect's own generation guard —
 	// same reasoning as `indicatorGeneration` just above: a layer
 	// hidden/shown/added/removed begins a new generation here without
@@ -679,24 +674,10 @@
 		// from — idempotent and shared across every pane, see
 		// `$lib/api/sources.svelte.ts`'s own doc.
 		void ensureSourcesLoaded();
-		// See `indicatorCatalog`'s own doc comment. A plain interval, not a
-		// live-updating subscription: enabling/disabling a dynamic
-		// indicator is an infrequent, out-of-band administrative action,
-		// not something this chart needs to react to within a tick the way
-		// a live price does.
-		const refreshIndicatorCatalog = () => {
-			fetchIndicatorCatalog()
-				.then((names) => {
-					if (!destroyed) indicatorCatalog = names;
-				})
-				.catch(() => {
-					// Transient — keep whatever was already known rather than
-					// treating a network blip as "every dynamic indicator was
-					// just disabled".
-				});
-		};
-		refreshIndicatorCatalog();
-		const indicatorCatalogPoll = setInterval(refreshIndicatorCatalog, 15_000);
+		// Joins the one shared catalogue poll every pane subscribes to — see
+		// `$lib/charts/indicator-catalog.svelte`'s own doc for why this is a
+		// subscription rather than a `setInterval` of this pane's own.
+		const unsubscribeIndicatorCatalog = subscribeIndicatorCatalog();
 		const T = themeColors(isDark());
 		chart = createChart(container, {
 			layout: {
@@ -951,7 +932,7 @@
 
 		return () => {
 			destroyed = true;
-			clearInterval(indicatorCatalogPoll);
+			unsubscribeIndicatorCatalog();
 			ro?.disconnect();
 			paneRo?.disconnect();
 			mo?.disconnect();
@@ -1009,6 +990,17 @@
 		}
 	});
 
+	/** Same reasoning as the overlay effect's `overlaySignature`: a value, not
+	 * the `subPaneLayers` array identity, which the parent replaces on every
+	 * render. */
+	const subPaneSignature = $derived(
+		subPaneLayers.map((l) => `${l.id}:${l.indicatorName ?? ''}:${JSON.stringify(l.params)}:${l.visible}`).join('|')
+	);
+	/** The instrument, timeframe, window and layer set the sub-panes are
+	 * currently drawn for — same role as `lastLoadedOverlays` below, for the
+	 * native-pane reconciliation effect just below it. */
+	let lastLoadedSubPane = '';
+
 	// Native panes share the chart's time scale and crosshair. Indicator
 	// warm-up can therefore shorten a plot without changing which candle is
 	// under its last point; there is no second logical index to synchronize.
@@ -1022,12 +1014,28 @@
 		const currentPriceScale = priceScale;
 		// See the overlay-indicator effect's own comment on `indicatorCatalog`
 		// for why a layer outside it is excluded here rather than plotted.
-		const catalog = indicatorCatalog;
+		const catalog = indicatorCatalog();
+		const signature = subPaneSignature;
 		const layers = subPaneLayers.filter(
 			(layer) => layer.indicatorName && catalog.has(layer.indicatorName)
 		);
-		const token = subPaneGeneration.begin();
 		const { from, to } = range;
+		// Gates the fetch below on a real change, the same way the overlay
+		// effect's `loadKey` does — without it, `indicatorCatalog`'s own
+		// periodic poll (a brand new `Set` every 15s, whether or not its
+		// contents changed) re-ran this effect and recomputed every sub-pane
+		// indicator on a timer, whether or not the range or layer set had
+		// moved at all.
+		//
+		// `signature` alone is not enough: it describes the *stored* layers,
+		// not which of them the catalogue currently lets through, so the key
+		// also carries the filtered set's own ids — a plugin enabling or
+		// disabling a dynamic indicator changes which layers are eligible
+		// without changing a single stored layer, and must still be seen as
+		// a real change here.
+		const loadKey = `${currentInstrument}|${currentSpec}|${from}|${to}|${signature}|${layers.map((l) => l.id).join(',')}`;
+		if (loadKey === lastLoadedSubPane) return;
+		const token = subPaneGeneration.begin();
 
 		Promise.all(
 			layers.map(async (layer, paneIndex) => ({
@@ -1128,6 +1136,9 @@
 			})
 			.catch(() => {
 				// A failed indicator fetch leaves candles and other panes usable.
+			})
+			.finally(() => {
+				if (subPaneGeneration.isCurrent(token)) lastLoadedSubPane = loadKey;
 			});
 	});
 
@@ -1217,7 +1228,14 @@
 		// The pane's own window, not the initial one. This effect re-runs on every
 		// bar close, and re-requesting the opening window discards every page of
 		// history the reader scrolled in.
-		const { from, to } = reloadWindow(bars, initialBarWindow(currentSpec));
+		//
+		// `bars` is what this effect *writes* (in its own `.then`, below); reading
+		// it tracked would make the effect its own trigger — every resolved load
+		// is a new array, so the chart would reload forever. What should re-run
+		// this effect is instrument, spec, barEpoch and reloadToken, all read
+		// above; `bars` itself is read here only for whatever value it currently
+		// holds.
+		const { from, to } = untrack(() => reloadWindow(bars, initialBarWindow(currentSpec)));
 		loadBars(
 			currentInstrument,
 			currentSpec,
@@ -1251,6 +1269,10 @@
 					volume: statusVolumeFromDto(b.volume, resolved.qtyScale)
 				}));
 				if (bars.length > 0) onLastClose?.(bars[bars.length - 1].close);
+			})
+			.catch(() => {
+				// `progress` already carries the error phase/message; nothing
+				// further to do here.
 			})
 			.catch(() => {
 				// `progress` already carries the error phase/message; nothing
@@ -2102,7 +2124,7 @@
 		// its series (if any) is torn down the same way a deleted layer's
 		// already is, and its own `indicatorName`/`params` are untouched
 		// (they live on the layer itself, never on this component's state).
-		const catalog = indicatorCatalog;
+		const catalog = indicatorCatalog();
 		const token = indicatorGeneration.begin();
 		const layers = untrack(() =>
 			overlayLayers.filter((l) => l.kind === 'indicator_overlay' && l.indicatorName)
@@ -2118,8 +2140,21 @@
 		// — so this effect only re-runs on a real change: a new indicator,
 		// changed inputs, a different timeframe, or older bars coming into
 		// view.
-		const loadKey = `${currentInstrument}|${currentSpec}|${from}|${to}|${signature}`;
-		if (loadKey !== lastLoadedOverlays) reportLoading(layers.map((l) => l.id));
+		// Comparing this string, built from the plain `from`/`to` numbers
+		// above, is what actually gates the fetch below. Comparing `range`
+		// itself would never gate anything — `indicatorRange` returns a fresh
+		// object on every recomputation, so two loads over the exact same
+		// window would still look like a change.
+		//
+		// `signature` alone is not enough: it describes the *stored* layers,
+		// not which of them the catalogue currently lets through, so the key
+		// also carries the filtered set's own ids — a plugin enabling or
+		// disabling a dynamic indicator changes which layers are eligible
+		// without changing a single stored layer, and must still be seen as
+		// a real change here.
+		const loadKey = `${currentInstrument}|${currentSpec}|${from}|${to}|${signature}|${layers.map((l) => l.id).join(',')}`;
+		if (loadKey === lastLoadedOverlays) return;
+		reportLoading(layers.map((l) => l.id));
 
 		Promise.all(
 			layers.map(async (layer) => {

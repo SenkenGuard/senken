@@ -9,8 +9,8 @@
 //! `async` import
 //!
 //! Every other `Store` this crate builds (`PluginState`, for the
-//! `indicator-plugin`/`compiled-indicator` worlds) runs against a plain
-//! synchronous `wasmtime::Engine`, driven from whatever thread happens to
+//! `indicator-plugin` world) runs against a plain synchronous
+//! `wasmtime::Engine`, driven from whatever thread happens to
 //! call in — a chart replay loop, a backtest worker, this crate's own test
 //! suite. Keeping [`VenuePluginState`](crate::wasi::VenuePluginState) on
 //! that same synchronous engine (rather than standing up a second,

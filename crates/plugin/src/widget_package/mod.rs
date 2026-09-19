@@ -49,7 +49,8 @@ pub mod store;
 
 pub use csp::content_security_policy;
 pub use manifest::{
-    DASHBOARD_WIDGET_POINT, DataSource, GridSize, ManifestError, ValidatedManifest,
+    DASHBOARD_WIDGET_POINT, DataSource, GridSize, INDICATOR_POINT, ManifestError,
+    TRADE_ADAPTER_POINT, VENUE_POINT, ValidatedEntryContribution, ValidatedManifest,
     ValidatedWidgetContribution,
 };
 pub use store::{

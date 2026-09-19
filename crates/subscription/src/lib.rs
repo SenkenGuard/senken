@@ -12,7 +12,7 @@
 //!
 //! # Receiving updates
 //!
-//! [`Lease::updates`] is the entire consumer-facing contract R3 adds:
+//! [`Lease::updates`] is the entire consumer-facing contract:
 //! whatever holds a lease calls it to get a `watch::Receiver` for that
 //! instrument's latest price, no separate registration step. A real
 //! [`VenueConnection`] calls [`SubscriptionPool::publish`] every time it

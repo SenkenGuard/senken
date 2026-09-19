@@ -1,8 +1,8 @@
 //! Jobs resume for free: coverage lives in
 //! filenames and files are immutable, so a crash should
 //! lose at most the chunk in flight, and a restart should re-plan from
-//! whatever is already on disk. M6/M6.5 stated this as a design property
-//! but never tested it with a real crash. This test does: it spawns
+//! whatever is already on disk. That was always the design intent, but it
+//! had never been tested with a real crash. This test does: it spawns
 //! `backfill_worker` (`crates/loader/src/bin/backfill_worker.rs`) as a
 //! genuine OS child process, kills it with a hard `SIGKILL`/`TerminateProcess`
 //! (via [`std::process::Child::kill`], not a graceful shutdown signal) partway

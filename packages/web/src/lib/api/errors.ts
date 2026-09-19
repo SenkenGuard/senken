@@ -4,7 +4,7 @@
 // escape to a caller — every failure becomes one of these, so a component
 // can `catch` and branch on `instanceof` instead of re-deriving "was this a
 // 401" from a status number it read off a `Response` itself. That
-// re-derivation is exactly the kind of thing B16 exists to centralise.
+// re-derivation is exactly what this module exists to centralise.
 
 /** Base class for every error `ApiClient` throws. */
 export abstract class ApiError extends Error {}
@@ -38,8 +38,8 @@ export class UnauthorizedError extends ApiError {
 	}
 }
 
-/** `403 Forbidden` — B16 point 3: authenticated, but not permitted. Must
- * surface as a message in the caller's UI, never trigger a logout. */
+/** `403 Forbidden` — authenticated, but not permitted. Must surface as a
+ * message in the caller's UI, never trigger a logout. */
 export class ForbiddenError extends ApiError {
 	constructor(message = 'You do not have permission to do that.') {
 		super(message);
@@ -97,8 +97,8 @@ export type ResponseOutcome = 'ok' | 'no-content' | 'unauthorized' | 'forbidden'
 
 /** Pure classification of a response's status into the branch `ApiClient`
  * (`client.ts`) acts on. Split out so the 401-vs-403-vs-everything-else
- * decision — the one B16 explicitly warns is easy to get backwards — is
- * unit-testable without a real `fetch` or a rune-bearing module. */
+ * decision — one that is easy to get backwards — is unit-testable without a
+ * real `fetch` or a rune-bearing module. */
 export function classifyResponse(response: Pick<Response, 'status' | 'ok'>): ResponseOutcome {
 	if (response.status === 401) return 'unauthorized';
 	if (response.status === 403) return 'forbidden';

@@ -1928,7 +1928,7 @@ mod tests {
         "{}".to_owned()
     }
 
-    // --- B6/B7: scope reaches the query, including the total -----------
+    // --- Guarded queries: scope reaches the query, including the total --
 
     #[test]
     fn two_users_cannot_see_each_others_workspaces_and_the_total_respects_scope_too() {
@@ -1978,7 +1978,7 @@ mod tests {
         assert_eq!(page.rows.len(), 2);
     }
 
-    // --- B1: default workspace on first open ----------------------------
+    // --- Default workspace on first open ---------------------------------
 
     #[test]
     fn opening_charts_with_no_workspace_creates_a_default_one_and_a_second_open_does_not_duplicate_it()
@@ -2065,7 +2065,7 @@ mod tests {
         ));
     }
 
-    // --- B9: a layout change is transactional ---------------------------
+    // --- A layout change is transactional ---------------------------------
 
     #[test]
     fn a_layout_change_is_transactional_a_failure_part_way_leaves_the_previous_layout_intact() {

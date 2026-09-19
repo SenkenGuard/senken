@@ -24,7 +24,7 @@
 //! fields are private and it has no public constructor. A caller cannot
 //! query "what can this actor see" without calling `decide`, and cannot
 //! call `decide` without supplying an [`Actor`], an [`Action`] and a
-//! [`Resource`]. That closes the *forgetting-to-check* half of B7.
+//! [`Resource`]. That closes the *forgetting-to-check* half of it.
 //!
 //! The *forgetting-to-authorise-a-new-resource* half is closed by
 //! `decide`'s `match` over every [`Resource`] variant, written with no

@@ -1,8 +1,7 @@
 //! Runtime health counters shared across every instance spawned from one
-//! [`crate::host::LoadedPlugin`] or [`crate::host::LoadedCompiledIndicator`]
-//! — total traps, how many of those specifically exceeded the wall-clock
-//! deadline, and the highest linear-memory size any instance was ever
-//! granted.
+//! [`crate::host::LoadedPlugin`] — total traps, how many of those
+//! specifically exceeded the wall-clock deadline, and the highest
+//! linear-memory size any instance was ever granted.
 //!
 //! Shared the same way the circuit breaker and the ring log already are:
 //! one instance per plugin, cloned (an `Arc`) into every `Store` spawned

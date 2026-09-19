@@ -9,8 +9,8 @@
 //
 // `GET /api/me`'s `roles`/`grants` fields are the first
 // honest signal this app has had for that: before them, the only options
-// were showing the section to everyone (what Q6 shipped, correctly, per
-// its own header comment) or a fabricated heuristic like matching the
+// were showing the section to everyone (which this app shipped correctly,
+// as an honest starting point) or a fabricated heuristic like matching the
 // seeded `admin@mail.com` address — which would *look* like a permission
 // check without being one. This module reads the real thing instead.
 import { apiClient } from '$lib/api/client';

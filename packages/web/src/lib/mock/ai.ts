@@ -1,17 +1,18 @@
-// Mock data for the AI panel. Ported from `aiMessages` / `aiPrompts` (lines 3199-3211).
+// Mock data for the AI panel, ported from a reference implementation's
+// `aiMessages` / `aiPrompts` fixtures.
 //
 // UI only: no `fetch`, no `/api`, no model call — this is
 // a fixed transcript, not a live conversation.
 //
-// Deviation: the reference parametrizes these two messages by
-// `symOf(s.symbol)` / `lastPrice(s.symbol)`, its single page-wide "current
-// instrument". `AiPanel` is global chrome mounted once in `AppShell`
-// (reachable from all three routes), and those routes each own their own
-// notion of "current symbol" independently (or, on the dashboard and trade
-// engine pages, none at all) rather than sharing the reference's one-page
+// Deviation: the reference implementation parametrizes these two messages
+// by `symOf(s.symbol)` / `lastPrice(s.symbol)`, its single page-wide
+// "current instrument". `AiPanel` is global chrome mounted once in
+// `AppShell` (reachable from all three routes), and those routes each own
+// their own notion of "current symbol" independently (or, on the dashboard
+// and trade engine pages, none at all) rather than sharing that one-page
 // state — so there is no cross-route symbol to read here. Fixed on
 // BTC/USDT, the terminal's first fixture instrument, rather than inventing
-// a shared "current instrument" bus P5 was not asked to build.
+// a shared "current instrument" bus this panel was never asked to build.
 //
 // `./charts` is gone (the mock module the charts page used to
 // read from — real data now, see `$lib/charts/`). This panel's own fixture

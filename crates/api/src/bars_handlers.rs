@@ -83,14 +83,9 @@ pub(crate) fn loader_for(
     state: &AppState,
     id: &InstrumentId,
 ) -> Result<SeriesLoader, HandlerError> {
-    state
-        .runtime
-        .series()
-        .loader(id.source())
-        .cloned()
-        .ok_or_else(|| {
-            HandlerError::BadRequest(format!("no bar source registered for `{}`", id.source()))
-        })
+    state.runtime.series().loader(id.source()).ok_or_else(|| {
+        HandlerError::BadRequest(format!("no bar source registered for `{}`", id.source()))
+    })
 }
 
 pub(crate) fn parse_range(from: i64, to: i64) -> Result<TimeRange, HandlerError> {
@@ -316,14 +311,9 @@ pub(crate) async fn bar_job_status(
     Path(job_ref): Path<String>,
 ) -> Result<Json<BarJobDto>, HandlerError> {
     let (source, job_id) = parse_job_ref(&job_ref)?;
-    let loader = state
-        .runtime
-        .series()
-        .loader(source)
-        .cloned()
-        .ok_or_else(|| {
-            HandlerError::BadRequest(format!("no bar source registered for `{source}`"))
-        })?;
+    let loader = state.runtime.series().loader(source).ok_or_else(|| {
+        HandlerError::BadRequest(format!("no bar source registered for `{source}`"))
+    })?;
     let snapshot = loader
         .job(job_id)
         .ok_or_else(|| HandlerError::BadRequest("no such job".to_owned()))?;
@@ -457,6 +447,7 @@ pub(crate) mod test_support {
                 version: "0".to_owned(),
                 description: String::new(),
                 permissions: Vec::new(),
+                contributes: Vec::new(),
             }
         }
 
@@ -616,6 +607,7 @@ pub(crate) mod test_support {
                 version: "0".to_owned(),
                 description: String::new(),
                 permissions: Vec::new(),
+                contributes: Vec::new(),
             }
         }
 

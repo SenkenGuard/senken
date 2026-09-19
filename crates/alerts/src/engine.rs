@@ -348,7 +348,7 @@ mod tests {
         drop(engine);
     }
 
-    /// R6/`AlertStore::all_enabled_for_engine`'s own "report, do not fail the
+    /// `AlertStore::all_enabled_for_engine`'s own "report, do not fail the
     /// whole reconciliation" discipline, exercised at the engine level: one
     /// alert names a source this build has no pool for at all, and must be
     /// skipped — logged, not panicked — while every other alert still runs.

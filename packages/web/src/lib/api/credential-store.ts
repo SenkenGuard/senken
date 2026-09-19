@@ -1,13 +1,12 @@
 // Per-server credential persistence.
 //
-// B11 decides credentials are keyed **by server** — connecting to three
-// Senkens means three independent credentials — and that on desktop they
-// belong in the OS keyring, never a JSON file. The keyring integration
-// itself is out of scope for this stage ("the desktop keyring belongs
-// to a later milestone — leave a clean seam, do not build it"), so this
-// file defines the seam as an interface and ships exactly one
-// implementation: `localStorage`, which is what B2 calls for "in the
-// browser."
+// Credentials are keyed **by server** — connecting to three Senkens means
+// three independent credentials — and on desktop they belong in the OS
+// keyring, never a JSON file. The keyring integration itself is out of scope
+// for this stage — that is a clean seam to leave for later, not something to
+// build now — so this file defines the seam as an interface and ships
+// exactly one implementation: `localStorage`, which is what the browser
+// build needs.
 //
 // `ApiClient` and the server-selection store depend on the `CredentialStore`
 // interface, not on `LocalStorageCredentialStore` directly, so a future

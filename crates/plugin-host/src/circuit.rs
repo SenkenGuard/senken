@@ -147,9 +147,9 @@ impl PluginCircuit {
     /// Explicitly closes an open breaker, clearing the trap streak — the
     /// only way this breaker ever recovers (see this module's own docs).
     /// The caller (`senken_runtime::DynamicIndicators::set_enabled`, wired
-    /// through `LoadedPlugin`/`LoadedCompiledIndicator`) is a user
-    /// deliberately re-enabling a plugin they have already read the trip
-    /// reason for; nothing in this crate calls this on its own.
+    /// through `LoadedPlugin`) is a user deliberately re-enabling a plugin
+    /// they have already read the trip reason for; nothing in this crate
+    /// calls this on its own.
     pub(crate) fn reset(&self) {
         let mut state = self
             .state

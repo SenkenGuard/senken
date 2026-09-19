@@ -17,8 +17,7 @@
 //! pool for anyone to race for — so the choice is never a scheduling
 //! coincidence: see `priority_gate`'s own tests, and
 //! `crate::loader::tests::a_visible_jobs_chunk_is_serviced_before_an_earlier_queued_backgrounds_chunk`,
-//! for how this is proven rather than merely trusted (the same standard M6
-//! held itself to when it declined to build this unproven).
+//! for how this is proven rather than merely trusted.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;

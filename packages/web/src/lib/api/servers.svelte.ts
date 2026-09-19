@@ -1,9 +1,9 @@
 // Server selection and persistence.
 //
-// B1 is the reason this file exists at all: "the client can point at any
-// server, not just the embedded one," and reversing that assumption later
-// "touches every call site" — so server identity is a first-class, mutable,
-// persisted piece of state from the start, not a hard-coded base URL.
+// This file exists because the client can point at any server, not just
+// the embedded one, and reversing that assumption later would touch every
+// call site — so server identity is a first-class, mutable, persisted piece
+// of state from the start, not a hard-coded base URL.
 //
 // Follows the module-level rune store pattern from `$lib/state/` (see
 // `accounts.svelte.ts`) rather than introducing a second convention for
@@ -149,8 +149,8 @@ export function resolveBaseUrl(server: ServerConfig): string {
 	return server.baseUrl === '' ? window.location.origin : server.baseUrl;
 }
 
-/** B15: "the client must warn when the chosen server is neither loopback
- * nor `https`." Returns `true` when the connection is safe (loopback, so
+/** The client must warn when the chosen server is neither loopback nor
+ * `https`. Returns `true` when the connection is safe (loopback, so
  * the traffic never leaves the machine, or TLS-protected); `false` means
  * the UI must show a warning. The actual check is `security.ts`'s
  * `isSecureUrl`, kept pure and unit-tested there. */

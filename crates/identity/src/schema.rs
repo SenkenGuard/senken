@@ -3,8 +3,10 @@
 //! Schema history:
 //! - **v1**: `users`, `roles`, `role_grants`, `user_roles`,
 //!   `user_grants`, `sessions`.
-//! - **v2** (closing the coordination gap Q2 and Q7 each reasonably left to the other — see the plan's "Coordination gap" section): `plugin_permissions`, `role_plugin_grants`,
-//!   `user_plugin_grants`, exactly the shapes B14 fixed. `plugin_permissions`
+//! - **v2** (closing a coordination gap: two work items each reasonably
+//!   assumed the other would persist reconciled plugin permissions, so
+//!   neither did): `plugin_permissions`, `role_plugin_grants`,
+//!   `user_plugin_grants`. `plugin_permissions`
 //!   gets a real writer in this crate ([`crate::IdentityStore::load_plugin_permissions`]/
 //!   [`crate::IdentityStore::save_plugin_permissions`], paired with
 //!   `senken_plugin::reconcile_plugin_permissions`'s pure reconciliation);
@@ -165,14 +167,14 @@ use crate::error::IdentityError;
 /// this and extend the schema (or add a migration step) when the shape
 /// changes — there is deliberately no migration crate, not schema
 /// evolution itself.
-const SCHEMA_VERSION: i32 = 14;
+const SCHEMA_VERSION: i32 = 15;
 
-/// `CREATE TABLE` statements for every table assigned to this
-/// milestone: users, roles and the grants attached to either, plus
-/// sessions. Column names, types and nullability match B14 exactly —
-/// notably `users.password_hash` is nullable, which *is* the B4 first-run
-/// fence (state, not a flag that can drift out of sync with it), and
-/// `sessions` stores `token_hash`, never the token itself.
+/// `CREATE TABLE` statements for the original tables: users, roles and the
+/// grants attached to either, plus sessions. Column names, types and
+/// nullability are exactly what `IdentityStore`'s guarded queries
+/// expect — notably `users.password_hash` is nullable, which *is*
+/// the first-run fence (state, not a flag that can drift out of sync with
+/// it), and `sessions` stores `token_hash`, never the token itself.
 const SCHEMA_SQL: &str = r"
 CREATE TABLE users (
     id             TEXT PRIMARY KEY,
@@ -225,10 +227,11 @@ CREATE TABLE sessions (
 CREATE INDEX sessions_user_id ON sessions(user_id);
 ";
 
-/// `CREATE TABLE` statements added in schema v2: the plugin
-/// permission tables B14 fixed but that Q2 and Q7 each left to the other
-/// (see this plan's "Coordination gap" section). Column names and
-/// nullability match B14 exactly.
+/// `CREATE TABLE` statements added in schema v2: the plugin permission
+/// tables that two work items each assumed the other would persist, so
+/// neither did until this migration — see this module's doc comment.
+/// Column names and nullability are exactly what `IdentityStore`'s
+/// plugin-permission methods expect.
 const SCHEMA_SQL_V2: &str = r"
 -- One row per plugin-declared permission this database has ever seen,
 -- across every plugin. `name` (e.g.
@@ -726,6 +729,49 @@ CREATE TABLE registry_handles (
 ) STRICT;
 ";
 
+/// `CREATE TABLE` statements added in schema v15: `user_indicators`, for
+/// `senken-indicator-registry`'s per-user store, and `plugin_state`, for
+/// the plugin system's enable/disable and settings state. Both land in the
+/// same migration so a later plugin-system change does not need to bump
+/// the schema version a second time.
+///
+/// `user_indicators.wasm` is `NULL` until the source has compiled
+/// successfully at least once; `compile_error` is `NULL` once the most
+/// recent compile *attempt* succeeded. A failed attempt updates `source`
+/// and `compile_error` but leaves `wasm`/`api_version` exactly as they
+/// were, so an indicator already placed on a chart keeps working after a
+/// typo in a later edit — which means the two columns can be non-`NULL`
+/// at the same time: a working build from an earlier version of `source`,
+/// alongside the error the *current* `source` produced.
+///
+/// `plugin_state` has no foreign key on purpose: a plugin can disappear
+/// from disk while its row still records whether the user had it enabled
+/// and what they configured.
+const SCHEMA_SQL_V15: &str = r"
+CREATE TABLE user_indicators (
+    id            TEXT PRIMARY KEY,
+    owner_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    slug          TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    wasm          BLOB,
+    api_version   TEXT,
+    compiled_at   INTEGER,
+    compile_error TEXT,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    UNIQUE (owner_id, slug)
+) STRICT;
+CREATE INDEX user_indicators_owner_id ON user_indicators(owner_id);
+
+CREATE TABLE plugin_state (
+    plugin_id   TEXT PRIMARY KEY,
+    enabled     INTEGER NOT NULL DEFAULT 0,
+    settings    TEXT NOT NULL DEFAULT '{}',
+    updated_at  INTEGER NOT NULL
+) STRICT;
+";
+
 /// Opens (creating if absent) the SQLite database at `path`, applies the
 /// the pragmas this database requires, and creates or checks the schema.
 ///
@@ -770,7 +816,8 @@ pub(crate) fn open(path: &Path) -> Result<Connection, IdentityError> {
 /// `dashboard_workspaces`/`dashboard_widgets` tables, v11 adds v12's
 /// `users.display_zone` column, v12 adds v13's
 /// `indicator_registry_entries` table, v13 adds v14's `registry_handles`
-/// table), since there is no
+/// table, v14 adds v15's `user_indicators` and `plugin_state` tables),
+/// since there is no
 /// migration crate but not migrating by hand.
 /// A database newer than this crate knows about is reported, never guessed
 /// at.
@@ -842,6 +889,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), IdentityError> {
     if version == 13 {
         conn.execute_batch(SCHEMA_SQL_V14)?;
         version = 14;
+    }
+    if version == 14 {
+        conn.execute_batch(SCHEMA_SQL_V15)?;
+        version = 15;
     }
     debug_assert_eq!(
         version, SCHEMA_VERSION,
@@ -926,7 +977,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("accounts.db");
         {
-            // Simulate a database written by the pre-Q4 (v1-only) schema:
+            // Simulate a database written by the v1-only schema:
             // the real v1 SQL, `user_version` left at 1, and no plugin
             // permission or workspace tables at all.
             let conn = rusqlite::Connection::open(&path).unwrap();
@@ -988,7 +1039,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("accounts.db");
         {
-            // Simulate a database written by the pre-R1 (v2) schema: v1 +
+            // Simulate a database written by the v2 schema: v1 +
             // v2 SQL, `user_version` left at 2, and no workspace tables.
             let conn = rusqlite::Connection::open(&path).unwrap();
             conn.execute_batch(super::SCHEMA_SQL).unwrap();
@@ -1030,7 +1081,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("accounts.db");
         {
-            // Simulate a database written by the pre-R6 (v3) schema: v1 + v2
+            // Simulate a database written by the v3 schema: v1 + v2
             // + v3 SQL, `user_version` left at 3, and no `alerts` table.
             let conn = rusqlite::Connection::open(&path).unwrap();
             conn.execute_batch(super::SCHEMA_SQL).unwrap();
@@ -1824,6 +1875,102 @@ mod tests {
             )
             .unwrap_or(false);
         assert!(exists, "migration must add `registry_handles`");
+    }
+
+    #[test]
+    fn a_fresh_database_lands_on_schema_15() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+        assert_eq!(super::SCHEMA_VERSION, 15);
+
+        for table in ["user_indicators", "plugin_state"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            assert!(exists, "fresh database must have `{table}`");
+        }
+    }
+
+    #[test]
+    fn migrating_a_v14_database_keeps_registry_rows_and_adds_user_indicators() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("accounts.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", true).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V2).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V3).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V4).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V5).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V6).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V7).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V8).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V9).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V10).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V11).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V12).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V13).unwrap();
+            conn.execute_batch(super::SCHEMA_SQL_V14).unwrap();
+            conn.execute(
+                "INSERT INTO users (id, email, display_name, created_at) VALUES ('user-v14', 'v14@example.com', 'V14 User', 0)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO indicator_registry_entries (id, owner_id, name, source, language_version, created_at, updated_at) VALUES ('reg-v14', 'user-v14', 'kept', 'src', '1', 0, 0)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO registry_handles (owner_id, handle, created_at) VALUES ('user-v14', 'kept-handle', 0)",
+                [],
+            ).unwrap();
+            conn.pragma_update(None, "user_version", 14).unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+
+        for table in ["user_indicators", "plugin_state"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            assert!(exists, "migration must add `{table}`");
+        }
+
+        // The migration is not destructive: rows the DSL/registry system
+        // wrote before this plan survive untouched.
+        let registry_row_kept: String = conn
+            .query_row(
+                "SELECT name FROM indicator_registry_entries WHERE id = 'reg-v14'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(registry_row_kept, "kept");
+        let handle_kept: String = conn
+            .query_row(
+                "SELECT handle FROM registry_handles WHERE owner_id = 'user-v14'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(handle_kept, "kept-handle");
     }
 
     #[test]

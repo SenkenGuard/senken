@@ -173,8 +173,7 @@ impl HttpSource {
     /// `url` and decoding them with `parse`.
     ///
     /// `client` fetches through `client`'s [`LimitGroup`], so every source
-    /// built from clones of the same client shares one venue budget — the
-    /// property M3.1 exists for.
+    /// built from clones of the same client shares one venue budget.
     ///
     /// The id is owned rather than `&'static str` because some venues split
     /// one market across several documents — OKX lists options per

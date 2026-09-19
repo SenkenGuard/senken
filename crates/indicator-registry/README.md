@@ -1,80 +1,59 @@
 # senken-indicator-registry
 
-Publishes, searches, and installs indicator-lang source — never a compiled
-binary.
+Two stores, kept in one crate because both are "indicators a database row
+identifies by owner and name":
 
-## Source, never a binary
+- **`UserIndicatorStore`** — the guarded store behind an account's own
+  compiled Rust indicators. This is the active one:
+  `user_indicator_handlers` in `senken-api` mounts it, and it is what
+  backs `POST /api/my/indicators` and the rest of that surface.
+- **`RegistryStore`** — a public registry for publishing, searching and
+  installing indicator source across accounts. **Not mounted by anything
+  today.** It stays here, compiled and tested, for whenever a registry is
+  designed again; see its own module docs (`src/store.rs`) for why.
 
-`senken_indicator_lang::compile` runs on the *installing* machine, every
-time. Publishing a compiled artifact instead would recreate a problem this
-design does not have to solve: nothing could prove a published binary
-actually came from the source sitting next to it, short of recompiling it
-anyway. Publishing source means what you read is what you run, with no
-build farm to operate or secure, and every published artifact is a few
-kilobytes of readable, forkable, reviewable text.
+## `UserIndicatorStore`
 
-## What actually needs defending: identity and naming
+Follows the same guarded-query shape `senken-notes` uses: every method
+takes an `AuthenticatedUser` and goes through `AuthenticatedUser::authorize`
+first. Two exceptions treat an indicator's source like
+`senken-trade::TradeAccountStore` treats broker credentials — readable and
+writable by their owner alone, regardless of a wider role's scope — because
+a caller who is not the owner should not learn a given indicator even
+exists:
 
-With binary provenance off the table, what is left is publisher identity
-and naming — the class of attack where a malicious publisher impersonates
-or typosquats a legitimate one to get their code installed under a
-trusted-looking name.
+- `get` (reads source and the compiled artifact) and `update_source`
+  (writes source) are owner-only, whatever the caller's grants say.
+- A caller who is not the owner is told the indicator does not exist,
+  never that they may not see it — the same reasoning
+  `senken_trade::TradeAccountStore::settings_for` documents for itself.
 
-- **Every name is namespaced by its publishing account.** A qualified name
-  is `{namespace}/{name}`, where `namespace` is the publishing account's
-  own id — never a self-chosen display string a impersonator could also
-  choose. `(namespace, name)` is the stored uniqueness, so two authors may
-  use the same `name` in their own namespaces without colliding, and
-  [`RegistryStore::publish`] refuses a `namespace` argument that is not the
-  caller's own account before anything else runs.
-- **A `Handle` is what a human actually types.** Nobody types
-  `@550e8400-e29b-41d4-a716-446655440000/supertrend`. A handle is a
-  validated (lowercase letters, digits, hyphens only), globally unique
-  name an account claims once and that resolves back to its `UserId` — it
-  never replaces the account id as the stored namespace, only gives it a
-  human-facing address. Uniqueness is enforced the same way
-  `(namespace, name)` already is, by a database constraint, not a
-  convention, so it closes the same impersonation question a
-  handle-only design would otherwise reopen. `RegistryStore::publish`
-  refuses to run for an account with no handle chosen yet — a published
-  entry nobody can address is not meaningfully published.
-- **The indicator language's version is recorded on every publish.** An
-  installing host too old for what it fetches is refused with a message
-  naming both versions, never a silent failure to load.
+`list` and `delete` follow the ordinary scope rule instead: `Scope::All`
+may see every account's summaries, or delete any account's row — neither
+leaks anything reading source would.
 
-## Revoking a publish
+A failed compile (`record_compile` with `CompileOutcome::Failure`) leaves
+the previously-compiled `wasm`/`api_version` exactly as they were: an
+indicator already placed on a chart keeps working after a typo in a later
+edit.
 
-`RegistryStore::delete` lets an author remove their own published entry —
-and only their own: it reuses `publish`'s own namespace-ownership check,
-so this is never something a wider grant can extend to someone else's
-entry. Deleting removes the entry from search and blocks any *new*
-install; it cannot reach into a copy someone already installed, since
-installing copies the compiled bytes to the installing machine rather
-than leaving a live reference back to this registry.
+## `RegistryStore` (unmounted)
 
-## Publishing needs an account; installing does not
-
-`publish`, `delete` and `list_mine` take an `AuthenticatedUser` and go
-through `AuthenticatedUser::authorize`, the same guarded-query shape
-`senken-notes`/`senken-dashboard` use. `search`, `get` and `install` take no
-account at all — a published indicator is public and installable by
-design, the same way this workspace already treats market data as global.
-`set_handle`/`get_handle` take a bare `UserId`, not an `AuthenticatedUser`
-— choosing your own address needs no grant, matching
-`senken-identity`'s own `set_zone`.
-
-## What is deliberately out of scope
-
-Signing and a trust root, moderation, and ratings/reviews are not this
-crate's job. Nor is a version history per indicator: publishing again under
-a name an account already owns replaces that entry's source in place.
+Publishes, searches, and installs indicator source — never a compiled
+binary. `publish`'s own handle gate refuses any account with no row in
+`registry_handles`, and nothing in this build can put a row there any
+more (the only writer, `set_handle`, was removed along with the rest of
+the account-handle feature), so every publish attempt is refused today.
+`install` no longer compiles the fetched source either — this crate has no
+compiler of its own since `senken-indicator-lang` was removed. Both
+methods are kept working and tested against everything *except* that gap,
+so a future redesign has a store to build on rather than a blank page.
 
 ## One database, one schema-version owner
 
-Registry entries and registry handles both reference `users(id)`, so
-their tables live in the same SQLite file `senken-identity` already owns
-rather than a second database this crate would have to keep referentially
-consistent with the first by hand. `senken-identity` stays the file's
-single owner of `PRAGMA user_version`; this crate never opens its own
-connection, only a clone of that store's connection via
-`RegistryStore::new`.
+Every table both stores use references `users(id)`, so they live in the
+same SQLite file `senken-identity` already owns rather than a second
+database this crate would have to keep referentially consistent with the
+first by hand. `senken-identity` stays the file's single owner of `PRAGMA
+user_version`; this crate never opens its own connection, only a clone of
+that store's connection via `RegistryStore::new`/`UserIndicatorStore::new`.

@@ -13,7 +13,9 @@
 	// `./geometry.ts`, unit-tested on its own since this component itself
 	// cannot be rendered through this project's server-only Svelte test
 	// harness (see `widget-frame.svelte`'s own doc comment for why).
+	import { onDestroy } from 'svelte';
 	import { toast } from 'svelte-sonner';
+	import { cn } from '$lib/utils.js';
 	import {
 		getDashboardLayout,
 		replaceDashboardLayout,
@@ -32,7 +34,7 @@
 		type GridMetrics,
 		type GridRect
 	} from './geometry';
-	import { rendererFor } from './widget-registry';
+	import { rendererFor } from './widget-registry.svelte';
 	import WidgetFrame from './widget-frame.svelte';
 
 	let {
@@ -174,6 +176,28 @@
 		mode: 'move' | 'resize';
 	}
 	let drag = $state<DragState | null>(null);
+	// The id of the widget currently under a drag whose *proposed* placement
+	// overlaps another widget or runs off the grid — set only while that
+	// stays true, so the cell can show it was rejected instead of just not
+	// moving with no visible reason (`isValidPlacement`'s own check below is
+	// unchanged; this only adds feedback around it).
+	let invalidPlacementId = $state<string | null>(null);
+
+	// The two classes a drag/resize in progress puts on `document.body`,
+	// removed unconditionally on pointer up, pointer cancel, *and* this
+	// component's own destruction — the last of those matters because a
+	// workspace switch remounts this whole component (`{#key}` in
+	// `routes/dashboard/+page.svelte`) mid-drag would otherwise leave a
+	// `cursor-grabbing` class on `body` that nothing left mounted would ever
+	// clear, which is exactly the shape of stuck-cursor bug this project has
+	// already misdiagnosed once as "the body is locked".
+	function bodyDragClasses(mode: 'move' | 'resize'): string[] {
+		return mode === 'move' ? ['select-none', 'cursor-grabbing'] : ['select-none', 'cursor-nwse-resize'];
+	}
+	function clearBodyDragClasses(): void {
+		document.body.classList.remove('select-none', 'cursor-grabbing', 'cursor-nwse-resize');
+	}
+	onDestroy(clearBodyDragClasses);
 
 	function beginDrag(id: string, mode: 'move' | 'resize', event: PointerEvent) {
 		if (!gridEl) return;
@@ -194,6 +218,8 @@
 			},
 			mode
 		};
+		invalidPlacementId = null;
+		document.body.classList.add(...bodyDragClasses(mode));
 	}
 
 	function onPointerMove(event: PointerEvent) {
@@ -208,7 +234,11 @@
 				? { ...drag.startRect, x: drag.startRect.x + dx, y: drag.startRect.y + dy }
 				: { ...drag.startRect, width: drag.startRect.width + dx, height: drag.startRect.height + dy };
 		const clamped = clampRectToGrid(proposed, columns);
-		if (!isValidPlacement(clamped, drag.id)) return;
+		if (!isValidPlacement(clamped, drag.id)) {
+			invalidPlacementId = drag.id;
+			return;
+		}
+		invalidPlacementId = null;
 		widgets = widgets.map((w) =>
 			w.id === drag!.id
 				? { ...w, position_x: clamped.x, position_y: clamped.y, width: clamped.width, height: clamped.height }
@@ -219,12 +249,45 @@
 	function onPointerUp() {
 		if (!drag) return;
 		drag = null;
+		invalidPlacementId = null;
+		clearBodyDragClasses();
 		scheduleSave();
 	}
 
+	/** How long a removed widget's "Undo" toast stays actionable before its
+	 * removal actually reaches the server — long enough to notice and react
+	 * to, short enough that a workspace nobody touches again still settles
+	 * quickly. */
+	const REMOVE_UNDO_WINDOW_MS = 5000;
+
 	function removeWidget(id: string) {
+		const index = widgets.findIndex((w) => w.id === id);
+		if (index === -1) return;
+		const removed = widgets[index];
 		widgets = widgets.filter((w) => w.id !== id);
-		scheduleSave();
+
+		// The removal is optimistic in the UI immediately, but `scheduleSave`
+		// (and therefore the actual server write) is held off for the whole
+		// undo window — "Undo" restores this exact object, `config` and all,
+		// to its original index, with nothing ever having been sent.
+		let undone = false;
+		const commitTimer = setTimeout(() => {
+			if (!undone) scheduleSave();
+		}, REMOVE_UNDO_WINDOW_MS);
+
+		toast('Widget removed', {
+			duration: REMOVE_UNDO_WINDOW_MS,
+			action: {
+				label: 'Undo',
+				onClick: () => {
+					if (undone) return;
+					undone = true;
+					clearTimeout(commitTimer);
+					const insertAt = Math.min(index, widgets.length);
+					widgets = [...widgets.slice(0, insertAt), removed, ...widgets.slice(insertAt)];
+				}
+			}
+		});
 	}
 
 	/** A dynamic widget's own `plugin-widget-frame.svelte` host calls this
@@ -249,6 +312,28 @@
 			}
 		}
 		return { x: 0, y: 0, width, height };
+	}
+
+	/** Every widget type currently placed in this grid — read by the
+	 * "ADD WIDGET…" picker to draw its "Added" badge. A plain function, not
+	 * `$derived`, because this component's own exported API is otherwise
+	 * only functions (`addWidget`); called from inside a caller's own
+	 * `$derived`, a read of `widgets` here is still tracked exactly the way
+	 * it would be if the caller read `widgets` directly — Svelte's
+	 * reactivity graph is not scoped to the component a `$state` happens to
+	 * be declared in. */
+	export function placedWidgetTypeIds(): Set<string> {
+		return new Set(widgets.map((w) => w.widget_type_id));
+	}
+
+	/** How many widgets are placed in this grid right now — read by the
+	 * "delete workspace" confirmation so it can name the actual count
+	 * ("Its 4 widgets will be removed."), not the count `layout.widgets`
+	 * held when the page first loaded (this grid's own local `widgets` is
+	 * the source of truth once mounted; see this component's own header
+	 * comment). */
+	export function widgetCount(): number {
+		return widgets.length;
 	}
 
 	export function addWidget(definition: DashboardWidgetDefinition) {
@@ -292,10 +377,16 @@
 	{#each widgets as widget (widget.id)}
 		{@const renderer = rendererFor(widget, (config) => updateWidgetConfig(widget.id, config))}
 		{@const definition = catalogById.get(widget.widget_type_id)}
+		{@const isDragging = drag?.id === widget.id}
+		{@const isInvalidPlacement = invalidPlacementId === widget.id}
 		<div
 			style={`grid-column: ${widget.position_x + 1} / span ${widget.width}; grid-row: ${widget.position_y + 1} / span ${widget.height};`}
 			data-dashboard-widget-cell
 			data-widget-id={widget.id}
+			class={cn(
+				isDragging && 'opacity-90',
+				isDragging && (isInvalidPlacement ? 'ring-1 ring-loss' : 'ring-1 ring-foreground/40')
+			)}
 		>
 			<WidgetFrame
 				title={definition?.title ?? widget.widget_type_id}

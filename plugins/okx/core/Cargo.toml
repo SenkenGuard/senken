@@ -1,0 +1,34 @@
+# The parsing this venue's native adapter and its `wasm32-wasip2` component
+# both call — one implementation of "what an OKX response means", never two.
+# See `../wasm/Cargo.toml` for the guest side and `../Cargo.toml` for the
+# native side; both depend on this crate by path.
+#
+# Deliberately not a `[workspace]` root of its own, unlike `../wasm`: this
+# crate has no I/O of its own (no `reqwest`, no `tokio`), so it needs no
+# isolation from the main workspace's dependency tree the way a `cdylib`
+# guest crate does — see `../wasm/Cargo.toml`'s own comment on why that one
+# is isolated. Left out of the root `members` glob only because it is
+# nested one level deeper than `plugins/*` reaches; pulled in as a normal
+# path dependency of `senken-plugin-okx`, it becomes an implicit member of
+# the main workspace the same way any such nested library would.
+[package]
+name = "okx-core"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Pure OKX response parsing shared by the native adapter and its wasm32-wasip2 component"
+
+[lints]
+workspace = true
+
+[dependencies]
+# `parse_scaled`/`decimal_places`/`parse_increment`/`plain_decimal` — the
+# same fixed-point decimal parser every other venue plugin in this
+# workspace already uses. Zero I/O (see that crate's own description), and
+# confirmed to compile for `wasm32-wasip2` (`cargo check -p senken-core
+# --target wasm32-wasip2`) before this crate took the dependency, so the
+# `okx-venue` component built from this crate never has to reimplement it.
+senken-core = { path = "../../../crates/core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

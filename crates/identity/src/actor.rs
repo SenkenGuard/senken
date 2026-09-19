@@ -1,5 +1,5 @@
 //! Turning a resolved session into the `senken_acl::Actor` a permission
-//! check needs, and enforcing the B4 password fence in front of it.
+//! check needs, and enforcing the first-run password fence in front of it.
 //!
 //! `senken_acl::Actor`'s own docs describe this crate's job precisely:
 //! combining a `Scope` with *who* the actor is, to build a concrete
@@ -57,13 +57,16 @@ impl AuthenticatedUser {
     }
 
     /// `true` once this account has set a password — `false` for an
-    /// account still behind the B4 first-run fence.
+    /// account still behind the first-run password fence.
     #[must_use]
     pub fn password_set(&self) -> bool {
         self.password_set
     }
 
-    /// The names of every role this account holds (`GET /api/me` reports these for **cosmetic** use only — B8 still holds, and every endpoint re-checks a real grant regardless of what a client was told here).
+    /// The names of every role this account holds (`GET /api/me` reports
+    /// these for **cosmetic** use only — hiding UI is not access control,
+    /// and every endpoint re-checks a real grant regardless of what a
+    /// client was told here).
     #[must_use]
     pub fn role_names(&self) -> &[String] {
         &self.role_names
@@ -83,7 +86,7 @@ impl AuthenticatedUser {
         &self.effective_grants
     }
 
-    /// Checks `action` on `resource`, enforcing the B4 fence first.
+    /// Checks `action` on `resource`, enforcing the first-run password fence first.
     ///
     /// Every guarded query in [`IdentityStore`](crate::IdentityStore) goes
     /// through this one function to obtain a [`Scope`] to filter its query
@@ -106,7 +109,7 @@ impl AuthenticatedUser {
     /// type.
     ///
     /// # Errors
-    /// [`IdentityError::PasswordNotSet`] while the B4 fence is up;
+    /// [`IdentityError::PasswordNotSet`] while the first-run password fence is up;
     /// [`IdentityError::Forbidden`] if `senken_acl::decide` denies the
     /// check or returns a [`Scope`] variant this crate does not translate
     /// into SQL (scope must reach the query, which is
@@ -311,6 +314,8 @@ pub(crate) fn resource_to_sql(resource: Resource) -> &'static str {
         Resource::Note => "note",
         Resource::Storage => "storage",
         Resource::WidgetPlugin => "widget_plugin",
+        Resource::UserIndicator => "user_indicator",
+        Resource::Plugin => "plugin",
     }
 }
 
@@ -332,6 +337,8 @@ fn sql_to_resource(text: &str) -> Result<Resource, IdentityError> {
         "note" => Resource::Note,
         "storage" => Resource::Storage,
         "widget_plugin" => Resource::WidgetPlugin,
+        "user_indicator" => Resource::UserIndicator,
+        "plugin" => Resource::Plugin,
         other => {
             return Err(IdentityError::CorruptGrant(format!(
                 "unknown resource `{other}`"

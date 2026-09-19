@@ -199,7 +199,8 @@ impl LimitGroup {
     /// This exists because a venue's live-price WebSocket
     /// shares the same IP-level budget as its REST catalog/kline traffic
     /// (`binance-spot`, `binance-usdm` and `binance-coinm` are three sources
-    /// but one Binance IP — the same fact M3.1 states for HTTP applies to a
+    /// but one Binance IP — the same fact that motivates sharing one
+    /// [`LimitGroup`] over HTTP applies to a
     /// socket dial), so opening one through a side channel that never
     /// touches this group would spend quota the group does not know about.
     /// The returned [`ConnectPermit`] must be held for the duration of the

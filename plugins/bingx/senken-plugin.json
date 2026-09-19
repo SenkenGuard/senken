@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "bingx",
+  "name": "BingX",
+  "version": "0.0.5",
+  "contributes": [
+    {
+      "point": "venue"
+    }
+  ]
+}

@@ -1,12 +1,11 @@
 // The trade engine's client-side state: the registered adapters, the
-// accounts this user has attached, which one is active, and — as of this
-// plan — the one shared copy of every account's portfolio (balances,
-// positions, orders, fills).
+// accounts this user has attached, which one is active, and the one shared
+// copy of every account's portfolio (balances, positions, orders, fills).
 //
 // A module-level rune store rather than Svelte context, for the same reason
 // the command palette and AI panel use one: this is read from two routes
 // (the engine page and the charts page's order ticket) that never share a
-// component tree. Before this plan those two routes each kept their own
+// component tree. Previously those two routes each kept their own
 // `portfolios`/`orders` copy, which is exactly how they disagreed — an
 // order placed from the chart never appeared on the engine page, and a
 // resting order the simulator filled on its own stayed "working" on
@@ -84,8 +83,8 @@ export const tradeStore = new TradeStore();
 /** Resolves access and health for every account this user owns and is
  * enabled — the only ones an order ticket would ever send to, or a health
  * badge would ever mean anything for — in the one round trip
- * `tradeAccountState` already makes for `access` alone (plan 001), rather
- * than adding a second one for `health`. Takes the account list **as
+ * `tradeAccountState` already makes for `access` alone, rather than adding
+ * a second one for `health`. Takes the account list **as
  * given**, never re-read from `tradeStore.accounts` itself: a caller
  * mid-reload has already replaced that with a newer list, and re-reading it
  * here would race whichever assignment runs last. One account's adapter

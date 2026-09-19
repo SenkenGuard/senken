@@ -25,15 +25,12 @@
 //! `.wasm` component runs for every user of this server, not one.
 
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
 use senken_acl::{Action, Resource, Scope};
 use senken_alerts::IndicatorSpec;
 use senken_core::TimeRange;
 use senken_identity::AuthenticatedUser;
-use senken_indicator_lang::CompileError;
 use senken_indicators::{
     ConcreteIndicator, DESCRIPTORS, DisplayList, Drawable, Extend, IndicatorDescriptor,
     IndicatorField, LabelAnchor, ParamDefault, ParamKind, Placement, PlotShape, Point, PriceCoord,
@@ -48,9 +45,8 @@ use crate::AppState;
 use crate::HandlerError;
 use crate::auth::Authed;
 use crate::dto::{
-    BarRangeQuery, CompileIndicatorErrorDto, CompileIndicatorRequest, ComputeIndicatorRequest,
-    ComputeIndicatorResponse, IndicatorCatalogEntry, IndicatorDrawableDto,
-    IndicatorDrawablePointDto, IndicatorExtendDto, IndicatorLabelAnchorDto,
+    BarRangeQuery, ComputeIndicatorRequest, ComputeIndicatorResponse, IndicatorCatalogEntry,
+    IndicatorDrawableDto, IndicatorDrawablePointDto, IndicatorExtendDto, IndicatorLabelAnchorDto,
     IndicatorParamDefaultDto, IndicatorParamDto, IndicatorPlacementDto, IndicatorPlotDto,
     IndicatorPluginDto, IndicatorPointDto, IndicatorPriceCoordDto, IndicatorScaleDto,
     IndicatorScaledPriceDto, SetIndicatorPluginEnabledRequest,
@@ -403,7 +399,8 @@ fn scaled_price_dto(scaled: ScaledPrice) -> IndicatorScaledPriceDto {
 
 /// `GET /api/indicators`: the catalogue of `senken-indicators`' ten
 /// built-ins, plus every currently-enabled indicator loaded from an
-/// uploaded `.wasm` component. A plugin disabled through `POST
+/// uploaded `.wasm` component, plus the caller's own `my/<slug>`
+/// indicators — never another account's. A plugin disabled through `POST
 /// /api/indicators/plugins/{name}/enabled` drops out of this list
 /// immediately — see `senken_runtime::DynamicIndicators::catalog`'s own
 /// docs for why a chart already showing it is left to notice on its own
@@ -419,7 +416,7 @@ fn scaled_price_dto(scaled: ScaledPrice) -> IndicatorScaledPriceDto {
 )]
 pub(crate) async fn list_indicators(
     State(state): State<AppState>,
-    Extension(_ctx): Authed,
+    Extension(ctx): Authed,
 ) -> Json<Vec<IndicatorCatalogEntry>> {
     let mut entries: Vec<IndicatorCatalogEntry> = DESCRIPTORS.iter().map(entry).collect();
     entries.extend(
@@ -427,6 +424,14 @@ pub(crate) async fn list_indicators(
             .runtime
             .dynamic_indicators()
             .catalog()
+            .iter()
+            .map(dynamic_entry),
+    );
+    entries.extend(
+        state
+            .runtime
+            .user_indicators()
+            .catalog(ctx.user.user_id())
             .iter()
             .map(dynamic_entry),
     );
@@ -453,7 +458,7 @@ pub(crate) async fn list_indicators(
 )]
 pub(crate) async fn compute_indicator(
     State(state): State<AppState>,
-    Extension(_ctx): Authed,
+    Extension(ctx): Authed,
     Json(body): Json<ComputeIndicatorRequest>,
 ) -> Result<Json<ComputeIndicatorResponse>, HandlerError> {
     let provisional = body.provisional;
@@ -486,8 +491,19 @@ pub(crate) async fn compute_indicator(
     });
 
     let Some(descriptor) = descriptor(&indicator.name) else {
-        return compute_dynamic_indicator(&state, &loader, id, spec, range, provisional, indicator)
-            .await;
+        return compute_dynamic_indicator(
+            &state,
+            ctx.user.user_id(),
+            &loader,
+            DynamicComputeTarget {
+                id,
+                spec,
+                range,
+                provisional,
+            },
+            indicator,
+        )
+        .await;
     };
 
     let resolve_range = warmup_extended_range(descriptor, spec, &indicator.params, range)?;
@@ -526,8 +542,24 @@ pub(crate) async fn compute_indicator(
     }))
 }
 
+/// The bar-range half of [`compute_dynamic_indicator`]'s parameters,
+/// grouped into one struct so the function itself stays under this crate's
+/// argument-count lint — every field here comes from resolving
+/// `ComputeIndicatorRequest`'s instrument/spec/range, never from the
+/// indicator or the caller identity, which stay separate parameters.
+struct DynamicComputeTarget {
+    id: senken_marketdata::InstrumentId,
+    spec: BarSpec,
+    range: senken_core::TimeRange,
+    provisional: Option<senken_series::Bar>,
+}
+
 /// [`compute_indicator`]'s dynamic-catalogue path: `descriptor(name)` found
-/// nothing, so `name` is looked up in `DynamicIndicators` instead.
+/// nothing, so `name` is looked up in `DynamicIndicators` instead — unless
+/// it names one of `owner`'s own compiled indicators (`my/<slug>`), which
+/// is looked up in `owner`'s own catalog instead, so one account can never
+/// spawn a name it did not itself compile even if another account happens
+/// to hold the identical slug.
 ///
 /// Unlike a built-in, a dynamic indicator declares no smoothing model
 /// (`wit/senken.wit`'s `indicator-descriptor` has no field for one), so no
@@ -542,17 +574,28 @@ pub(crate) async fn compute_indicator(
 /// why an untrusted plugin gets the stronger failure mode.
 async fn compute_dynamic_indicator(
     state: &AppState,
+    owner: senken_identity::UserId,
     loader: &senken_loader::SeriesLoader,
-    id: senken_marketdata::InstrumentId,
-    spec: BarSpec,
-    range: senken_core::TimeRange,
-    provisional: Option<senken_series::Bar>,
+    target: DynamicComputeTarget,
     indicator: crate::dto::IndicatorSpecDto,
 ) -> Result<Json<ComputeIndicatorResponse>, HandlerError> {
-    let mut instance = state
-        .runtime
-        .dynamic_indicators()
-        .spawn(&indicator.name, &indicator.params)?;
+    let DynamicComputeTarget {
+        id,
+        spec,
+        range,
+        provisional,
+    } = target;
+    let mut instance = if indicator.name.starts_with("my/") {
+        state
+            .runtime
+            .user_indicators()
+            .spawn(owner, &indicator.name, &indicator.params)?
+    } else {
+        state
+            .runtime
+            .dynamic_indicators()
+            .spawn(&indicator.name, &indicator.params)?
+    };
 
     let key = senken_series::SeriesKey::new(id.source(), id.symbol(), Origin::Derived, spec);
     let resolved = loader
@@ -706,114 +749,6 @@ pub(crate) async fn set_indicator_plugin_enabled(
     Ok(())
 }
 
-/// `POST /api/indicators/compile`'s failure, kept distinct from
-/// [`HandlerError`] because [`CompileError::Syntax`]/[`CompileError::Type`]
-/// must reach the authoring panel as the exact line, column and message the
-/// compiler produced — the crate-wide [`crate::dto::ErrorBody`] has no
-/// field for either, and flattening them into its one `error` string would
-/// force the panel to re-parse prose to find the line it should highlight.
-pub(crate) enum CompileIndicatorRejection {
-    /// Authorisation failed, or the compiled component was rejected while
-    /// registering — both already have a [`HandlerError`] shape.
-    Handler(HandlerError),
-    /// A mistake in the trader's own source.
-    Compile(CompileError),
-}
-
-impl From<HandlerError> for CompileIndicatorRejection {
-    fn from(error: HandlerError) -> Self {
-        Self::Handler(error)
-    }
-}
-
-impl From<CompileError> for CompileIndicatorRejection {
-    fn from(error: CompileError) -> Self {
-        Self::Compile(error)
-    }
-}
-
-impl IntoResponse for CompileIndicatorRejection {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Handler(error) => error.into_response(),
-            Self::Compile(
-                CompileError::Syntax {
-                    line,
-                    column,
-                    message,
-                }
-                | CompileError::Type {
-                    line,
-                    column,
-                    message,
-                },
-            ) => (
-                StatusCode::BAD_REQUEST,
-                Json(CompileIndicatorErrorDto {
-                    line,
-                    column,
-                    message,
-                }),
-            )
-                .into_response(),
-            // A bug in this compiler, not in anything the trader wrote —
-            // reported like any other internal failure (logged here,
-            // detail withheld from the client) rather than pointing at a
-            // line this source never had. `CompileError` is
-            // `#[non_exhaustive]`, so a variant added later without a line
-            // and column (nothing else this crate knows how to present)
-            // falls into the same arm as `Internal` rather than failing to
-            // compile.
-            Self::Compile(CompileError::Internal(message)) => {
-                tracing::error!(
-                    error = %message,
-                    "indicator-lang: internal compiler error"
-                );
-                HandlerError::Internal.into_response()
-            }
-            Self::Compile(other) => {
-                tracing::error!(
-                    error = %other,
-                    "indicator-lang: unrecognised compile error variant"
-                );
-                HandlerError::Internal.into_response()
-            }
-        }
-    }
-}
-
-/// `POST /api/indicators/compile`: compiles indicator-lang `source` into a
-/// component and registers it the same way `POST /api/indicators/plugins`
-/// registers an uploaded one — the authoring panel's "run" action. Requires
-/// `Action::Create` on `Resource::Indicator` at `Scope::All`, the same as
-/// uploading a compiled component directly: either way the result joins
-/// the one dynamic-indicator catalogue every user of this server shares.
-#[utoipa::path(
-    post,
-    path = "/api/indicators/compile",
-    request_body = CompileIndicatorRequest,
-    responses(
-        (status = 200, body = IndicatorCatalogEntry),
-        (status = 400, description = "a mistake in the source, or the compiled component was rejected", body = CompileIndicatorErrorDto),
-        (status = 401, body = crate::dto::ErrorBody),
-        (status = 403, body = crate::dto::ErrorBody),
-    )
-)]
-pub(crate) async fn compile_indicator(
-    State(state): State<AppState>,
-    Extension(ctx): Authed,
-    Json(body): Json<CompileIndicatorRequest>,
-) -> Result<Json<IndicatorCatalogEntry>, CompileIndicatorRejection> {
-    require_indicator_plugins_all(&ctx.user, Action::Create)?;
-    let wasm = senken_indicator_lang::compile(&body.source)?;
-    let info = state
-        .runtime
-        .dynamic_indicators()
-        .register(&wasm)
-        .map_err(HandlerError::from)?;
-    Ok(Json(dynamic_entry(&info)))
-}
-
 #[cfg(test)]
 mod tests {
     use senken_identity::DEFAULT_ADMIN_EMAIL;
@@ -850,27 +785,48 @@ mod tests {
     /// once, and the test harness would otherwise start one `cargo build`
     /// per fixture-dependent test at the same time.
     fn build_dynamic_indicator_fixture(name: &str) -> Vec<u8> {
-        static BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = BUILD_LOCK
+        // Built at most once per fixture per test process, and the bytes
+        // kept. Spawning a subprocess from a process that already holds a
+        // runtime and a server per running test is what actually breaks
+        // here: with the harness at its default thread count, one of those
+        // spawns eventually dies with `mach_msg failed`, taking the whole
+        // test binary with it and reporting nothing about which test was
+        // running. Building once removes almost every spawn, and the bytes
+        // are identical for every caller anyway.
+        static BUILT: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<u8>>>> =
+            std::sync::Mutex::new(None);
+        let mut cache = BUILT
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cache = cache.get_or_insert_with(std::collections::HashMap::new);
+        if let Some(bytes) = cache.get(name) {
+            return bytes.clone();
+        }
 
         let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../runtime/tests/fixtures")
             .join(name);
+        // One shared build directory for every fixture in the repository,
+        // the same one `senken-runtime`'s own fixture builder uses. Each
+        // fixture is its own workspace, so the default is a private
+        // `target/` per fixture — the same dependency tree compiled again,
+        // gigabytes of it.
+        let shared_target =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixture-wasm");
         let status = std::process::Command::new(env!("CARGO"))
             .args(["build", "--target", "wasm32-wasip2"])
+            .env("CARGO_TARGET_DIR", &shared_target)
             .current_dir(&fixture_dir)
             .status()
             .expect("spawning `cargo build` for a test fixture must succeed");
         assert!(status.success(), "fixture `{name}` failed to build");
 
         let binary_name = format!("fixture_{}.wasm", name.replace('-', "_"));
-        let wasm_path = fixture_dir
-            .join("target/wasm32-wasip2/debug")
-            .join(&binary_name);
-        std::fs::read(&wasm_path)
-            .unwrap_or_else(|error| panic!("reading {}: {error}", wasm_path.display()))
+        let wasm_path = shared_target.join("wasm32-wasip2/debug").join(&binary_name);
+        let bytes = std::fs::read(&wasm_path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", wasm_path.display()));
+        cache.insert(name.to_owned(), bytes.clone());
+        bytes
     }
 
     #[tokio::test]
@@ -1619,138 +1575,5 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned()
-    }
-
-    /// The authoring panel needs a mistake's exact line and column to place
-    /// its own error marker — a flattened `{"error": "..."}` string would
-    /// force it to re-parse the compiler's own prose. This proves the `400`
-    /// body carries them as separate fields, not folded into one message,
-    /// and that the message itself is the compiler's own, not a generic
-    /// wrapper's.
-    #[tokio::test]
-    async fn a_syntax_mistake_in_compiled_source_reports_its_own_line_and_column_not_a_generic_message()
-     {
-        let runtime_dir = tempfile::TempDir::new().unwrap();
-        let (runtime, _bar_source) = runtime_with_fake_venue(runtime_dir.path());
-        let (handle, _store, _dir) = serve_unfenced_test_server_with(runtime).await;
-        let addr = handle.local_addr();
-        let token = admin_token(addr).await;
-
-        // Two lines so the reported line is proof the compiler's own count
-        // is reaching the response, not a hard-coded `1`: the mistake (a
-        // dangling operator with nothing after it) sits on line 2.
-        let source = "let fast = ema(close, 12)\nplot fast +";
-        let response = post_json_auth(
-            format!("http://{addr}/api/indicators/compile"),
-            &token,
-            serde_json::json!({ "source": source }),
-        )
-        .await;
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-        let body = body_json(response).await;
-        assert_eq!(
-            body["line"].as_u64(),
-            Some(2),
-            "the mistake is on the second line: {body:?}"
-        );
-        assert!(
-            body["column"].as_u64().is_some(),
-            "a column must be reported: {body:?}"
-        );
-        assert!(
-            body.get("error").is_none(),
-            "a compile error is line/column/message, never the crate-wide `error` shape: {body:?}"
-        );
-        let message = body["message"].as_str().unwrap();
-        assert!(!message.is_empty());
-
-        handle.shutdown().await.unwrap();
-    }
-
-    /// A program with no mistake in it must get *past* the compiler and
-    /// register successfully: `senken_indicator_lang::compile` targets
-    /// `wit/senken.wit`'s `compiled-indicator` world (a bare `on-bar`
-    /// export, no descriptor, no `indicator` interface — see that crate's
-    /// own `README.md`), and `senken_runtime::DynamicIndicators::register`
-    /// now bridges that world into a dynamic indicator the same way it
-    /// already does for a Rust-authored `indicator-plugin` component,
-    /// synthesising the catalogue entry's id/title/plot from the compiled
-    /// bytes since the language itself has no syntax for any of them. This
-    /// used to fail here — `register` had no path for a `compiled-indicator`
-    /// artifact at all and always answered `PluginHostError::Load`,
-    /// regardless of how clean the source was — so this asserts the `200`
-    /// that failure mode's own pinned comment said this test would become.
-    #[tokio::test]
-    async fn a_valid_program_gets_past_the_compiler_and_fails_only_at_registration() {
-        let runtime_dir = tempfile::TempDir::new().unwrap();
-        let (runtime, _bar_source) = runtime_with_fake_venue(runtime_dir.path());
-        let (handle, _store, _dir) = serve_unfenced_test_server_with(runtime).await;
-        let addr = handle.local_addr();
-        let token = admin_token(addr).await;
-
-        let response = post_json_auth(
-            format!("http://{addr}/api/indicators/compile"),
-            &token,
-            serde_json::json!({ "source": "plot close" }),
-        )
-        .await;
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let body = body_json(response).await;
-        assert!(
-            body.get("line").is_none() && body.get("column").is_none(),
-            "a clean program must never be reported as a source mistake: {body:?}"
-        );
-        let name = body["name"]
-            .as_str()
-            .expect("a successful compile registers under the `IndicatorCatalogEntry` shape");
-        assert!(
-            !name.is_empty(),
-            "the synthesised catalogue entry must carry a real id: {body:?}"
-        );
-        assert_eq!(
-            body["params"].as_array().map(Vec::len),
-            Some(0),
-            "a compiled program has no runtime-configurable parameters: {body:?}"
-        );
-
-        handle.shutdown().await.unwrap();
-    }
-
-    /// `POST /api/indicators/compile` mutates the same shared catalogue an
-    /// upload does, so it is guarded the same way — a session with no
-    /// grant on `Resource::Indicator` gets `403`, never a `500` from
-    /// reaching the compiler at all.
-    #[tokio::test]
-    async fn compiling_without_the_indicator_grant_is_403() {
-        let runtime_dir = tempfile::TempDir::new().unwrap();
-        let (runtime, _bar_source) = runtime_with_fake_venue(runtime_dir.path());
-        let (handle, identity, _dir) = serve_unfenced_test_server_with(runtime).await;
-        let addr = handle.local_addr();
-        let (_uid, admin_session) = identity
-            .login(DEFAULT_ADMIN_EMAIL, ADMIN_TEST_PASSWORD)
-            .unwrap();
-        let admin = identity
-            .resolve_session(admin_session.reveal())
-            .unwrap()
-            .unwrap();
-        identity
-            .create_user(
-                &admin,
-                "nocompile@example.com",
-                "No Compile",
-                Some("a very long password"),
-            )
-            .unwrap();
-        let token = login_token(addr, "nocompile@example.com", "a very long password").await;
-
-        let response = post_json_auth(
-            format!("http://{addr}/api/indicators/compile"),
-            &token,
-            serde_json::json!({ "source": "plot close" }),
-        )
-        .await;
-        assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
-
-        handle.shutdown().await.unwrap();
     }
 }
